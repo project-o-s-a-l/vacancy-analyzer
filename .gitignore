@@ -1,0 +1,91 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+# Virtual environments
+.venv/
+venv/
+env/
+# Build
+build/
+dist/
+*.egg-info/
+.eggs/
+# =========================
+# Environment / Secrets
+# =========================
+.env
+.env.*
+!.env.example
+
+*.pem
+*.key
+# =========================
+# Testing / Coverage
+# =========================
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+# =========================
+# Type checking / Linters
+# =========================
+.mypy_cache/
+.ruff_cache/
+# =========================
+# Jupyter
+# =========================
+.ipynb_checkpoints/
+# =========================
+# IDE
+# =========================
+.idea/
+.vscode/
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+desktop.ini
+# =========================
+# Logs
+# =========================
+*.log
+logs/
+# =========================
+# Local databases
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+# =========================
+# Data Science / ML data
+# =========================
+data/
+datasets/
+# ML artifacts
+models/
+artifacts/
+# Serialized models / objects
+*.pkl
+*.pickle
+*.joblib
+# =========================
+# Temporary files
+# =========================
+tmp/
+temp/
+.cache/
+*.tmp
+*.temp
+*.swp
+*.bak
+# =========================
+# Docker local data
+# =========================
+docker-data/
+postgres-data/
