@@ -168,7 +168,6 @@ job-market-analyzer/
 │
 ├── .env.example
 ├── .gitignore
-├── .pre-commit-config.yaml
 ├── alembic.ini
 ├── docker-compose.yml
 ├── Dockerfile
@@ -1344,7 +1343,6 @@ HH_CLIENT_SECRET=
 .venv/
 __pycache__/
 .pytest_cache/
-.mypy_cache/
 .ruff_cache/
 
 data/
@@ -1355,23 +1353,19 @@ artifacts/
 
 ---
 
-# 31. `.pre-commit-config.yaml`
+# 31. Локальные проверки качества
+
+Контроль качества выполняется разработчиком локально перед созданием commit и Pull Request.
+
+Обязательные проверки:
 
 ```text
-.pre-commit-config.yaml
+ruff check .
+ruff format --check .
+pytest
 ```
 
-Настройка автоматических проверок перед созданием commit.
-
-Может запускать:
-
-```text
-ruff
-formatting
-basic file checks
-```
-
-Проект уже предполагает использование `pre-commit` как инструмента контроля качества.
+Конфигурация Ruff и pytest хранится централизованно в `pyproject.toml`.
 
 ---
 
@@ -1439,7 +1433,6 @@ project metadata
 dependencies
 pytest configuration
 ruff configuration
-mypy configuration
 build configuration
 ```
 

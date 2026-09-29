@@ -503,7 +503,6 @@ Validation period:
 ```bash
 pytest
 ruff check .
-mypy .
 ```
 
 После merge ветка удаляется.
@@ -638,12 +637,7 @@ git commit
 ```bash
 pytest
 ruff check .
-```
-
-При необходимости:
-
-```bash
-mypy .
+ruff format --check .
 ```
 
 После проверки:

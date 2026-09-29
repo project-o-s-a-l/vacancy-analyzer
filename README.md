@@ -954,9 +954,36 @@ Docker Compose
 ```text
 pytest
 ruff
-mypy
-pre-commit
 ```
+
+---
+
+# Local Development
+
+Проект поддерживает Python 3.12 и новее.
+
+Создание и активация виртуального окружения в PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install --group dev
+```
+
+Ручной запуск проверок:
+
+```powershell
+ruff check .
+ruff format --check .
+pytest
+```
+
+Ruff и pytest настраиваются централизованно в `pyproject.toml`. Проверки запускаются
+разработчиком локально перед созданием коммита и Pull Request.
+
+Подробный командный процесс разработки, создания коммитов и подготовки Pull Request описан в
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
 ---
 
