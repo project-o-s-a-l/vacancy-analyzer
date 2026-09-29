@@ -1,0 +1,44 @@
+[project]
+name = "vacancy-analyzer"
+version = "0.1.0"
+description = "Personal job-market analysis and vacancy ranking system"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "ruff==0.16.9",
+]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["notebooks", "*.md"]
+force-exclude = true
+
+[tool.ruff.lint]
+select = [
+    "B",   # flake8-bugbear
+    "E",   # pycodestyle errors
+    "F",   # Pyflakes
+    "I",   # isort
+    "RUF", # Ruff-specific rules
+    "SIM", # flake8-simplify
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501", # Line length is handled by the formatter.
+]
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+minversion = "9.1"
+addopts = ["-ra", "--import-mode=importlib"]
+testpaths = ["tests"]
+pythonpath = ["src"]
+strict = true

@@ -32,9 +32,8 @@ htmlcov/
 .tox/
 .nox/
 # =========================
-# Type checking / Linters
+# Linters
 # =========================
-.mypy_cache/
 .ruff_cache/
 # =========================
 # Jupyter
