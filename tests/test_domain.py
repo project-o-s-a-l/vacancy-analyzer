@@ -13,9 +13,7 @@ def values(vacancy):
 
 def test_domain_strips_fields_without_touching_raw_json(vacancy):
     data = values(vacancy)
-    data.update(
-        title="  Python  ", skills=[" Python "], raw_payload={"name": "  Keep  "}
-    )
+    data.update(title="  Python  ", skills=[" Python "], raw_payload={"name": "  Keep  "})
     result = Vacancy(**data)
     assert result.title == "Python"
     assert result.skills == ["Python"]
@@ -48,9 +46,7 @@ def test_naive_dates_rejected(vacancy, field):
 
 def test_dates_are_normalized_to_utc(vacancy):
     data = values(vacancy)
-    data["published_at"] = datetime(
-        2026, 10, 16, 12, tzinfo=timezone(timedelta(hours=11))
-    )
+    data["published_at"] = datetime(2026, 10, 16, 12, tzinfo=timezone(timedelta(hours=11)))
     result = Vacancy(**data)
     assert result.published_at == datetime(2026, 10, 16, 1, tzinfo=UTC)
 

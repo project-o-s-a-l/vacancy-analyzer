@@ -62,9 +62,7 @@ CATEGORY_LABELS = {
 
 Name = Annotated[str, Field(min_length=1, max_length=160)]
 Quote = Annotated[str, Field(min_length=1, max_length=800)]
-SkillImportance = Literal[
-    "required", "preferred", "unspecified", "context", "not_required"
-]
+SkillImportance = Literal["required", "preferred", "unspecified", "context", "not_required"]
 
 
 class ExtractedSkill(BaseModel):
@@ -131,11 +129,7 @@ def analysis_input_hash(vacancy: "Vacancy") -> str:
 
 def current_analysis(vacancy: "Vacancy") -> VacancyAnalysis | None:
     analysis = vacancy.analysis
-    return (
-        analysis
-        if analysis and analysis.input_hash == analysis_input_hash(vacancy)
-        else None
-    )
+    return analysis if analysis and analysis.input_hash == analysis_input_hash(vacancy) else None
 
 
 def is_fresh(vacancy: "Vacancy", *, now: datetime, days: int | None = None) -> bool:

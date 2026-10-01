@@ -1,0 +1,629 @@
+# Fictitious people, explicit profiles; no automatic extraction or quality labels.
+version: benchmark-cases-v1
+synthetic_resumes: true
+cases:
+- id: python-backend
+  profession: python
+  group: python-backend
+  split: training
+  resume: 'Учебное резюме: вымышленный кандидат, без персональных данных.
+
+    Желаемая должность: Python Developer
+
+    Общий опыт работы: 3 года
+
+    Ключевые навыки: Python, FastAPI, PostgreSQL, Docker
+
+    Опыт работы
+
+    Разрабатывал REST API, интеграции и серверные приложения, писал тесты.
+
+    Образование
+
+    Высшее техническое образование.
+
+    '
+  profile:
+    skills:
+      python:
+        level: intermediate
+        years: null
+      fastapi:
+        level: intermediate
+        years: null
+      postgresql:
+        level: intermediate
+        years: null
+      docker:
+        level: intermediate
+        years: null
+    experience_years: 3.0
+    preferences:
+      positions:
+      - Python Developer
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: python-junior
+  profession: python
+  group: python-junior
+  split: validation
+  resume: 'Учебное резюме: другой вымышленный кандидат.
+
+    Желаемая должность
+
+    Python-разработчик
+
+    Общий опыт: 1 год
+
+    Навыки
+
+    Python; SQL; Django; Git
+
+    О себе
+
+    Создавал небольшие веб-приложения и исправлял ошибки под руководством наставника.
+
+    '
+  profile:
+    skills:
+      python:
+        level: intermediate
+        years: null
+      sql:
+        level: intermediate
+        years: null
+      django:
+        level: intermediate
+        years: null
+      git:
+        level: intermediate
+        years: null
+    experience_years: 1.0
+    preferences:
+      positions:
+      - Python-разработчик
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: java-backend
+  profession: java
+  group: java-backend
+  split: training
+  resume: 'Fictional candidate for an engineering audit; no personal information.
+
+    Desired position: Java Developer
+
+    Total experience: 3 years
+
+    Technical skills: Java, Spring Boot, SQL, PostgreSQL
+
+    Work experience
+
+    Developed backend REST services, business logic and database integrations.
+
+    Education
+
+    Technical university.
+
+    '
+  profile:
+    skills:
+      java:
+        level: intermediate
+        years: null
+      spring:
+        level: intermediate
+        years: null
+      sql:
+        level: intermediate
+        years: null
+      postgresql:
+        level: intermediate
+        years: null
+    experience_years: 3.0
+    preferences:
+      positions:
+      - Java Developer
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: java-trainee
+  profession: java
+  group: java-trainee
+  split: validation
+  resume: 'Учебное резюме вымышленного выпускника.
+
+    Желаемая должность: Java-разработчик
+
+    Общий опыт: без опыта
+
+    Ключевые навыки: Java, SQL, Git
+
+    О себе
+
+    Учебные проекты, основы объектно-ориентированного программирования. Ищу стажировку.
+
+    '
+  profile:
+    skills:
+      java:
+        level: intermediate
+        years: null
+      sql:
+        level: intermediate
+        years: null
+      git:
+        level: intermediate
+        years: null
+    experience_years: 0.0
+    preferences:
+      positions:
+      - Java-разработчик
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: accountant
+  profession: accountant
+  group: accountant
+  split: training
+  resume: 'Учебное резюме: вымышленный кандидат, без контактов.
+
+    Желаемая должность и зарплата
+
+    Бухгалтер
+
+    Общий стаж работы: 3 года
+
+    Профессиональные компетенции: 1С, Первичная документация, Бухгалтерский учет, Excel
+
+    Опыт работы
+
+    Обрабатывал первичные документы, проводил сверки и готовил отчёты.
+
+    Образование
+
+    Экономическое образование.
+
+    '
+  profile:
+    skills:
+      1с:
+        level: intermediate
+        years: null
+      первичная документация:
+        level: intermediate
+        years: null
+      бухгалтерский учет:
+        level: intermediate
+        years: null
+      excel:
+        level: intermediate
+        years: null
+    experience_years: 3.0
+    preferences:
+      positions:
+      - Бухгалтер
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: accountant-senior
+  profession: accountant
+  group: accountant-senior
+  split: validation
+  resume: 'Учебное резюме другого вымышленного кандидата.
+
+    Желаемая позиция: Ведущий бухгалтер
+
+    Общий опыт: 6 лет
+
+    Ключевые навыки: 1С, Налоговый учет, Бухгалтерский учет, Excel
+
+    О себе
+
+    Закрывал отчётные периоды, готовил налоговую отчётность и проверял первичную документацию.
+
+    Подходит только работа в Москве, переезд не рассматривается.
+
+    '
+  profile:
+    skills:
+      1с:
+        level: intermediate
+        years: null
+      налоговый учет:
+        level: intermediate
+        years: null
+      бухгалтерский учет:
+        level: intermediate
+        years: null
+      excel:
+        level: intermediate
+        years: null
+    experience_years: 6.0
+    preferences:
+      positions:
+      - Ведущий бухгалтер
+      remote: any
+      locations:
+      - Москва
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: true
+    qualifications: []
+- id: driver-personal
+  profession: driver
+  group: driver-personal
+  split: training
+  resume: 'Учебное резюме: вымышленный водитель.
+
+    Желаемая должность: Персональный водитель
+
+    Общий опыт работы: 5 лет
+
+    Профессиональные навыки: Безаварийное вождение; Знание ПДД; Навигация; Обслуживание автомобиля
+
+    Документы:
+
+    Водительское удостоверение категории B заявлено в учебном примере, не проверено.
+
+    О себе
+
+    Перевозил пассажиров, планировал маршруты, следил за состоянием автомобиля.
+
+    '
+  profile:
+    skills:
+      безаварийное вождение:
+        level: intermediate
+        years: null
+      знание пдд:
+        level: intermediate
+        years: null
+      навигация:
+        level: intermediate
+        years: null
+      обслуживание автомобиля:
+        level: intermediate
+        years: null
+    experience_years: 5.0
+    preferences:
+      positions:
+      - Персональный водитель
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications:
+    - name: права B
+      status: present
+      valid_until: null
+- id: driver-truck
+  profession: driver
+  group: driver-truck
+  split: validation
+  resume: 'Учебное резюме другого вымышленного водителя.
+
+    Желаемая должность и зарплата: Водитель грузового автомобиля
+
+    Общий опыт: 2 года
+
+    Ключевые навыки: Перевозка грузов; Знание ПДД; Навигация; Транспортная документация
+
+    Документы:
+
+    Категория C заявлена в учебном примере. Категория B не заявлена.
+
+    О себе
+
+    Перевозил грузы на грузовом автомобиле, оформлял путевые листы.
+
+    '
+  profile:
+    skills:
+      перевозка грузов:
+        level: intermediate
+        years: null
+      знание пдд:
+        level: intermediate
+        years: null
+      навигация:
+        level: intermediate
+        years: null
+      транспортная документация:
+        level: intermediate
+        years: null
+    experience_years: 2.0
+    preferences:
+      positions:
+      - Водитель грузового автомобиля
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications:
+    - name: права C
+      status: present
+      valid_until: null
+- id: sales-b2b
+  profession: sales
+  group: sales-b2b
+  split: training
+  resume: 'Учебное резюме: вымышленный менеджер.
+
+    Желаемая должность: Менеджер по продажам B2B
+
+    Общий опыт: 3 года
+
+    Ключевые навыки: B2B продажи, Активные продажи, CRM, Переговоры
+
+    О себе
+
+    Искал корпоративных клиентов, вёл сделки в CRM, проводил переговоры и выполнял план продаж.
+
+    Обязательный минимум зарплаты: 100000 RUB в месяц на руки.
+
+    '
+  profile:
+    skills:
+      b2b продажи:
+        level: intermediate
+        years: null
+      активные продажи:
+        level: intermediate
+        years: null
+      crm:
+        level: intermediate
+        years: null
+      переговоры:
+        level: intermediate
+        years: null
+    experience_years: 3.0
+    preferences:
+      positions:
+      - Менеджер по продажам B2B
+      remote: any
+      locations: []
+      salary_min: 100000
+      currency: RUB
+      salary_gross: false
+      salary_required: true
+      locations_required: false
+    qualifications: []
+- id: sales-junior
+  profession: sales
+  group: sales-junior
+  split: validation
+  resume: 'Учебное резюме вымышленного начинающего специалиста.
+
+    Желаемая должность: Менеджер по продажам
+
+    Общий опыт: без опыта
+
+    Навыки: Общение с клиентами; Переговоры; Excel
+
+    О себе
+
+    Готов обучаться продажам, консультировать клиентов и вести документы. Руководящего опыта нет.
+
+    '
+  profile:
+    skills:
+      общение с клиентами:
+        level: intermediate
+        years: null
+      переговоры:
+        level: intermediate
+        years: null
+      excel:
+        level: intermediate
+        years: null
+    experience_years: 0.0
+    preferences:
+      positions:
+      - Менеджер по продажам
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: designer-ux
+  profession: designer
+  group: designer-ux
+  split: validation
+  resume: 'Fictional candidate for an engineering audit.
+
+    Desired job title: UX/UI Designer
+
+    Total experience: 3 years
+
+    Key skills: Figma; UI; UX; Прототипирование; Дизайн интерфейсов
+
+    About me
+
+    Designed application interfaces and interactive prototypes, conducted usability studies.
+
+    Work arrangement: remote only.
+
+    '
+  profile:
+    skills:
+      figma:
+        level: intermediate
+        years: null
+      ui:
+        level: intermediate
+        years: null
+      ux:
+        level: intermediate
+        years: null
+      прототипирование:
+        level: intermediate
+        years: null
+      дизайн интерфейсов:
+        level: intermediate
+        years: null
+    experience_years: 3.0
+    preferences:
+      positions:
+      - UX/UI Designer
+      remote: required
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: designer-graphic
+  profession: designer
+  group: designer-graphic
+  split: validation
+  resume: 'Учебное резюме другого вымышленного дизайнера.
+
+    Желаемая должность: Графический дизайнер
+
+    Общий опыт работы: 2 года
+
+    Ключевые компетенции
+
+    Figma; Adobe Photoshop; Adobe Illustrator; Графический дизайн
+
+    О себе
+
+    Создавал макеты рекламных материалов, иллюстрации и фирменный стиль.
+
+    '
+  profile:
+    skills:
+      figma:
+        level: intermediate
+        years: null
+      adobe photoshop:
+        level: intermediate
+        years: null
+      adobe illustrator:
+        level: intermediate
+        years: null
+      графический дизайн:
+        level: intermediate
+        years: null
+    experience_years: 2.0
+    preferences:
+      positions:
+      - Графический дизайнер
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: python-zero
+  profession: python
+  group: python-graduate
+  split: validation
+  resume: 'Вымышленное резюме выпускника для проверки рекомендаций.
+
+    Желаемая должность: Python Backend Developer
+
+    Коммерческий опыт: 0 лет.
+
+    Изучал Python, Git и SQL на курсах, написал учебный API на FastAPI. Ищу первую работу и наставника.
+    Условия работы и город пока не ограничиваю.'
+  profile:
+    skills:
+      python:
+        level: intermediate
+        years: null
+      git:
+        level: intermediate
+        years: null
+      sql:
+        level: intermediate
+        years: null
+      fastapi:
+        level: intermediate
+        years: null
+    experience_years: 0.0
+    preferences:
+      positions:
+      - Python Backend Developer
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []
+- id: accountant-unknown
+  profession: accountant
+  group: accountant-incomplete
+  split: validation
+  resume: 'Учебное неполное резюме другого вымышленного кандидата.
+
+    Цель: помощник бухгалтера.
+
+    Знаком с обработкой первичных документов и Excel, осваиваю 1С. Периоды работы и общий стаж не указаны,
+    уточнение потребуется на собеседовании. Ожидания по оплате и городу ещё не определены.'
+  profile:
+    skills:
+      первичная документация:
+        level: intermediate
+        years: null
+      excel:
+        level: intermediate
+        years: null
+      1с:
+        level: intermediate
+        years: null
+    experience_years: null
+    preferences:
+      positions:
+      - Помощник бухгалтера
+      remote: any
+      locations: []
+      salary_min: null
+      currency: RUB
+      salary_gross: true
+      salary_required: false
+      locations_required: false
+    qualifications: []

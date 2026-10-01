@@ -1,0 +1,185 @@
+# Fictitious candidates for an engineering audit. These are not real users or human judgments.
+synthetic_resumes: true
+cases:
+  - id: python-backend
+    profession: python
+    split: training
+    expected:
+      positions: [Python Developer]
+      skills: [python, fastapi, postgresql, docker]
+      experience_years: 3
+    text: |
+      Учебное резюме: вымышленный кандидат, без персональных данных.
+      Желаемая должность: Python Developer
+      Общий опыт работы: 3 года
+      Ключевые навыки: Python, FastAPI, PostgreSQL, Docker
+      Опыт работы
+      Разрабатывал REST API, интеграции и серверные приложения, писал тесты.
+      Образование
+      Высшее техническое образование.
+  - id: python-junior
+    profession: python
+    split: validation
+    expected:
+      positions: [Python-разработчик]
+      skills: [python, sql, django, git]
+      experience_years: 1
+    text: |
+      Учебное резюме: другой вымышленный кандидат.
+      Желаемая должность
+      Python-разработчик
+      Общий опыт: 1 год
+      Навыки
+      Python; SQL; Django; Git
+      О себе
+      Создавал небольшие веб-приложения и исправлял ошибки под руководством наставника.
+  - id: java-backend
+    profession: java
+    split: training
+    expected:
+      positions: [Java Developer]
+      skills: [java, spring, sql, postgresql]
+      experience_years: 3
+    text: |
+      Fictional candidate for an engineering audit; no personal information.
+      Desired position: Java Developer
+      Total experience: 3 years
+      Technical skills: Java, Spring Boot, SQL, PostgreSQL
+      Work experience
+      Developed backend REST services, business logic and database integrations.
+      Education
+      Technical university.
+  - id: java-trainee
+    profession: java
+    split: validation
+    expected:
+      positions: [Java-разработчик]
+      skills: [java, sql, git]
+      experience_years: 0
+    text: |
+      Учебное резюме вымышленного выпускника.
+      Желаемая должность: Java-разработчик
+      Общий опыт: без опыта
+      Ключевые навыки: Java, SQL, Git
+      О себе
+      Учебные проекты, основы объектно-ориентированного программирования. Ищу стажировку.
+  - id: accountant
+    profession: accountant
+    split: training
+    expected:
+      positions: [Бухгалтер]
+      skills: [1с, первичная документация, бухгалтерский учет, excel]
+      experience_years: 3
+    text: |
+      Учебное резюме: вымышленный кандидат, без контактов.
+      Желаемая должность и зарплата
+      Бухгалтер
+      Общий стаж работы: 3 года
+      Профессиональные компетенции: 1С, Первичная документация, Бухгалтерский учет, Excel
+      Опыт работы
+      Обрабатывал первичные документы, проводил сверки и готовил отчёты.
+      Образование
+      Экономическое образование.
+  - id: accountant-senior
+    profession: accountant
+    split: validation
+    expected:
+      positions: [Ведущий бухгалтер]
+      skills: [1с, налоговый учет, бухгалтерский учет, excel]
+      experience_years: 6
+    text: |
+      Учебное резюме другого вымышленного кандидата.
+      Желаемая позиция: Ведущий бухгалтер
+      Общий опыт: 6 лет
+      Ключевые навыки: 1С, Налоговый учет, Бухгалтерский учет, Excel
+      О себе
+      Закрывал отчётные периоды, готовил налоговую отчётность и проверял первичную документацию.
+  - id: driver-personal
+    profession: driver
+    split: training
+    expected:
+      positions: [Персональный водитель]
+      skills: [безаварийное вождение, знание пдд, навигация, обслуживание автомобиля]
+      experience_years: 5
+    text: |
+      Учебное резюме: вымышленный водитель.
+      Желаемая должность: Персональный водитель
+      Общий опыт работы: 5 лет
+      Профессиональные навыки: Безаварийное вождение; Знание ПДД; Навигация; Обслуживание автомобиля
+      Документы:
+      Водительское удостоверение категории B заявлено в учебном примере, не проверено.
+      О себе
+      Перевозил пассажиров, планировал маршруты, следил за состоянием автомобиля.
+  - id: driver-truck
+    profession: driver
+    split: validation
+    expected:
+      positions: [Водитель грузового автомобиля]
+      skills: [перевозка грузов, знание пдд, навигация, транспортная документация]
+      experience_years: 2
+    text: |
+      Учебное резюме другого вымышленного водителя.
+      Желаемая должность и зарплата: Водитель грузового автомобиля
+      Общий опыт: 2 года
+      Ключевые навыки: Перевозка грузов; Знание ПДД; Навигация; Транспортная документация
+      Документы:
+      Категория C заявлена в учебном примере. Категория B не заявлена.
+      О себе
+      Перевозил грузы на грузовом автомобиле, оформлял путевые листы.
+  - id: sales-b2b
+    profession: sales
+    split: training
+    expected:
+      positions: [Менеджер по продажам B2B]
+      skills: [b2b продажи, активные продажи, crm, переговоры]
+      experience_years: 3
+    text: |
+      Учебное резюме: вымышленный менеджер.
+      Желаемая должность: Менеджер по продажам B2B
+      Общий опыт: 3 года
+      Ключевые навыки: B2B продажи, Активные продажи, CRM, Переговоры
+      О себе
+      Искал корпоративных клиентов, вёл сделки в CRM, проводил переговоры и выполнял план продаж.
+  - id: sales-junior
+    profession: sales
+    split: validation
+    expected:
+      positions: [Менеджер по продажам]
+      skills: [общение с клиентами, переговоры, excel]
+      experience_years: 0
+    text: |
+      Учебное резюме вымышленного начинающего специалиста.
+      Желаемая должность: Менеджер по продажам
+      Общий опыт: без опыта
+      Навыки: Общение с клиентами; Переговоры; Excel
+      О себе
+      Готов обучаться продажам, консультировать клиентов и вести документы. Руководящего опыта нет.
+  - id: designer-ux
+    profession: designer
+    split: validation
+    expected:
+      positions: [UX/UI Designer]
+      skills: [figma, ui, ux, прототипирование, дизайн интерфейсов]
+      experience_years: 3
+    text: |
+      Fictional candidate for an engineering audit.
+      Desired job title: UX/UI Designer
+      Total experience: 3 years
+      Key skills: Figma; UI; UX; Прототипирование; Дизайн интерфейсов
+      About me
+      Designed application interfaces and interactive prototypes, conducted usability studies.
+  - id: designer-graphic
+    profession: designer
+    split: validation
+    expected:
+      positions: [Графический дизайнер]
+      skills: [figma, adobe photoshop, adobe illustrator, графический дизайн]
+      experience_years: 2
+    text: |
+      Учебное резюме другого вымышленного дизайнера.
+      Желаемая должность: Графический дизайнер
+      Общий опыт работы: 2 года
+      Ключевые компетенции
+      Figma; Adobe Photoshop; Adobe Illustrator; Графический дизайн
+      О себе
+      Создавал макеты рекламных материалов, иллюстрации и фирменный стиль.

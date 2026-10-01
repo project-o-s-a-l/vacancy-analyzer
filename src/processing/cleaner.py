@@ -29,7 +29,5 @@ def clean_html(value: str | None) -> str:
     parser.feed(value or "")
     parser.close()
     return "\n".join(
-        line
-        for part in "".join(parser.parts).splitlines()
-        if (line := " ".join(part.split()))
+        line for part in "".join(parser.parts).splitlines() if (line := " ".join(part.split()))
     )

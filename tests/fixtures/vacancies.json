@@ -1,0 +1,96 @@
+{
+  "reference_time": "2026-10-16T00:00:00Z",
+  "profile": {
+    "skills": {
+      "python": {
+        "level": "advanced",
+        "years": 3
+      },
+      "fastapi": {
+        "level": "intermediate"
+      },
+      "postgresql": {
+        "level": "intermediate"
+      },
+      "docker": {
+        "level": "intermediate"
+      }
+    },
+    "experience_years": 3,
+    "preferences": {
+      "positions": [
+        "python developer",
+        "backend developer"
+      ],
+      "remote": "preferred",
+      "salary_min": 150000,
+      "currency": "RUB",
+      "salary_gross": true
+    }
+  },
+  "vacancies": [
+    {
+      "source": "hh",
+      "source_id": "demo-1",
+      "url": "https://example.com/vacancies/demo-1",
+      "title": "Python Backend Developer",
+      "company": "Демонстрационная компания A",
+      "description": "<p>Разработка API: Python 3, FastAPI, PostgreSQL и Docker.</p>",
+      "skills": [
+        "Python",
+        "FastAPI"
+      ],
+      "salary_from": 180000,
+      "salary_to": 250000,
+      "currency": "RUB",
+      "salary_gross": true,
+      "salary_period": "MONTH",
+      "experience": "3-6",
+      "location": "Москва",
+      "remote": true,
+      "archived": false,
+      "published_at": "2026-10-15T09:00:00Z",
+      "raw_payload": {}
+    },
+    {
+      "source": "hh",
+      "source_id": "demo-2",
+      "url": "https://example.com/vacancies/demo-2",
+      "title": "Python Data Engineer",
+      "company": "Демонстрационная компания B",
+      "description": "<p>Python, SQL, Kafka, Airflow и Spark.</p>",
+      "skills": [
+        "Python",
+        "SQL"
+      ],
+      "experience": "3-6",
+      "location": "Москва",
+      "remote": true,
+      "archived": false,
+      "published_at": "2026-10-14T09:00:00Z",
+      "raw_payload": {}
+    },
+    {
+      "source": "hh",
+      "source_id": "demo-3",
+      "url": "https://example.com/vacancies/demo-3",
+      "title": "Senior Java Developer",
+      "company": "Демонстрационная компания C",
+      "description": "<p>Java, Kafka, Kubernetes.</p>",
+      "skills": [
+        "Java"
+      ],
+      "salary_from": 250000,
+      "salary_to": 350000,
+      "currency": "RUB",
+      "salary_gross": true,
+      "salary_period": "MONTH",
+      "experience": "6+",
+      "location": "Санкт-Петербург",
+      "remote": false,
+      "archived": false,
+      "published_at": "2026-10-01T09:00:00Z",
+      "raw_payload": {}
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+# Example only: replace these skills and preferences with your own.
+skills:
+  python:
+    level: advanced
+    years: 3
+  fastapi:
+    level: intermediate
+    years: 1.5
+  postgresql:
+    level: intermediate
+  docker:
+    level: intermediate
+experience_years: 3
+# Optional self-reported documents; no document verification is performed.
+qualifications: []
+preferences:
+  positions:
+    - python developer
+    - backend developer
+  remote: preferred
+  locations: []
+  salary_min: 150000
+  currency: RUB
+  salary_gross: true
+  salary_required: false
+  locations_required: false

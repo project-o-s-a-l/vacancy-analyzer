@@ -1,5 +1,17 @@
 # Vacancy Analyzer
 
-Модели вакансии, профиля кандидата и интерфейс источника данных. Модель проверяет обязательные поля, нормализует даты и хранит исходные данные отдельно от параметров поиска.
+Собирает вакансии HeadHunter и подбирает их по навыкам, опыту и условиям кандидата. Команды доступны через CLI и Telegram.
 
-Для установки в виртуальном окружении выполните `python -m pip install -e .`. Для запуска тестов установите pytest и выполните `python -m pytest -q`.
+Для сбора установите отдельный пакет адаптеров источников с точками входа `vacancy_analyzer.sources`.
+
+## Запуск
+
+В виртуальном окружении с Python 3.12 или новее выполните `python -m pip install -e .`. В свежем клоне скопируйте `.env.example` в `.env`, затем запустите PostgreSQL и примените миграции.
+
+```sh
+docker compose up -d --wait postgres
+alembic upgrade head
+vacancy-analyzer --help
+```
+
+Сохраните настройки кандидата в `config/profile.local.yaml` по [примеру](config/profile.example.yaml). После сбора каталога выполните `vacancy-analyzer rank --profile config/profile.local.yaml --top 5`. Для бота укажите `TELEGRAM_BOT_TOKEN` в локальном окружении и выполните `vacancy-analyzer bot`.

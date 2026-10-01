@@ -1,0 +1,13 @@
+# Paths are relative to this file. Replace them with your completed datasets.
+# Versions of the same person's resume must use the same group alias.
+training:
+  - dataset: ../data/experiments/candidate-a/dataset.json
+    labels: ../data/experiments/candidate-a/labels.csv
+    group: candidate-a
+  - dataset: ../data/experiments/candidate-b/dataset.json
+    labels: ../data/experiments/candidate-b/labels.csv
+    group: candidate-b
+validation:
+  - dataset: ../data/experiments/candidate-c/dataset.json
+    labels: ../data/experiments/candidate-c/labels.csv
+    group: candidate-c
