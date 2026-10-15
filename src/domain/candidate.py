@@ -4,12 +4,13 @@ from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from domain.professional import ProfessionalFacts
 from domain.qualifications import Qualification
 
 
 class Skill(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    level: Literal["beginner", "intermediate", "advanced"] = "intermediate"
+    level: Literal["beginner", "intermediate", "advanced"] | None = None
     years: float | None = Field(default=None, ge=0, allow_inf_nan=False)
 
 
@@ -53,6 +54,7 @@ class CandidateProfile(BaseModel):
     experience_years: float | None = Field(default=None, ge=0, allow_inf_nan=False)
     preferences: Preferences = Field(default_factory=Preferences)
     qualifications: list[Qualification] = Field(default_factory=list, max_length=20)
+    professional_facts: ProfessionalFacts | None = None
 
     @field_validator("skills")
     @classmethod

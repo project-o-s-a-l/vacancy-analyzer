@@ -50,7 +50,14 @@ async def rank(sessions, profile=None, owner=42, **kwargs):
 
 
 def dumped(ranking):
-    return [(v.model_dump(mode="json"), m.model_dump(mode="json")) for v, m in ranking]
+    # A compatibility read can rebuild the same facts at a later observation time.
+    return [
+        (
+            v.model_dump(mode="json", exclude={"professional_facts": {"extracted_at"}}),
+            m.model_dump(mode="json"),
+        )
+        for v, m in ranking
+    ]
 
 
 async def test_repeat_matches_full_calculation_and_persists_across_sessions(

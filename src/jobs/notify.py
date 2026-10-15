@@ -15,6 +15,7 @@ from domain.delivery import DeliveryFailure, RecommendationSender
 from domain.matching import MatchResult
 from domain.serving_ranker import RankerPolicy
 from domain.vacancy_duplicates import vacancy_duplicate_key
+from jobs.admission import admit
 from jobs.rank import rank_recent
 from jobs.saved_selections import vacancy_revision
 from observability import bind_context, emit_event, operation
@@ -108,22 +109,14 @@ class NotificationService:
                             VacancyRepository(session), self.profile, days=self.fresh_days, limit=1
                         )
                     )
-        unseen = []
-        seen_keys = set()
-        post_excluded = 0
-        for vacancy, match in ranking:
-            key = vacancy_duplicate_key(vacancy)
-            if (
-                vacancy.id in blocked
-                or key is not None
-                and (key in blocked_keys or key in seen_keys)
-            ):
-                post_excluded += 1
-                continue
-            unseen.append((vacancy, match))
-            if key is not None:
-                seen_keys.add(key)
-        selected = [(vacancy, match) for vacancy, match in unseen if match.score >= self.min_score]
+        unseen, selected, displayed = admit(
+            ranking,
+            min_score=self.min_score,
+            top=self.top,
+            blocked=blocked,
+            blocked_keys=blocked_keys,
+        )
+        post_excluded = len(ranking) - len(unseen)
         code = (
             None
             if selected
@@ -147,7 +140,7 @@ class NotificationService:
             duration_ms=(time.monotonic() - started) * 1000,
         )
         if selected:
-            return selected[: self.top], None
+            return displayed, None
         if not ranking and not had_blocked:
             message = (
                 "Новых рекомендаций пока нет: в подборке нет активных вакансий, подходящих "
@@ -277,7 +270,15 @@ class NotificationService:
             user = await session.get(
                 TelegramUserModel, self.chat_id, with_for_update=True, populate_existing=True
             )
-            if user is not None and CandidateProfile.model_validate(user.profile) != self.profile:
+            from nlp.professional_facts import profile_input_revision
+            from scoring.serving_features import profile_revision
+            from storage.repositories.user_repository import read_profile
+
+            if user is not None and (
+                profile_input_revision(read_profile(user)) != profile_input_revision(self.profile)
+                or self.profile.professional_facts is not None
+                and profile_revision(read_profile(user)) != profile_revision(self.profile)
+            ):
                 skip("profile_changed")
                 return "stop"
             rows = await CandidateRepository(session).load_selected([vacancy.id])
@@ -328,6 +329,7 @@ class NotificationService:
                 self.chat_id,
                 vacancy.id,
                 exposure_context={
+                    "version": "recommendation-exposure-v2",
                     "profile": self.profile.model_dump(mode="json"),
                     "match": match.model_dump(mode="json"),
                     "rank": rank,

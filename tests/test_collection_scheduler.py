@@ -35,8 +35,8 @@ def candidate(position, skill):
 async def store(sessions, user_id, profile, state=None):
     async with sessions.begin() as session:
         repository = UserRepository(session)
-        await repository.register(user_id)
-        await repository.save(RegisteredUser(user_id, profile, state))
+        user = await repository.register(user_id)
+        await repository.save(RegisteredUser(user_id, profile, state, user.revision))
 
 
 def test_default_mode_uses_profiles_and_manual_queries_can_repeat():

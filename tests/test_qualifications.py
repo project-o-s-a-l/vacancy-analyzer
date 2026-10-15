@@ -324,7 +324,7 @@ async def test_postgres_document_round_trip_and_read_only_matching(postgres_sess
     async with postgres_sessions.begin() as session:
         await VacancyRepository(session).save(sample)
     stored = await UserService(postgres_sessions).get(42)
-    assert stored.profile == profile
+    assert stored.profile.model_copy(update={"professional_facts": None}) == profile
     assert (
         await NotificationService(
             postgres_sessions, stored.profile, chat_id=42, min_score=0
@@ -338,4 +338,6 @@ async def test_postgres_document_round_trip_and_read_only_matching(postgres_sess
         "declared_present",
         "declared_absent",
     }
-    assert (await UserService(postgres_sessions).get(42)).profile == profile
+    assert (await UserService(postgres_sessions).get(42)).profile.model_copy(
+        update={"professional_facts": None}
+    ) == profile

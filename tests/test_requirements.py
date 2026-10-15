@@ -292,19 +292,19 @@ async def test_postgres_profile_terms_and_original_description_remain_unchanged(
         "Требования: ведение учёта\nБудет плюсом: кадровое делопроизводство",
         explicit=["ведение учёта", "кадровое делопроизводство"],
     )
-    original = sample.model_dump(mode="json")
+    original = sample.model_dump(mode="json", exclude={"professional_facts"})
     async with postgres_sessions.begin() as session:
         await VacancyRepository(session).save(sample)
     service = NotificationService(postgres_sessions, profile, chat_id=42, min_score=0)
     items = await service.pending()
     assert len(items) == 1
     saved, match = items[0]
-    assert saved.model_dump(mode="json", exclude={"raw_payload"}) == {
+    assert saved.model_dump(mode="json", exclude={"raw_payload", "professional_facts"}) == {
         k: v for k, v in original.items() if k != "raw_payload"
     }
     async with postgres_sessions() as session:
         assert (await VacancyRepository(session).get_by_id(saved.id)).model_dump(
-            mode="json"
+            mode="json", exclude={"professional_facts"}
         ) == original
     assert match.missing_preferred == ["кадровое делопроизводство"]
     assert json.loads(match.model_dump_json())["requirements_version"] == RULES_VERSION

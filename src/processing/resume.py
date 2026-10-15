@@ -75,24 +75,35 @@ def _docx_text(data: bytes) -> str:
             entries = archive.infolist()
             if len(entries) > 500 or sum(item.file_size for item in entries) > 10 * 1024 * 1024:
                 raise ResumeError("DOCX слишком большой после распаковки. Отправьте TXT или PDF.")
-            xml = archive.read("word/document.xml")
+            documents = [archive.read("word/document.xml")]
+            documents += [
+                archive.read(item.filename)
+                for item in entries
+                if re.fullmatch(r"word/(?:header|footer)\d+\.xml", item.filename)
+            ]
     except (BadZipFile, KeyError) as exc:
         raise ResumeError(
             "Файл не является читаемым DOCX. Старый формат DOC не поддерживается."
         ) from exc
     # Reject DTDs rather than expanding document-defined entities.
-    if b"<!DOCTYPE" in xml.upper() or b"<!ENTITY" in xml.upper():
-        raise ResumeError("Не удалось прочитать структуру DOCX. Отправьте TXT или PDF.")
-    root = etree.fromstring(xml, parser=etree.XMLParser(resolve_entities=False, no_network=True))
     ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
-    return "\n".join(
-        "".join(
-            node.text or "" if node.tag == ns + "t" else "\n" if node.tag == ns + "br" else " "
-            for node in paragraph.iter()
-            if node.tag in {ns + "t", ns + "br", ns + "tab"}
+    parts = []
+    for xml in documents:
+        if b"<!DOCTYPE" in xml.upper() or b"<!ENTITY" in xml.upper():
+            raise ResumeError("Не удалось прочитать структуру DOCX. Отправьте TXT или PDF.")
+        root = etree.fromstring(
+            xml, parser=etree.XMLParser(resolve_entities=False, no_network=True)
         )
-        for paragraph in root.iter(ns + "p")
-    )
+        parts.extend(
+            "".join(
+                node.text or "" if node.tag == ns + "t" else "\n" if node.tag == ns + "br" else " "
+                for node in paragraph.iter()
+                if node.tag in {ns + "t", ns + "br", ns + "tab"}
+                and next(node.iterancestors(ns + "p"), None) is paragraph
+            )
+            for paragraph in root.iter(ns + "p")
+        )
+    return "\n".join(parts)
 
 
 def _pdf_text(data: bytes) -> str:
@@ -109,6 +120,14 @@ def _pdf_text(data: bytes) -> str:
     total = 0
     for page in reader.pages:
         part = page.extract_text() or ""
+        resources = page.get("/Resources", {})
+        if hasattr(resources, "get_object"):
+            resources = resources.get_object()
+        if not part.strip() and resources.get("/XObject"):
+            raise ResumeError(
+                "Часть PDF содержит изображения без читаемого текста. "
+                "Для скана нужен текстовый слой либо резюме в DOCX или TXT."
+            )
         total += len(part)
         if total > MAX_RESUME_TEXT:
             raise ResumeError("В резюме слишком много текста: максимум 60 000 символов.")

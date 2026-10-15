@@ -103,6 +103,15 @@ class VacancyModel(Base):
     search_revision: Mapped[str | None] = mapped_column(String(64))
     search_document: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     search_terms: Mapped[list | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    professional_facts: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
+    )
+    facts_input_revision: Mapped[str | None] = mapped_column(String(64))
+    projection_revision: Mapped[str | None] = mapped_column(String(64))
+    projection_contract: Mapped[str | None] = mapped_column(String(64))
+    facts_revision: Mapped[str | None] = mapped_column(String(64))
+    projection_facts_revision: Mapped[str | None] = mapped_column(String(64))
+    facts_status: Mapped[str | None] = mapped_column(String(16))
 
 
 class VacancySnapshot(Base):
@@ -116,3 +125,18 @@ class VacancySnapshot(Base):
     payload_hash: Mapped[str] = mapped_column(String(64))
     raw_payload: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class VacancyFactSource(Base):
+    """Immutable structured source linked to the original raw snapshot and fact input."""
+
+    __tablename__ = "vacancy_fact_sources"
+    vacancy_id: Mapped[UUID] = mapped_column(
+        ForeignKey("vacancies.id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[str] = mapped_column(String(64), primary_key=True)
+    input_revision: Mapped[str] = mapped_column(String(64), index=True)
+    content_revision: Mapped[str] = mapped_column(String(64))
+    raw_payload_hash: Mapped[str] = mapped_column(String(64))
+    source_payload: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

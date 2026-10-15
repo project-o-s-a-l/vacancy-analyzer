@@ -59,13 +59,15 @@ async def test_plain_resume_summary_is_reviewed_before_it_changes_profile(sessio
     dispatcher = build_dispatcher(users)
     await dispatcher.feed_update(bot, command_update(SUMMARY))
     draft = await users.resumes.pending(42)
-    assert draft and draft.version == "resume-ollama-v1"
+    assert draft and draft.version == "resume-v5-ollama"
     assert (await users.get(42)).profile == before.profile
     analyzer.analyze.assert_awaited_once_with(SUMMARY)
     assert "Предварительный профиль" in recording.requests[-1].text
     await dispatcher.feed_update(bot, callback_update("resume:confirm:" + draft.token))
     user = await users.get(42)
-    assert list(user.profile.skills) == ["python"]
+    assert "python" in user.profile.skills
+    if existing:
+        assert SUMMARY in user.profile.skills
     assert user.profile.preferences.positions == ["backend python developer"]
     assert user.profile.experience_years == 0 and user.form_state is None
     assert user.profile.preferences.locations == before.profile.preferences.locations
@@ -81,7 +83,9 @@ async def test_manual_skill_list_and_explicit_resume_do_not_need_model(sessions)
     await build_dispatcher(users).feed_update(bot, command_update("Python, SQL"))
     assert set((await users.get(42)).profile.skills) == {"python", "sql"}
     assert (await users.get(42)).form_state == "setup:experience"
-    await users.resumes.prepare(42, TEXT)
+    await users.resumes.prepare(
+        42, "Желаемая должность: Java Developer\nНавыки: Java, SQL\nОбщий опыт: 2 года"
+    )
     analyzer.analyze.assert_not_awaited()
 
 
@@ -92,7 +96,7 @@ async def test_model_failure_keeps_active_profile_and_creates_reviewable_rules_d
     analyzer = SimpleNamespace(analyze=AsyncMock(side_effect=ResumeAnalysisError("unavailable")))
     users = UserService(sessions, resume_analyzer=analyzer)
     draft = await users.resumes.prepare(42, SUMMARY)
-    assert (await users.get(42)).profile == profile
+    assert (await users.get(42)).profile.model_copy(update={"professional_facts": None}) == profile
     assert any("Локальный разбор недоступен" in note for note in draft.extraction.notes)
     assert "Показаны прежние значения" in render_resume(draft, profile)
     analyzer.analyze.assert_awaited_once()
@@ -123,7 +127,8 @@ async def test_rule_fields_and_warnings_are_merged_without_false_missing_field_n
     await users.register(42)
     draft = await users.resumes.prepare(42, "Бухгалтер\nНавыки: Excel\nОбщий опыт: 0 лет")
     assert draft.extraction.skills == ["excel"] and draft.extraction.positions == ["Бухгалтер"]
-    assert draft.extraction.experience_years == 0 and draft.extraction.notes == []
+    assert draft.extraction.experience_years == 0
+    assert not any("не определ" in note for note in draft.extraction.notes)
 
 
 async def test_conflicting_explicit_totals_are_not_overwritten_by_model_guess(sessions):
@@ -373,22 +378,24 @@ async def test_draft_confirmation_is_atomic_persistent_and_preserves_preferences
     await store_profile(sessions, 42, profile)
     users = UserService(sessions)
     draft = await users.resumes.prepare(42, TEXT)
-    assert (await users.get(42)).profile == profile
+    assert (await users.get(42)).profile.model_copy(update={"professional_facts": None}) == profile
     restarted = ResumeService(sessions)
     assert await restarted.pending(42) == draft
     preview = render_resume(draft, profile)
     assert "Java Developer" in preview and "ещё не применён" in preview
     user = await restarted.confirm(42, draft.token)
-    assert set(user.profile.skills) == {"java", "sql"}
+    assert set(user.profile.skills) == {*profile.skills, "java", "sql"}
     assert user.profile.experience_years == 2.5
-    assert user.profile.preferences.positions == ["Java Developer"]
+    assert user.profile.preferences.positions == list(
+        dict.fromkeys([*profile.preferences.positions, "Java Developer"])
+    )
     assert user.profile.preferences.salary_min == profile.preferences.salary_min
     assert user.profile.qualifications == profile.qualifications
     assert user.form_state is None
     assert await restarted.pending(42) is None
     async with sessions() as session:
         row = await session.get(ResumeModel, 42)
-        assert row.text == TEXT and row.parser_version == "resume-v4"
+        assert row.text == TEXT and row.parser_version == "resume-v5"
     with pytest.raises(ValueError):
         await restarted.confirm(42, draft.token)
 
@@ -408,7 +415,7 @@ async def test_stale_or_foreign_drafts_cannot_overwrite_profiles(sessions, profi
     with pytest.raises(ValueError, match="Профиль изменился"):
         await users.resumes.confirm(42, second.token)
     assert (await users.get(42)).profile.experience_years == 7
-    assert (await users.get(99)).profile == profile
+    assert (await users.get(99)).profile.model_copy(update={"professional_facts": None}) == profile
 
 
 async def test_cancel_delete_and_empty_extraction_do_not_erase_profile(sessions, profile):
@@ -416,7 +423,7 @@ async def test_cancel_delete_and_empty_extraction_do_not_erase_profile(sessions,
     resumes = ResumeService(sessions)
     draft = await resumes.prepare(42, "Текст резюме с описанием работы без явных разделов.")
     user = await resumes.confirm(42, draft.token)
-    assert user.profile == profile
+    assert user.profile.model_copy(update={"professional_facts": None}) == profile
     new = await resumes.prepare(42, TEXT)
     await resumes.cancel(42, new.token)
     async with sessions() as session:
@@ -424,7 +431,9 @@ async def test_cancel_delete_and_empty_extraction_do_not_erase_profile(sessions,
     await resumes.delete(42)
     async with sessions() as session:
         assert await session.get(ResumeModel, 42) is None
-    assert (await UserService(sessions).get(42)).profile == profile
+    assert (await UserService(sessions).get(42)).profile.model_copy(
+        update={"professional_facts": None}
+    ) == profile
 
 
 async def test_empty_profile_needs_skills_after_confirmation(sessions):
@@ -568,6 +577,6 @@ async def test_postgres_resume_confirmation_isolation_and_concurrency(postgres_s
         return_exceptions=True,
     )
     assert sum(isinstance(value, ValueError) for value in results) == 1
-    assert (await users.get(99)).profile == profile
+    assert (await users.get(99)).profile.model_copy(update={"professional_facts": None}) == profile
     async with postgres_sessions() as session:
         assert await session.scalar(select(func.count()).select_from(ResumeModel)) == 1

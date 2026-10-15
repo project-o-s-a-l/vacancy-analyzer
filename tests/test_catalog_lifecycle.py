@@ -88,8 +88,19 @@ async def test_plan_persists_owner_and_original_and_removes_stale_mapping(catalo
     await load_profile_queries(sessions, SearchQuery(text="unused"))
     async with sessions.begin() as session:
         assert (await session.get(SearchPlanModel, 1)).updated_at == updated
-        await UserRepository(session).save(RegisteredUser(1, candidate("Бухгалтер"), None))
-        await UserRepository(session).save(RegisteredUser(2, candidate("Unity"), "setup:skills"))
+        await UserRepository(session).save(
+            RegisteredUser(
+                1, candidate("Бухгалтер"), None, (await UserRepository(session).get(1)).revision
+            )
+        )
+        await UserRepository(session).save(
+            RegisteredUser(
+                2,
+                candidate("Unity"),
+                "setup:skills",
+                (await UserRepository(session).get(2)).revision,
+            )
+        )
     queries = await load_profile_queries(sessions, SearchQuery(text="unused"))
     assert [q.text for q in queries] == ["Бухгалтер"]
     async with sessions() as session:

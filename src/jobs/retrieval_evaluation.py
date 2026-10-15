@@ -20,7 +20,6 @@ from scoring import rank_vacancies
 from scoring.retrieval import (
     document_terms,
     retrieval_eligibility,
-    search_document,
 )
 from storage.payloads import payload_hash
 from storage.repositories.candidate_repository import CandidateRepository
@@ -32,18 +31,26 @@ class MemoryCandidateSource:
     vacancy = staticmethod(CandidateRepository.vacancy)
 
     def __init__(self, vacancies):
+        from nlp.professional_facts import vacancy_facts
+        from scoring.fact_projection import fact_projection, projection_contract
+
         self.rows = []
         for vacancy in vacancies:
-            document = search_document(vacancy.model_dump())
+            vacancy = vacancy.model_copy(
+                update={"professional_facts": vacancy.professional_facts or vacancy_facts(vacancy)}
+            )
+            document = fact_projection(vacancy, vacancy.professional_facts)
             self.rows.append(
-                vacancy.model_dump(exclude={"raw_payload"})
+                vacancy.model_dump(exclude={"raw_payload", "professional_facts"})
                 | {
+                    "professional_facts": vacancy.professional_facts,
                     "lexical_document": document,
                     "lexical_version": document["version"],
                     "lexical_revision": analysis_input_hash(vacancy),
                     "source_revision": analysis_input_hash(vacancy),
                     "source_payload_hash": payload_hash(vacancy.raw_payload),
                     "duplicate_group": vacancy_duplicate_key(vacancy),
+                    "lexical_contract": projection_contract(),
                 }
             )
         self.rows.sort(key=lambda r: (-r["published_at"].timestamp(), r["source_id"], str(r["id"])))
@@ -53,13 +60,20 @@ class MemoryCandidateSource:
             return  # Frozen documents are always current; no repair lane.
         batch = []
         for row in self.rows:
-            vacancy = self.vacancy(row)
+            # Same boundary as SQL: rich facts/analysis are loaded only for retained IDs.
+            projection = {
+                key: value
+                for key, value in row.items()
+                if key not in {"professional_facts", "analysis"}
+            }
+            vacancy = self.vacancy(projection)
             if not is_fresh(vacancy, now=options["now"]):
                 continue
             if options["since"] and vacancy.published_at < options["since"]:
                 continue
             if options["category"] and (
-                not vacancy.analysis or vacancy.analysis.extraction.category != options["category"]
+                not row.get("analysis")
+                or row["analysis"]["extraction"]["category"] != options["category"].value
             ):
                 continue
             if (
@@ -70,7 +84,7 @@ class MemoryCandidateSource:
             overlap = bool(query.terms.intersection(document_terms(row["lexical_document"])))
             if overlap != options["positive"]:
                 continue
-            batch.append(row)
+            batch.append(projection)
             if len(batch) == options["batch_size"]:
                 yield batch
                 batch = []
@@ -79,6 +93,11 @@ class MemoryCandidateSource:
 
     async def load_selected(self, ids):
         return [r for r in self.rows if r["id"] in ids]
+
+    async def diagnostic_counts(self, profile, **options):
+        # Memory adapter has no SQL diagnostics. Selection counters are supplied
+        # by the shared selector; do not confuse these with production DB cost.
+        return {}
 
 
 def _recall(expected, actual):
@@ -90,9 +109,13 @@ async def evaluate_retrieval(bundle: Path, *, ks=(16, 32, 64, 128, 200, 500)):
     now = catalog.reference_time
     source = MemoryCandidateSource(catalog.vacancies)
     labels = defaultdict(set)
+    draft_labels = defaultdict(set)
     for row in judgments:
-        if row.relevance is not None and row.relevance >= 2:
+        if row.origin == "human" and row.relevance is not None and row.relevance >= 2:
             labels[row.case_id].add(row.vacancy_key)
+        elif row.origin == "assistant_draft" and row.relevance is not None and row.relevance >= 2:
+            draft_labels[row.case_id].add(row.vacancy_key)
+    complete_human = all(row.origin == "human" for row in judgments)
     reference, recent = {}, {}
     for case in cases.cases:
         active = [v for v in catalog.vacancies if is_fresh(v, now=now)]
@@ -137,8 +160,12 @@ async def evaluate_retrieval(bundle: Path, *, ks=(16, 32, 64, 128, 200, 500)):
                     "eligible_relevant": len(positives & eligible),
                     "recalled": len(positives & chosen),
                     "eligible_recalled": len(positives & eligible & chosen),
-                    "recall": _recall(positives, chosen),
-                    "eligible_recall": _recall(positives & eligible, chosen),
+                    "recall": _recall(positives, chosen) if complete_human else None,
+                    "eligible_recall": _recall(positives & eligible, chosen)
+                    if complete_human
+                    else None,
+                    "pooled_human_recall": _recall(positives, chosen),
+                    "assistant_draft_recall_diagnostic": _recall(draft_labels[case.id], chosen),
                     "exhaustive_top5_recall": _recall(reference[case.id], chosen),
                     "legacy_recent_recall": _recall(positives, set(recent[case.id])),
                     "seconds": elapsed,
@@ -162,11 +189,13 @@ async def evaluate_retrieval(bundle: Path, *, ks=(16, 32, 64, 128, 200, 500)):
             group = [e for e in entries if e["profession"] == name]
             count = sum(e["eligible_relevant"] for e in group)
             by_profession[name] = (
-                sum(e["eligible_recalled"] for e in group) / count if count else None
+                sum(e["eligible_recalled"] for e in group) / count
+                if count and complete_human
+                else None
             )
         return {
             "eligible_recall": sum(e["eligible_recalled"] for e in entries) / relevant
-            if relevant
+            if relevant and complete_human
             else None,
             "by_profession": by_profession,
             "exhaustive_top5_recall": statistics.mean(
@@ -188,7 +217,8 @@ async def evaluate_retrieval(bundle: Path, *, ks=(16, 32, 64, 128, 200, 500)):
         )
         training = experiment["training"]
         if (
-            chosen_k is None
+            complete_human
+            and chosen_k is None
             and training["eligible_recall"] is not None
             and training["eligible_recall"] >= 0.95
             and all(value is None or value >= 0.9 for value in training["by_profession"].values())
@@ -202,7 +232,9 @@ async def evaluate_retrieval(bundle: Path, *, ks=(16, 32, 64, 128, 200, 500)):
         "manifest_hash": payload_hash(manifest),
         "labels_hash": hashlib.sha256((bundle / "labels.jsonl").read_bytes()).hexdigest(),
         "label_origins": sorted({row.origin for row in judgments}),
-        "human_quality_ready": all(row.origin == "human" for row in judgments),
+        "human_quality_ready": complete_human,
+        "metric_scope": "full_human_catalog" if complete_human else "partial_human_pool",
+        "official_protocol": "evaluation-run/evaluation-compare (F01); this is legacy diagnostics",
         "implementation_hash": payload_hash(
             {
                 "matching": implementation_hash(),

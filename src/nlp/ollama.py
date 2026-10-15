@@ -1,7 +1,9 @@
 """Bounded, schema-constrained local extraction; no tools or external API fallback."""
 
+import asyncio
 import json
 import logging
+import time
 
 import httpx
 from pydantic import ValidationError
@@ -76,6 +78,8 @@ experience_evidence — идентификатор фрагмента descriptio
 
 
 class OllamaVacancyAnalyzer:
+    total_seconds = 300
+
     def __init__(self, client: httpx.AsyncClient, *, model: str) -> None:
         self.client = client
         self.model = model
@@ -124,9 +128,77 @@ class OllamaVacancyAnalyzer:
         return analysis.model_copy(update={"extraction": extraction, "warnings": warnings})
 
     async def analyze(self, vacancy: Vacancy) -> VacancyAnalysis:
+        from nlp.vacancy_document import inference_documents
+
         document = vacancy_document(vacancy)
-        # HH's broad range remains in the catalog for fallback matching, not in the LLM input.
+        # Keep the one-request fast path. Large descriptions are covered by sections,
+        # never reduced to the first fitting subset of requirements.
         document.pop("source_experience")
+        if len(json.dumps(document, ensure_ascii=False)) <= 4500:
+            return await self._analyze_document(vacancy, document)
+        documents = inference_documents(vacancy, max_chars=3500)
+        outputs, failures = [], []
+        started = time.monotonic()
+        for index, block in enumerate(documents):
+            remaining = self.total_seconds - (time.monotonic() - started)
+            if index >= 64 or remaining <= 0:
+                failures.append("document_budget_exhausted")
+                break
+            block.pop("source_experience", None)
+            try:
+                async with asyncio.timeout(remaining):
+                    output = await self._analyze_document(vacancy, block)
+                    outputs.append(output)
+                    if output.input_scope != "full":
+                        failures.append("chunk_input_partial")
+            except TimeoutError:
+                failures.append("document_timeout")
+                break
+            except OllamaUnavailable:
+                failures.append("model_unavailable")
+                break
+            except VacancyAnalysisError:
+                failures.append("chunk_invalid")
+        if outputs:
+            result = outputs[0]
+        else:
+            from domain.vacancy_analysis import VacancyCategory
+
+            result = VacancyAnalysis(
+                model=self.model,
+                model_digest=self.model_digest or "unavailable",
+                pipeline_hash=pipeline_hash("vacancy_analysis", self.model),
+                input_hash=analysis_input_hash(vacancy),
+                extraction=VacancyExtraction(
+                    category=VacancyCategory.OTHER,
+                    specialization=None,
+                    role_evidence=vacancy.title[:800],
+                    responsibilities=[],
+                    skills=[],
+                    alternatives=[],
+                    experience_min_years=None,
+                    experience_evidence=None,
+                ),
+            )
+        return result.model_copy(
+            update={
+                "chunks": [output.extraction for output in outputs],
+                "processing_status": "partial" if failures else "complete",
+                "completed_chunks": len(outputs),
+                "total_chunks": len(documents),
+                "failure_codes": sorted(set(failures)),
+                "input_scope": "full",
+                "warnings": (
+                    ["Часть описания не обработана моделью; исходные факты сохранены"]
+                    if failures
+                    else []
+                ),
+            }
+        )
+
+    async def _analyze_document(self, vacancy: Vacancy, document: dict) -> VacancyAnalysis:
+        # HH's broad range remains in the catalog for fallback matching, not in the LLM input.
+        document.pop("source_experience", None)
         try:
             prepared = prepare_input(document, max_chars=MAX_INPUT_CHARS)
         except InputTooLarge as exc:

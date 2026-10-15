@@ -1,0 +1,401 @@
+{
+  "schema_version": "professional-facts-v1",
+  "document_id": "candidate:17",
+  "subject": "candidate",
+  "owner_id": 17,
+  "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+  "input_sha256": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+  "extractor": "profile-adapter",
+  "extractor_version": "professional-adapters-v1",
+  "extractor_contract": "d68941b4c6f1eee33091022ed5173819ac24e9e9b3c8087b382fa438acc699ac",
+  "model_id": null,
+  "model_digest": null,
+  "analysis_pipeline": null,
+  "policy_version": "facts-conservative-v1",
+  "extracted_at": "2026-11-02T00:00:00Z",
+  "reference_time": "2026-11-02T00:00:00Z",
+  "input_scope": "full",
+  "input_ranges": [],
+  "uncertainty_reasons": [],
+  "sources": [
+    {
+      "id": "profile:17",
+      "revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+      "kind": "profile"
+    },
+    {
+      "id": "resume-example:17",
+      "revision": "42067a1f3db9216021708a92373924c4dd49a85e3161e3f85a92a1822c5e73a6",
+      "kind": "resume"
+    }
+  ],
+  "facts": [
+    {
+      "id": "skill:2d0edc2f0650c5218a2cbe60",
+      "name": "python",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "user_confirmed",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "skills.python",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "kind": "skill",
+      "level": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "years": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "last_used": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "experience_total",
+      "id": "experience_total",
+      "name": "years",
+      "assertion": {
+        "status": "present",
+        "value": 3.0,
+        "origin": "user_confirmed",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "experience",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:positions",
+      "name": "positions",
+      "assertion": {
+        "status": "present",
+        "value": [],
+        "origin": "legacy_unknown",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "positions",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:remote",
+      "name": "remote",
+      "assertion": {
+        "status": "present",
+        "value": "any",
+        "origin": "legacy_unknown",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "remote",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:locations",
+      "name": "locations",
+      "assertion": {
+        "status": "present",
+        "value": [],
+        "origin": "legacy_unknown",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "locations",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:salary_min",
+      "name": "salary_min",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:currency",
+      "name": "currency",
+      "assertion": {
+        "status": "present",
+        "value": "RUB",
+        "origin": "legacy_unknown",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "salary",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:salary_gross",
+      "name": "salary_gross",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "legacy_unknown",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "salary",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:salary_required",
+      "name": "salary_required",
+      "assertion": {
+        "status": "present",
+        "value": false,
+        "origin": "legacy_unknown",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "constraints",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "preference",
+      "id": "preference:locations_required",
+      "name": "locations_required",
+      "assertion": {
+        "status": "present",
+        "value": false,
+        "origin": "legacy_unknown",
+        "evidence": [
+          {
+            "source_id": "profile:17",
+            "source_revision": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
+            "field": "constraints",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "id": "role:engineer",
+      "name": "Инженер",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "user_confirmed",
+        "evidence": [
+          {
+            "source_id": "resume-example:17",
+            "source_revision": "42067a1f3db9216021708a92373924c4dd49a85e3161e3f85a92a1822c5e73a6",
+            "field": "work_history.0",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "kind": "role",
+      "context": "held"
+    },
+    {
+      "id": "task:etl",
+      "name": "Обработка данных",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "user_confirmed",
+        "evidence": [
+          {
+            "source_id": "resume-example:17",
+            "source_revision": "42067a1f3db9216021708a92373924c4dd49a85e3161e3f85a92a1822c5e73a6",
+            "field": "work_history.0",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "kind": "task"
+    }
+  ],
+  "episodes": [
+    {
+      "id": "project:1",
+      "kind": "project",
+      "context": "unspecified",
+      "started_precision": "unknown",
+      "ended_precision": "unknown",
+      "organization": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "started": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "ended": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "ongoing": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "role_ids": [
+        "role:engineer"
+      ],
+      "skill_ids": [
+        "skill:2d0edc2f0650c5218a2cbe60"
+      ],
+      "task_ids": [
+        "task:etl"
+      ],
+      "evidence": [
+        {
+          "source_id": "resume-example:17",
+          "source_revision": "42067a1f3db9216021708a92373924c4dd49a85e3161e3f85a92a1822c5e73a6",
+          "field": "work_history.0",
+          "start": null,
+          "end": null,
+          "quote": null,
+          "section": null,
+          "interpretation": null
+        }
+      ]
+    }
+  ],
+  "requirements": [],
+  "alternatives": [],
+  "overlap_policy": "unaggregated"
+}

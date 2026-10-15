@@ -15,6 +15,7 @@ from pydantic import (
     model_validator,
 )
 
+from domain.professional import ProfessionalFacts
 from domain.vacancy_analysis import VacancyAnalysis
 
 NonEmpty = Annotated[str, Field(min_length=1)]
@@ -54,6 +55,7 @@ class Vacancy(BaseModel):
     collected_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     raw_payload: dict[str, JsonValue]
     analysis: VacancyAnalysis | None = None
+    professional_facts: ProfessionalFacts | None = None
 
     @field_validator("source", "source_id", "title", "company", mode="before")
     @classmethod

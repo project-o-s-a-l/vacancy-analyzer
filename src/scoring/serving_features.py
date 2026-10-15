@@ -5,8 +5,8 @@ import json
 from collections import Counter
 from functools import lru_cache
 from math import sqrt
-from pathlib import Path
 
+from domain.contracts import feature_dependencies
 from domain.matching_dataset import PairFeatures
 from domain.retrieval import RetrievalParameters
 from nlp.text import word_tokens
@@ -33,28 +33,23 @@ def digest(value):
 
 
 def profile_revision(profile):
-    return digest(profile.model_dump(mode="json"))
+    return digest(
+        dict(
+            profile=profile.model_dump(mode="json", exclude={"professional_facts"}),
+            facts=profile.professional_facts.revision if profile.professional_facts else None,
+        )
+    )
 
 
 @lru_cache(maxsize=1)
 def feature_contract():
-    root = Path(__file__).parents[1]
-    # Conservative compatibility: changes to normalization, admissibility,
-    # component calculation or schemas require evaluation of a new artifact.
-    files = [
-        p
-        for module in ("domain", "scoring", "nlp", "processing")
-        for p in (root / module).glob("*.py")
-    ]
     return digest(
         {
             "spec": FEATURE_SPEC,
             "features": FEATURE_NAMES,
             "retrieval": RetrievalParameters().model_dump(),
-            "sources": {
-                p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-                for p in sorted(files)
-            },
+            "dependencies": feature_dependencies(),
+            "schema": PairFeatures.model_json_schema(),
         }
     )
 
@@ -104,7 +99,15 @@ def pair_features(vacancy, profile, match):
 def shown_context(vacancy, profile, match, rank):
     features = pair_features(vacancy, profile, match)
     return {
-        "version": "ranking-exposure-v1",
+        "version": "ranking-exposure-v2",
+        "facts_schema": "professional-facts-v1",
+        "profile_schema": "candidate-profile-v2",
+        "vacancy_facts_revision": vacancy.professional_facts.revision
+        if vacancy.professional_facts
+        else None,
+        "candidate_facts_revision": profile.professional_facts.revision
+        if profile.professional_facts
+        else None,
         "feature_contract": feature_contract(),
         "feature_spec": FEATURE_SPEC,
         "profile_revision": profile_revision(profile),

@@ -1,15 +1,16 @@
 """Transparent heuristic scores. Missing evidence gets no invented positive match."""
 
 from datetime import UTC, datetime
+from time import perf_counter
 
 from domain import CandidateProfile, Vacancy
 from domain.matching import MatchResult
 from nlp.analysis_identity import current_vacancy_analysis as current_analysis
 from nlp.extraction import skill_key
-from nlp.qualifications import QUALIFICATIONS_VERSION, compare_qualifications, is_qualification
-from nlp.requirements import RULES_VERSION, analyze_requirements
+from nlp.qualifications import QUALIFICATIONS_VERSION, compare_qualifications
+from nlp.requirements import RULES_VERSION
 from nlp.titles import title_tokens
-from nlp.vacancy_requirements import analyzed_requirements
+from nlp.vacancy_requirements import matching_requirements
 from processing.cleaner import clean_html
 from scoring.eligibility import check_eligibility, location_matches, salary_comparable
 from scoring.skill_score import match_skills
@@ -37,7 +38,7 @@ def score_vacancy(
         text is None or clean_html(vacancy.description_html) == clean_html(text)
     ):
         text = vacancy.description_html
-    qualifications, skill_text = compare_qualifications(
+    qualifications, _ = compare_qualifications(
         text, profile.qualifications, today=now.astimezone(UTC).date(), explicit=vacancy.skills
     )
     eligibility = check_eligibility(vacancy, profile, now=now, qualifications=qualifications)
@@ -46,15 +47,7 @@ def score_vacancy(
     use_model_requirements = bool(
         analysis and analysis.input_scope == "full" and analysis.requirements_source == "llm"
     )
-    requirements = (
-        analyzed_requirements(analysis)
-        if use_model_requirements
-        else analyze_requirements(
-            skill_text,
-            [value for value in vacancy.skills if not is_qualification(value)],
-            vocabulary=[value for value in profile.skills if not is_qualification(value)],
-        )
-    )
+    requirements = matching_requirements(vacancy, profile.skills)
     skills = match_skills(
         profile.skills,
         requirements.names("required"),
@@ -197,12 +190,26 @@ def rank_vacancies(
     *,
     now: datetime | None = None,
     include_ineligible: bool = False,
+    trace: dict | None = None,
 ) -> list[tuple[Vacancy, MatchResult]]:
     reference_time = now or datetime.now(UTC)
+    started = perf_counter()
     results = [
         (vacancy, score_vacancy(vacancy, profile, now=reference_time)) for vacancy in vacancies
     ]
-    return sorted(
-        [(vacancy, result) for vacancy, result in results if result.eligible or include_ineligible],
+    if trace is not None:
+        trace["rule_scoring_seconds"] = perf_counter() - started
+    started = perf_counter()
+    eligible = [
+        (vacancy, result) for vacancy, result in results if result.eligible or include_ineligible
+    ]
+    if trace is not None:
+        trace["eligibility_filter_seconds"] = perf_counter() - started
+    started = perf_counter()
+    ranked = sorted(
+        eligible,
         key=lambda pair: (-pair[1].score, -pair[0].published_at.timestamp(), pair[0].source_id),
     )
+    if trace is not None:
+        trace["rule_sort_seconds"] = perf_counter() - started
+    return ranked

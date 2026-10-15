@@ -19,3 +19,15 @@ class ResumeModel(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     draft: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     processing_job_id: Mapped[UUID | None] = mapped_column(Uuid)
+
+
+class ResumeSourceModel(Base):
+    """Immutable normalized texts of confirmed imports, addressed by content revision."""
+
+    __tablename__ = "resume_sources"
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("telegram_users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    revision: Mapped[str] = mapped_column(String(64), primary_key=True)
+    text: Mapped[str] = mapped_column(Text)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

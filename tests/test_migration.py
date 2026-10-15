@@ -62,6 +62,7 @@ def test_alembic_connection_failure_is_actionable_and_closes_engine(monkeypatch)
     )
     monkeypatch.setattr(database, "create_engine", lambda url: engine)
     monkeypatch.setattr(settings, "Settings", lambda: SimpleNamespace(database_url="test"))
+    monkeypatch.setattr(context, "config", SimpleNamespace(attributes={}), raising=False)
     monkeypatch.setattr(context, "is_offline_mode", lambda: False)
     path = Path(__file__).parents[1] / "alembic/env.py"
     spec = importlib.util.spec_from_file_location("failed_connection_migration_env", path)

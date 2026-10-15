@@ -207,9 +207,9 @@ async def test_callback_cannot_edit_another_users_profile(sessions, profile):
     dispatcher = build_dispatcher(users)
     await dispatcher.feed_update(bot, callback_update("profile:skills", user_id=99, chat_id=42))
     assert recording.requests == []
-    assert (await users.get(42)).profile == profile
+    assert (await users.get(42)).profile.model_copy(update={"professional_facts": None}) == profile
     await dispatcher.feed_update(bot, callback_update("profile:skills:42", user_id=99))
-    assert (await users.get(42)).profile == profile
+    assert (await users.get(42)).profile.model_copy(update={"professional_facts": None}) == profile
     assert (await users.get(99)).form_state == "setup:skills"
 
 

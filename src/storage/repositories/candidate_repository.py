@@ -6,6 +6,7 @@ from sqlalchemy import Text, and_, cast, exists, func, not_, or_, select, text, 
 from sqlalchemy.dialects.postgresql import ARRAY, array
 
 from domain import Vacancy
+from scoring.fact_projection import projection_contract
 from storage.models import VacancyModel as V
 from storage.models.vacancy import SEARCH_REPAIR_PREDICATE
 from storage.repositories.vacancy_repository import _aware
@@ -26,6 +27,7 @@ class CandidateRepository:
         names = set(Vacancy.model_fields) - {"raw_payload"}
         if not analysis:
             names.remove("analysis")
+            names.remove("professional_facts")
         return [
             *(getattr(V, name) for name in sorted(names)),
             V.search_document.label("lexical_document"),
@@ -34,6 +36,9 @@ class CandidateRepository:
             V.content_revision.label("source_revision"),
             V.raw_payload_hash.label("source_payload_hash"),
             V.duplicate_key.label("duplicate_group"),
+            V.projection_contract.label("lexical_contract"),
+            V.facts_revision.label("facts_revision"),
+            V.projection_facts_revision.label("projection_facts_revision"),
         ]
 
     @staticmethod
@@ -42,7 +47,15 @@ class CandidateRepository:
         for name in ("published_at", "collected_at", "valid_until"):
             if values.get(name) is not None:
                 values[name] = _aware(values[name])
-        return Vacancy.model_validate(values | {"raw_payload": {}})
+        vacancy = Vacancy.model_validate(values | {"raw_payload": {}})
+        if "professional_facts" in row:
+            from nlp.professional_facts import vacancy_facts, vacancy_facts_compatible
+
+            if vacancy.professional_facts is None or not vacancy_facts_compatible(
+                vacancy.professional_facts, vacancy
+            ):
+                vacancy.professional_facts = vacancy_facts(vacancy, legacy=True)
+        return vacancy
 
     @staticmethod
     def _state_predicate(now, since, category):
@@ -132,8 +145,15 @@ class CandidateRepository:
             self._required_predicate(profile, include_ineligible),
             self._unblocked_predicate(excluded_ids, excluded_keys),
         )
-        unknown = text("(" + SEARCH_REPAIR_PREDICATE + ")")
-        known = text("NOT (" + SEARCH_REPAIR_PREDICATE + ")")
+        unknown = or_(
+            text("(" + SEARCH_REPAIR_PREDICATE + ")"),
+            V.projection_contract.is_(None),
+            V.projection_contract != projection_contract(),
+            V.facts_revision.is_(None),
+            V.projection_facts_revision.is_(None),
+            V.projection_facts_revision != V.facts_revision,
+        )
+        known = not_(unknown)
         if positive is None:
             statement = statement.where(unknown)
         elif query.terms:

@@ -123,8 +123,11 @@ async def audit_cases(
             draft = await users.resumes.prepare(user_id, text, format=kind)
             unchanged = (await users.get(user_id)).profile == before.profile
             user = await users.resumes.confirm(user_id, draft.token)
-            expected = case.expected.model_dump(exclude={"notes"})
-            actual = draft.extraction.model_dump(exclude={"notes"})
+            # This historical audit labels only these three fields. structured resume facts
+            # have their own evaluation; timestamps/costs are not gold annotations.
+            fields = {"skills", "positions", "experience_years"}
+            expected = case.expected.model_dump(include=fields, mode="json")
+            actual = draft.extraction.model_dump(include=fields, mode="json")
             checks = {key: actual[key] == expected[key] for key in expected}
             ranking = rank_vacancies(vacancies, user.profile, now=now)
             selected = [(vacancy, match) for vacancy, match in ranking if match.score >= min_score]
@@ -153,7 +156,7 @@ async def audit_cases(
                 "profession": case.profession,
                 "split": case.split,
                 "resume_parser_version": draft.version,
-                "extraction": draft.extraction.model_dump(),
+                "extraction": draft.extraction.model_dump(mode="json"),
                 "expected_extraction": expected,
                 "extraction_checks": checks,
                 "confirmed_profile": user.profile.model_dump(mode="json"),

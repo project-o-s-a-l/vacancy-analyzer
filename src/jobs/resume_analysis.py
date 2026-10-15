@@ -22,4 +22,9 @@ async def resume_analyzer(settings: Settings):
         trust_env=False,
         follow_redirects=False,
     ) as client:
-        yield OllamaResumeAnalyzer(client, model=settings.ollama_model)
+        yield OllamaResumeAnalyzer(
+            client,
+            model=settings.ollama_model,
+            total_seconds=settings.resume_total_timeout,
+            request_seconds=settings.ollama_timeout,
+        )

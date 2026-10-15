@@ -50,7 +50,7 @@ async def test_summary_separates_skill_role_experience_and_status_with_one_reque
     assert body["options"] == {
         "temperature": 0,
         "num_ctx": 8192,
-        "num_predict": 1024,
+        "num_predict": 1536,
         "num_thread": 2,
     }
     assert json.loads(body["messages"][1]["content"])["fragments"]["d2"] == "опыт работы 0 лет."
@@ -119,9 +119,11 @@ async def test_invalid_or_incomplete_response_is_rejected_without_raw_data(mutat
             result, requests, done_reason="length" if mutation == "truncated" else "stop"
         ),
     ) as client:
-        with pytest.raises(ResumeAnalysisError) as error:
-            await OllamaResumeAnalyzer(client, model="qwen3:4b").analyze(SUMMARY)
-    assert "private diagnostics" not in str(error.value) and SUMMARY not in str(error.value)
+        result = await OllamaResumeAnalyzer(client, model="qwen3:4b").analyze(SUMMARY)
+    assert result.completeness == "partial"
+    assert all(c.reason == "invalid_response" for c in result.coverage)
+    assert not result.skills
+    assert "private diagnostics" not in " ".join(result.notes)
     assert len(requests) == 2
 
 
@@ -130,8 +132,8 @@ async def test_oversized_resume_does_not_call_model_or_truncate_source():
     async with httpx.AsyncClient(
         base_url="http://localhost", transport=transport(RESULT, requests)
     ) as client:
-        with pytest.raises(ResumeAnalysisError, match="не помещается"):
-            await OllamaResumeAnalyzer(client, model="qwen3:4b").analyze("x" * 10000)
+        with pytest.raises(ResumeAnalysisError, match="60 000"):
+            await OllamaResumeAnalyzer(client, model="qwen3:4b").analyze("x" * 60001)
     assert requests == []
 
 

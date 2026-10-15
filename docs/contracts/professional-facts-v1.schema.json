@@ -1,0 +1,1195 @@
+{
+  "$defs": {
+    "Alternative": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "operator": {
+          "const": "any_of",
+          "default": "any_of",
+          "title": "Operator",
+          "type": "string"
+        },
+        "requirement_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "title": "Requirement Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "requirement_ids"
+      ],
+      "title": "Alternative",
+      "type": "object"
+    },
+    "Claim_Annotated_float__FieldInfo_annotation_NoneType__required_True__metadata__Ge_ge_0____PydanticGeneralMetadata_allow_inf_nan_False_____": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "missing",
+          "enum": [
+            "present",
+            "missing",
+            "unknown",
+            "explicit_absent",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "user_confirmed",
+            "machine_proposed",
+            "source",
+            "legacy_unknown"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "alternatives": {
+          "items": {
+            "minimum": 0,
+            "type": "number"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "legacy_value": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "title": "Claim[Annotated[float, FieldInfo(annotation=NoneType, required=True, metadata=[Ge(ge=0), _PydanticGeneralMetadata(allow_inf_nan=False)])]]",
+      "type": "object"
+    },
+    "Claim_JsonValue_": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "missing",
+          "enum": [
+            "present",
+            "missing",
+            "unknown",
+            "explicit_absent",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/JsonValue"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "user_confirmed",
+            "machine_proposed",
+            "source",
+            "legacy_unknown"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "alternatives": {
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "legacy_value": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "title": "Claim[JsonValue]",
+      "type": "object"
+    },
+    "Claim_Literal__beginner____intermediate____advanced___": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "missing",
+          "enum": [
+            "present",
+            "missing",
+            "unknown",
+            "explicit_absent",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "enum": [
+                "beginner",
+                "intermediate",
+                "advanced"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "user_confirmed",
+            "machine_proposed",
+            "source",
+            "legacy_unknown"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "alternatives": {
+          "items": {
+            "enum": [
+              "beginner",
+              "intermediate",
+              "advanced"
+            ],
+            "type": "string"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "legacy_value": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "title": "Claim[Literal['beginner', 'intermediate', 'advanced']]",
+      "type": "object"
+    },
+    "Claim_Literal__required____preferred____context____not_required___": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "missing",
+          "enum": [
+            "present",
+            "missing",
+            "unknown",
+            "explicit_absent",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "enum": [
+                "required",
+                "preferred",
+                "context",
+                "not_required"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "user_confirmed",
+            "machine_proposed",
+            "source",
+            "legacy_unknown"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "alternatives": {
+          "items": {
+            "enum": [
+              "required",
+              "preferred",
+              "context",
+              "not_required"
+            ],
+            "type": "string"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "legacy_value": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "title": "Claim[Literal['required', 'preferred', 'context', 'not_required']]",
+      "type": "object"
+    },
+    "Claim_bool_": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "missing",
+          "enum": [
+            "present",
+            "missing",
+            "unknown",
+            "explicit_absent",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "user_confirmed",
+            "machine_proposed",
+            "source",
+            "legacy_unknown"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "alternatives": {
+          "items": {
+            "type": "boolean"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "legacy_value": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "title": "Claim[bool]",
+      "type": "object"
+    },
+    "Claim_date_": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "missing",
+          "enum": [
+            "present",
+            "missing",
+            "unknown",
+            "explicit_absent",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "format": "date",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "user_confirmed",
+            "machine_proposed",
+            "source",
+            "legacy_unknown"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "alternatives": {
+          "items": {
+            "format": "date",
+            "type": "string"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "legacy_value": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "title": "Claim[date]",
+      "type": "object"
+    },
+    "Claim_str_": {
+      "additionalProperties": false,
+      "properties": {
+        "status": {
+          "default": "missing",
+          "enum": [
+            "present",
+            "missing",
+            "unknown",
+            "explicit_absent",
+            "conflict"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        },
+        "origin": {
+          "default": "legacy_unknown",
+          "enum": [
+            "user_confirmed",
+            "machine_proposed",
+            "source",
+            "legacy_unknown"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "alternatives": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Alternatives",
+          "type": "array"
+        },
+        "legacy_value": {
+          "$ref": "#/$defs/JsonValue",
+          "default": null
+        }
+      },
+      "title": "Claim[str]",
+      "type": "object"
+    },
+    "Evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Source Id",
+          "type": "string"
+        },
+        "source_revision": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Source Revision",
+          "type": "string"
+        },
+        "field": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Field",
+          "type": "string"
+        },
+        "start": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Start"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quote"
+        },
+        "section": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Section"
+        },
+        "interpretation": {
+          "anyOf": [
+            {
+              "enum": [
+                "required",
+                "preferred",
+                "context",
+                "not_required",
+                "unspecified"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interpretation"
+        }
+      },
+      "required": [
+        "source_id",
+        "source_revision",
+        "field"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "ExperienceEpisode": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "employment",
+            "project",
+            "unspecified"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "context": {
+          "default": "unspecified",
+          "enum": [
+            "work",
+            "academic",
+            "personal",
+            "unspecified"
+          ],
+          "title": "Context",
+          "type": "string"
+        },
+        "started_precision": {
+          "default": "unknown",
+          "enum": [
+            "day",
+            "month",
+            "unknown"
+          ],
+          "title": "Started Precision",
+          "type": "string"
+        },
+        "ended_precision": {
+          "default": "unknown",
+          "enum": [
+            "day",
+            "month",
+            "unknown"
+          ],
+          "title": "Ended Precision",
+          "type": "string"
+        },
+        "organization": {
+          "$ref": "#/$defs/Claim_str_"
+        },
+        "started": {
+          "$ref": "#/$defs/Claim_date_"
+        },
+        "ended": {
+          "$ref": "#/$defs/Claim_date_"
+        },
+        "ongoing": {
+          "$ref": "#/$defs/Claim_bool_"
+        },
+        "role_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Role Ids",
+          "type": "array"
+        },
+        "skill_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Skill Ids",
+          "type": "array"
+        },
+        "task_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Task Ids",
+          "type": "array"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind"
+      ],
+      "title": "ExperienceEpisode",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "QualificationFact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "assertion": {
+          "$ref": "#/$defs/Claim_bool_"
+        },
+        "kind": {
+          "const": "qualification",
+          "default": "qualification",
+          "title": "Kind",
+          "type": "string"
+        },
+        "valid_until": {
+          "$ref": "#/$defs/Claim_date_"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "QualificationFact",
+      "type": "object"
+    },
+    "Requirement": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "fact_id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Fact Id",
+          "type": "string"
+        },
+        "scope": {
+          "default": "vacancy",
+          "enum": [
+            "vacancy",
+            "role",
+            "skill",
+            "episode"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "scope_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scope Id"
+        },
+        "importance": {
+          "$ref": "#/$defs/Claim_Literal__required____preferred____context____not_required___"
+        },
+        "years_min": {
+          "$ref": "#/$defs/Claim_Annotated_float__FieldInfo_annotation_NoneType__required_True__metadata__Ge_ge_0____PydanticGeneralMetadata_allow_inf_nan_False_____"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/Evidence"
+          },
+          "title": "Evidence",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "fact_id"
+      ],
+      "title": "Requirement",
+      "type": "object"
+    },
+    "RoleFact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "assertion": {
+          "$ref": "#/$defs/Claim_bool_"
+        },
+        "kind": {
+          "const": "role",
+          "default": "role",
+          "title": "Kind",
+          "type": "string"
+        },
+        "context": {
+          "default": "unspecified",
+          "enum": [
+            "held",
+            "desired",
+            "required",
+            "unspecified"
+          ],
+          "title": "Context",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "RoleFact",
+      "type": "object"
+    },
+    "SkillFact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "assertion": {
+          "$ref": "#/$defs/Claim_bool_"
+        },
+        "kind": {
+          "const": "skill",
+          "default": "skill",
+          "title": "Kind",
+          "type": "string"
+        },
+        "level": {
+          "$ref": "#/$defs/Claim_Literal__beginner____intermediate____advanced___"
+        },
+        "years": {
+          "$ref": "#/$defs/Claim_Annotated_float__FieldInfo_annotation_NoneType__required_True__metadata__Ge_ge_0____PydanticGeneralMetadata_allow_inf_nan_False_____"
+        },
+        "last_used": {
+          "$ref": "#/$defs/Claim_date_"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "SkillFact",
+      "type": "object"
+    },
+    "SourceReference": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "revision": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Revision",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "profile",
+            "resume",
+            "vacancy",
+            "extraction",
+            "legacy"
+          ],
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "kind"
+      ],
+      "title": "SourceReference",
+      "type": "object"
+    },
+    "TaskFact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "assertion": {
+          "$ref": "#/$defs/Claim_bool_"
+        },
+        "kind": {
+          "const": "task",
+          "default": "task",
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "TaskFact",
+      "type": "object"
+    },
+    "ValueFact": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "preference",
+            "condition",
+            "experience_total",
+            "seniority"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "id": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "assertion": {
+          "$ref": "#/$defs/Claim_JsonValue_"
+        }
+      },
+      "required": [
+        "kind",
+        "id",
+        "name",
+        "assertion"
+      ],
+      "title": "ValueFact",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": "professional-facts-v1",
+      "default": "professional-facts-v1",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "document_id": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Document Id",
+      "type": "string"
+    },
+    "subject": {
+      "enum": [
+        "candidate",
+        "vacancy"
+      ],
+      "title": "Subject",
+      "type": "string"
+    },
+    "owner_id": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Owner Id"
+    },
+    "source_revision": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Source Revision",
+      "type": "string"
+    },
+    "input_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Input Sha256",
+      "type": "string"
+    },
+    "extractor": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Extractor",
+      "type": "string"
+    },
+    "extractor_version": {
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Extractor Version",
+      "type": "string"
+    },
+    "extractor_contract": {
+      "pattern": "^[a-f0-9]{64}$",
+      "title": "Extractor Contract",
+      "type": "string"
+    },
+    "model_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Id"
+    },
+    "model_digest": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Model Digest"
+    },
+    "analysis_pipeline": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Analysis Pipeline"
+    },
+    "policy_version": {
+      "default": "facts-conservative-v1",
+      "maxLength": 1000,
+      "minLength": 1,
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "extracted_at": {
+      "format": "date-time",
+      "title": "Extracted At",
+      "type": "string"
+    },
+    "reference_time": {
+      "format": "date-time",
+      "title": "Reference Time",
+      "type": "string"
+    },
+    "input_scope": {
+      "enum": [
+        "full",
+        "partial",
+        "legacy"
+      ],
+      "title": "Input Scope",
+      "type": "string"
+    },
+    "input_ranges": {
+      "items": {
+        "maxItems": 2,
+        "minItems": 2,
+        "prefixItems": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "integer"
+          }
+        ],
+        "type": "array"
+      },
+      "title": "Input Ranges",
+      "type": "array"
+    },
+    "uncertainty_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Uncertainty Reasons",
+      "type": "array"
+    },
+    "sources": {
+      "items": {
+        "$ref": "#/$defs/SourceReference"
+      },
+      "title": "Sources",
+      "type": "array"
+    },
+    "facts": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "condition": "#/$defs/ValueFact",
+            "experience_total": "#/$defs/ValueFact",
+            "preference": "#/$defs/ValueFact",
+            "qualification": "#/$defs/QualificationFact",
+            "role": "#/$defs/RoleFact",
+            "seniority": "#/$defs/ValueFact",
+            "skill": "#/$defs/SkillFact",
+            "task": "#/$defs/TaskFact"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/SkillFact"
+          },
+          {
+            "$ref": "#/$defs/RoleFact"
+          },
+          {
+            "$ref": "#/$defs/TaskFact"
+          },
+          {
+            "$ref": "#/$defs/QualificationFact"
+          },
+          {
+            "$ref": "#/$defs/ValueFact"
+          }
+        ]
+      },
+      "title": "Facts",
+      "type": "array"
+    },
+    "episodes": {
+      "items": {
+        "$ref": "#/$defs/ExperienceEpisode"
+      },
+      "title": "Episodes",
+      "type": "array"
+    },
+    "requirements": {
+      "items": {
+        "$ref": "#/$defs/Requirement"
+      },
+      "title": "Requirements",
+      "type": "array"
+    },
+    "alternatives": {
+      "items": {
+        "$ref": "#/$defs/Alternative"
+      },
+      "title": "Alternatives",
+      "type": "array"
+    },
+    "overlap_policy": {
+      "default": "unaggregated",
+      "enum": [
+        "unaggregated",
+        "calendar_union_v1"
+      ],
+      "title": "Overlap Policy",
+      "type": "string"
+    }
+  },
+  "required": [
+    "document_id",
+    "subject",
+    "source_revision",
+    "input_sha256",
+    "extractor",
+    "extractor_version",
+    "extractor_contract",
+    "extracted_at",
+    "reference_time",
+    "input_scope",
+    "sources"
+  ],
+  "title": "ProfessionalFacts",
+  "type": "object"
+}

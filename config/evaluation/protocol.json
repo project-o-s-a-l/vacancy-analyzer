@@ -1,0 +1,93 @@
+{
+  "version": "working-evaluation-protocol-v1",
+  "seed": 20261102,
+  "top": 5,
+  "retrieval_k": 64,
+  "recall_ks": [
+    5,
+    20,
+    64
+  ],
+  "min_score": 50,
+  "bootstrap_repeats": 2000,
+  "confidence": 0.95,
+  "repeats": 3,
+  "modes": [
+    "confirmed_profile",
+    "resume_rules"
+  ],
+  "acceptance": {
+    "policy": "paired owner-cluster bootstrap; lower 95% bound >= 0 on every primary quality delta; strict positive lower bound for a claimed improvement; unresolved/incomplete human labels or CI crossing zero => inconclusive, never pass",
+    "primary": [
+      "ndcg_at_5",
+      "precision_at_5",
+      "recall_at_64",
+      "fact_recall",
+      "fact_precision"
+    ],
+    "safety": "zero observed human mandatory-condition violations and stale/duplicate displays; report exact counts and Wilson upper bounds, not proof of zero population risk",
+    "coverage": "shown count and nonempty-query rate must not regress; absent slots remain zero in Precision@5; full-catalog IDCG",
+    "performance": "same stand, paired warm repetitions, upper 95% latency-ratio bound <= 1; cold first pass reported separately; no production latency claim from memory adapter",
+    "scope": "development compares only; calibration selects thresholds once; final temporal test once per frozen release, no tuning from test"
+  },
+  "load_matrix": [
+    {
+      "catalog": "frozen 48 cards per split / 40 duplicate groups",
+      "clients": [
+        1,
+        2,
+        4
+      ],
+      "repeats": 3,
+      "state": [
+        "first-process-pass",
+        "warm"
+      ],
+      "adapter": "memory",
+      "status": "Offline reference using the in-memory candidate catalogue"
+    },
+    {
+      "catalog": [
+        132,
+        1000,
+        10000,
+        100000
+      ],
+      "clients": [
+        1,
+        2,
+        4,
+        5,
+        20
+      ],
+      "repeats": 5,
+      "state": [
+        "cold",
+        "warm"
+      ],
+      "adapter": "Isolated PostgreSQL test instance",
+      "status": "Record the resource budget before running the load test"
+    },
+    {
+      "catalog": 1000,
+      "clients": [
+        1,
+        2
+      ],
+      "repeats": 5,
+      "state": [
+        "cold-model",
+        "warm-model"
+      ],
+      "adapter": "real Ollama model hash + RSS + VRAM",
+      "status": "Requires local model weights and runtime measurements"
+    }
+  ],
+  "stand": "Record the OS, Python and dependency versions, database configuration and hardware for each measured run.",
+  "limitations": [
+    "Synthetic control catalog tests mechanisms; not evidence of job-market generalization",
+    "No fixed minimum gain: uncertainty and sample coverage decide",
+    "LLM/offline fact adapter must use actual runtime extractor; unsupported fields count as misses",
+    "Human attestation is an audited operator claim, not cryptographic proof of human identity"
+  ]
+}

@@ -329,7 +329,7 @@ def _fields(values):
         ("operation_kind", KINDS),
         ("feedback_action", {"like", "dislike", "save", "unsave", "apply", "unapply", "reason"}),
         ("repeated_event", EVENTS.keys()),
-        ("job_kind", {"vacancy_analysis", "resume_analysis"}),
+        ("job_kind", {"vacancy_analysis", "resume_analysis", "vacancy_projection"}),
         ("job_state", {"pending", "running", "succeeded", "failed", "superseded", "cancelled"}),
         ("change_kind", {"new", "changed", "unchanged"}),
         ("snapshot_state", {"new", "reused"}),

@@ -99,12 +99,16 @@ def snapshot_html(directory: Path, *, now: datetime, limit: int = 200) -> Benchm
 
 
 def pair_id(case, vacancy: Vacancy, now: datetime) -> str:
+    from domain.professional import compatible_wire
+
     return digest(
-        {
-            "case": case.model_dump(mode="json"),
-            "vacancy": vacancy.model_dump(mode="json"),
-            "reference_time": now.isoformat(),
-        }
+        compatible_wire(
+            {
+                "case": case.model_dump(mode="json"),
+                "vacancy": vacancy.model_dump(mode="json"),
+                "reference_time": now.isoformat(),
+            }
+        )
     )
 
 

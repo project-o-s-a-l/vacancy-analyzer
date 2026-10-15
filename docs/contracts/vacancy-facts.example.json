@@ -1,0 +1,647 @@
+{
+  "schema_version": "professional-facts-v1",
+  "document_id": "vacancy:synthetic:f02-example",
+  "subject": "vacancy",
+  "owner_id": null,
+  "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+  "input_sha256": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+  "extractor": "vacancy-runtime",
+  "extractor_version": "vacancy-facts-v2",
+  "extractor_contract": "d68941b4c6f1eee33091022ed5173819ac24e9e9b3c8087b382fa438acc699ac",
+  "model_id": null,
+  "model_digest": null,
+  "analysis_pipeline": null,
+  "policy_version": "facts-conservative-v1",
+  "extracted_at": "2026-11-02T00:00:00Z",
+  "reference_time": "2026-11-02T00:00:00Z",
+  "input_scope": "full",
+  "input_ranges": [
+    [
+      0,
+      53
+    ]
+  ],
+  "uncertainty_reasons": [
+    "rules_only"
+  ],
+  "sources": [
+    {
+      "id": "vacancy:synthetic:f02-example",
+      "revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+      "kind": "vacancy"
+    }
+  ],
+  "facts": [
+    {
+      "id": "role:primary",
+      "name": "Инженер данных",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "title",
+            "start": 0,
+            "end": 14,
+            "quote": "Инженер данных",
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "kind": "role",
+      "context": "required"
+    },
+    {
+      "id": "skill:4108efe180aebd33738f9ed8",
+      "name": "java",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "machine_proposed",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "skills",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": "unspecified"
+          },
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "description",
+            "start": 12,
+            "end": 27,
+            "quote": "Python или Java",
+            "section": "Требования",
+            "interpretation": "required"
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "kind": "skill",
+      "level": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "years": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "last_used": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "id": "skill:2d0edc2f0650c5218a2cbe60",
+      "name": "python",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "machine_proposed",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "skills",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": "unspecified"
+          },
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "description",
+            "start": 12,
+            "end": 27,
+            "quote": "Python или Java",
+            "section": "Требования",
+            "interpretation": "required"
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "kind": "skill",
+      "level": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "years": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "last_used": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:remote",
+      "name": "remote",
+      "assertion": {
+        "status": "present",
+        "value": true,
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "remote",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:location",
+      "name": "location",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:salary_from",
+      "name": "salary_from",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:salary_to",
+      "name": "salary_to",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:currency",
+      "name": "currency",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:salary_gross",
+      "name": "salary_gross",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:salary_period",
+      "name": "salary_period",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:employment",
+      "name": "employment",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:schedule",
+      "name": "schedule",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:work_format",
+      "name": "work_format",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:working_hours",
+      "name": "working_hours",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:experience",
+      "name": "experience",
+      "assertion": {
+        "status": "present",
+        "value": "1-3",
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "experience",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:archived",
+      "name": "archived",
+      "assertion": {
+        "status": "present",
+        "value": false,
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "archived",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:published_at",
+      "name": "published_at",
+      "assertion": {
+        "status": "present",
+        "value": "2026-11-02T00:00:00Z",
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "published_at",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:valid_until",
+      "name": "valid_until",
+      "assertion": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:text:f0476d8f3425fac2bcbac99d",
+      "name": "Условия:",
+      "assertion": {
+        "status": "present",
+        "value": "Условия:",
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "description",
+            "start": 28,
+            "end": 36,
+            "quote": "Условия:",
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    },
+    {
+      "kind": "condition",
+      "id": "condition:text:ea3040b64cab2071ce9720fc",
+      "name": "Удалённая работа",
+      "assertion": {
+        "status": "present",
+        "value": "Удалённая работа",
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "description",
+            "start": 37,
+            "end": 53,
+            "quote": "Удалённая работа",
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      }
+    }
+  ],
+  "episodes": [],
+  "requirements": [
+    {
+      "id": "req:or:7c73d2ee6a473f3a:skill:4108efe180aebd33738f9ed8",
+      "fact_id": "skill:4108efe180aebd33738f9ed8",
+      "scope": "skill",
+      "scope_id": "skill:4108efe180aebd33738f9ed8",
+      "importance": {
+        "status": "present",
+        "value": "required",
+        "origin": "machine_proposed",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "description",
+            "start": 12,
+            "end": 27,
+            "quote": "Python или Java",
+            "section": "Требования",
+            "interpretation": "required"
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "years_min": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "evidence": [
+        {
+          "source_id": "vacancy:synthetic:f02-example",
+          "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+          "field": "description",
+          "start": 12,
+          "end": 27,
+          "quote": "Python или Java",
+          "section": "Требования",
+          "interpretation": "required"
+        }
+      ]
+    },
+    {
+      "id": "req:or:7c73d2ee6a473f3a:skill:2d0edc2f0650c5218a2cbe60",
+      "fact_id": "skill:2d0edc2f0650c5218a2cbe60",
+      "scope": "skill",
+      "scope_id": "skill:2d0edc2f0650c5218a2cbe60",
+      "importance": {
+        "status": "present",
+        "value": "required",
+        "origin": "machine_proposed",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "description",
+            "start": 12,
+            "end": 27,
+            "quote": "Python или Java",
+            "section": "Требования",
+            "interpretation": "required"
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "years_min": {
+        "status": "missing",
+        "value": null,
+        "origin": "legacy_unknown",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "evidence": [
+        {
+          "source_id": "vacancy:synthetic:f02-example",
+          "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+          "field": "description",
+          "start": 12,
+          "end": 27,
+          "quote": "Python или Java",
+          "section": "Требования",
+          "interpretation": "required"
+        }
+      ]
+    },
+    {
+      "id": "req:source:experience",
+      "fact_id": "role:primary",
+      "scope": "vacancy",
+      "scope_id": null,
+      "importance": {
+        "status": "unknown",
+        "value": null,
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "experience",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "years_min": {
+        "status": "present",
+        "value": 1.0,
+        "origin": "source",
+        "evidence": [
+          {
+            "source_id": "vacancy:synthetic:f02-example",
+            "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+            "field": "experience",
+            "start": null,
+            "end": null,
+            "quote": null,
+            "section": null,
+            "interpretation": null
+          }
+        ],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "evidence": [
+        {
+          "source_id": "vacancy:synthetic:f02-example",
+          "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+          "field": "experience",
+          "start": null,
+          "end": null,
+          "quote": null,
+          "section": null,
+          "interpretation": null
+        }
+      ]
+    },
+    {
+      "id": "req:experience:0",
+      "fact_id": "role:primary",
+      "scope": "role",
+      "scope_id": "role:primary",
+      "importance": {
+        "status": "unknown",
+        "value": null,
+        "origin": "machine_proposed",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "years_min": {
+        "status": "unknown",
+        "value": null,
+        "origin": "machine_proposed",
+        "evidence": [],
+        "alternatives": [],
+        "legacy_value": null
+      },
+      "evidence": []
+    }
+  ],
+  "alternatives": [
+    {
+      "id": "or:7c73d2ee6a473f3a",
+      "operator": "any_of",
+      "requirement_ids": [
+        "req:or:7c73d2ee6a473f3a:skill:4108efe180aebd33738f9ed8",
+        "req:or:7c73d2ee6a473f3a:skill:2d0edc2f0650c5218a2cbe60"
+      ]
+    }
+  ],
+  "overlap_policy": "unaggregated"
+}

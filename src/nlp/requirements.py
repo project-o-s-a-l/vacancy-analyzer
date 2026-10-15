@@ -228,7 +228,7 @@ def analyze_requirements(
                 item = RequirementEvidence(
                     origin="description",
                     importance=status,
-                    text=clause.strip()[:280],
+                    text=clause.strip(),
                     section=section,
                     alternative_id=group_id,
                 )
@@ -249,7 +249,7 @@ def analyze_requirements(
                     RequirementEvidence(
                         origin="description",
                         importance=status,
-                        text=clause.strip()[:280],
+                        text=clause.strip(),
                         section=section,
                         alternative_id=group_id,
                     ),

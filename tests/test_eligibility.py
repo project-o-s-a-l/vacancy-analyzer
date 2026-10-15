@@ -297,7 +297,16 @@ def test_preference_modes_clear_safely_and_legacy_profiles_load():
 
 def test_legacy_resume_profile_hash_survives_default_preferences():
     profile = candidate(salary_min=150000, locations=["Москва"])
-    previous = profile.model_dump(mode="json")
+    # Reconstruct the legacy fixture with its stored default level, never infer it in runtime.
+    profile = profile.model_copy(
+        update={
+            "skills": {
+                name: skill.model_copy(update={"level": "intermediate"})
+                for name, skill in profile.skills.items()
+            }
+        }
+    )
+    previous = profile.model_dump(mode="json", exclude={"professional_facts"})
     previous["preferences"].pop("salary_required")
     previous["preferences"].pop("locations_required")
     expected = hashlib.sha256(

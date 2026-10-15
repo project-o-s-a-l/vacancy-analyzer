@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from domain.retrieval import RetrievalParameters
 from domain.vacancy_duplicates import vacancy_duplicate_key
 from observability import emit_event
+from scoring.fact_projection import projection_contract
 from scoring.retrieval import (
     lexical_evidence,
     profile_query,
@@ -136,6 +137,14 @@ async def retrieve_candidates(
                     or not document
                     or not row["lexical_revision"]
                     or row["lexical_revision"] != row["source_revision"]
+                    or row.get("lexical_contract") != projection_contract()
+                    or (
+                        "facts_revision" in row
+                        and (
+                            row["facts_revision"] is None
+                            or row["facts_revision"] != row.get("projection_facts_revision")
+                        )
+                    )
                 ):
                     document = search_document(vacancy.model_dump())
                 evidence = lexical_evidence(document, query, params)
@@ -177,6 +186,14 @@ async def retrieve_candidates(
                 row["lexical_version"] == params.version
                 and row["lexical_revision"]
                 and row["lexical_revision"] == row["source_revision"]
+                and row.get("lexical_contract") == projection_contract()
+                and (
+                    "facts_revision" not in row
+                    or (
+                        row["facts_revision"] is not None
+                        and row["facts_revision"] == row.get("projection_facts_revision")
+                    )
+                )
             )
             else None
         )

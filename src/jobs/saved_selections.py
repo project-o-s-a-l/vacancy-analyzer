@@ -26,7 +26,14 @@ def selection_contract():
 
 
 def vacancy_revision(vacancy):
-    return digest(vacancy.model_dump(mode="json", exclude={"raw_payload", "collected_at"}))
+    return digest(
+        dict(
+            source=vacancy.model_dump(
+                mode="json", exclude={"raw_payload", "collected_at", "professional_facts"}
+            ),
+            facts=vacancy.professional_facts.revision if vacancy.professional_facts else None,
+        )
+    )
 
 
 def refresh_time(match, vacancy, now):

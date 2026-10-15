@@ -23,7 +23,10 @@ from storage.models.vacancy import Base
 class BackgroundJob(Base):
     __tablename__ = "background_jobs"
     __table_args__ = (
-        CheckConstraint("kind IN ('vacancy_analysis', 'resume_analysis')", name="ck_job_kind"),
+        CheckConstraint(
+            "kind IN ('vacancy_analysis', 'resume_analysis', 'vacancy_projection')",
+            name="ck_job_kind",
+        ),
         CheckConstraint(
             "state IN ('pending', 'running', 'succeeded', 'failed', 'superseded', 'cancelled')",
             name="ck_job_state",

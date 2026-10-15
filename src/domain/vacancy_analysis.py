@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
-from processing.cleaner import clean_html
-
 if TYPE_CHECKING:
     from domain.vacancy import Vacancy
 
@@ -111,19 +109,30 @@ class VacancyAnalysis(BaseModel):
     input_scope: Literal["full", "work_sections"] = "full"
     requirements_source: Literal["llm", "rules"] = "llm"
     omitted_description_fragments: int = Field(default=0, ge=0)
+    processing_status: Literal["complete", "partial"] = "complete"
+    completed_chunks: int = Field(default=1, ge=0)
+    total_chunks: int = Field(default=1, ge=1)
+    failure_codes: list[str] = Field(default_factory=list)
+    # Full validated chunk outputs avoid a lossy max-60-skills merge on long descriptions.
+    chunks: list[VacancyExtraction] = Field(default_factory=list)
 
 
 def vacancy_document(vacancy: "Vacancy") -> dict:
+    from nlp.vacancy_document import professional_text
+
     return {
         "title": vacancy.title,
-        "description": clean_html(vacancy.description or vacancy.description_html),
-        "source_skills": vacancy.skills,
+        "description": professional_text(vacancy.description or vacancy.description_html),
+        "source_skills": sorted(set(vacancy.skills)),
         "source_experience": vacancy.experience,
     }
 
 
 def analysis_input_hash(vacancy: "Vacancy") -> str:
-    payload = json.dumps(vacancy_document(vacancy), sort_keys=True, ensure_ascii=False)
+    document = vacancy_document(vacancy)
+    # Line wrapping, HTML block wrappers and repeated whitespace are presentation noise.
+    document["description"] = " ".join(document["description"].split())
+    payload = json.dumps(document, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

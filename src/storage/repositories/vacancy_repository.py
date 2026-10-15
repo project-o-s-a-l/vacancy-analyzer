@@ -7,14 +7,22 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain import Vacancy
+from domain.contracts import facts_contract
+from domain.professional import ProfessionalFacts
 from domain.retrieval import RETRIEVAL_VERSION
 from domain.skill_gap import SkillGapVacancy
 from domain.vacancy_analysis import VacancyAnalysis, VacancyCategory, analysis_input_hash
 from domain.vacancy_duplicates import vacancy_duplicate_key
+from nlp.professional_facts import (
+    vacancy_fact_input_revision,
+    vacancy_facts,
+    vacancy_facts_compatible,
+)
 from observability.transactions import after_commit
 from scoring.retrieval import document_terms, search_document
 from storage.models import VacancyModel, VacancySnapshot
 from storage.payloads import payload_hash
+from storage.repositories.fact_repository import FactRepository
 
 
 def _aware(value: datetime) -> datetime:
@@ -28,7 +36,12 @@ def _to_domain(row: VacancyModel) -> Vacancy:
         values[name] = _aware(values[name])
     if values["valid_until"] is not None:
         values["valid_until"] = _aware(values["valid_until"])
-    return Vacancy.model_validate(values)
+    vacancy = Vacancy.model_validate(values)
+    if vacancy.professional_facts is None or not vacancy_facts_compatible(
+        vacancy.professional_facts, vacancy
+    ):
+        vacancy.professional_facts = vacancy_facts(vacancy, legacy=True)
+    return vacancy
 
 
 class VacancyRepository:
@@ -43,7 +56,7 @@ class VacancyRepository:
         self.insert = pg_insert if dialect == "postgresql" else sqlite_insert
 
     async def save(self, vacancy: Vacancy, *, seen_in_search: bool = True) -> UUID:
-        values = vacancy.model_dump(mode="python")
+        values = vacancy.model_dump(mode="python", exclude={"professional_facts"})
         values["url"] = str(vacancy.url)
         values["company_url"] = str(vacancy.company_url) if vacancy.company_url else None
         if vacancy.analysis is not None:
@@ -76,6 +89,7 @@ class VacancyRepository:
                 "description_html",
                 "raw_payload",
                 "analysis",
+                "professional_facts",
             },
         )
         # The text hash already represents cleaned description content; markup
@@ -128,6 +142,7 @@ class VacancyRepository:
             self._saved(
                 vacancy, values, previous.id, "unchanged", "reused", previous.revision_number
             )
+            await self.refresh_facts(previous.id)
             return previous.id
         if (
             previous is None
@@ -220,7 +235,108 @@ class VacancyRepository:
             "new" if snapshot_id else "reused",
             saved_row.revision_number,
         )
+        await self.refresh_facts(vacancy_id)
         return vacancy_id
+
+    async def refresh_facts(self, vacancy_id: UUID, *, force=False, supplied=None) -> bool:
+        """Facts, immutable history and lexical projection commit atomically with the source."""
+        row = await self.session.get(
+            VacancyModel, vacancy_id, with_for_update=True, populate_existing=True
+        )
+        if row is None:
+            return False
+        vacancy = _to_domain(row)
+        row.content_revision = analysis_input_hash(vacancy)
+        expected = vacancy_fact_input_revision(vacancy)
+        await self.archive_source(vacancy)
+        if supplied is not None:
+            supplied = ProfessionalFacts.model_validate(supplied.model_dump(mode="json"))
+            if supplied.subject != "vacancy" or supplied.input_sha256 != expected:
+                return False
+            if supplied.source_revision != expected:
+                return False
+            if supplied.document_id != f"vacancy:{vacancy.source}:{vacancy.source_id}":
+                return False
+            from processing.cleaner import clean_html
+
+            supplied.verify_text(
+                supplied.document_id,
+                expected,
+                {
+                    "title": vacancy.title,
+                    "description": clean_html(vacancy.description or vacancy.description_html),
+                },
+            )
+            facts = supplied
+        elif (
+            row.professional_facts
+            and row.facts_input_revision == expected
+            and not force
+            and row.professional_facts["extractor_contract"] == facts_contract()
+            and vacancy_facts_compatible(
+                ProfessionalFacts.model_validate(row.professional_facts), vacancy
+            )
+        ):
+            facts = vacancy.professional_facts
+            from scoring.fact_projection import projection_contract
+
+            if (
+                row.projection_contract == projection_contract()
+                and row.search_version == RETRIEVAL_VERSION
+                and row.search_revision == analysis_input_hash(vacancy)
+                and row.search_document is not None
+                and row.search_terms is not None
+                and row.facts_revision == facts.revision
+                and row.projection_facts_revision == facts.revision
+            ):
+                return True
+        else:
+            facts = vacancy_facts(vacancy)
+        if row.professional_facts:
+            await FactRepository(self.session).record(
+                "vacancy", vacancy_id, ProfessionalFacts.model_validate(row.professional_facts)
+            )
+        await FactRepository(self.session).record("vacancy", vacancy_id, facts)
+        row.professional_facts = facts.model_dump(mode="json")
+        row.facts_input_revision = expected
+        row.facts_revision = facts.revision
+        row.facts_status = (
+            "partial"
+            if facts.input_scope == "partial"
+            else "complete"
+            if facts.model_id
+            else "rules"
+        )
+        from scoring.fact_projection import fact_projection, projection_revision
+
+        document = fact_projection(vacancy, facts)
+        row.search_document = document
+        row.search_terms = document_terms(document)
+        row.search_version = RETRIEVAL_VERSION
+        row.search_revision = analysis_input_hash(vacancy)
+        row.projection_revision = projection_revision(vacancy, facts)
+        from scoring.fact_projection import projection_contract
+
+        row.projection_contract = projection_contract()
+        row.projection_facts_revision = facts.revision
+        await self.session.flush()
+        return True
+
+    async def set_facts(self, vacancy_id, facts, *, expected_facts_revision):
+        """extraction CAS: bind both source revision and the facts being replaced."""
+        row = await self.session.get(
+            VacancyModel, vacancy_id, with_for_update=True, populate_existing=True
+        )
+        if row is None:
+            return False
+        current = (
+            ProfessionalFacts.model_validate(row.professional_facts).revision
+            if row.professional_facts
+            else None
+        )
+        if current != expected_facts_revision:
+            return False
+        return await self.refresh_facts(vacancy_id, supplied=facts)
 
     def _saved(self, vacancy, values, key, change, snapshot, revision=None):
         self.last_save = {"change_kind": change}
@@ -251,14 +367,78 @@ class VacancyRepository:
         )
         return _to_domain(row) if row is not None else None
 
-    async def set_analysis(self, vacancy_id: UUID, analysis: VacancyAnalysis) -> bool:
+    async def set_analysis(
+        self, vacancy_id: UUID, analysis: VacancyAnalysis, *, expected_facts_revision=None
+    ) -> bool:
         row = await self.session.get(
             VacancyModel, vacancy_id, with_for_update=True, populate_existing=True
         )
         if row is None or analysis.input_hash != analysis_input_hash(_to_domain(row)):
             return False
+        if expected_facts_revision is not None and row.facts_revision != expected_facts_revision:
+            return False
         row.analysis = analysis.model_dump(mode="json")
+        await self.session.flush()
+        await self.refresh_facts(vacancy_id, force=True)
         return True
+
+    async def archive_source(self, vacancy):
+        from domain.professional import digest
+        from storage.models.vacancy import VacancyFactSource
+
+        payload = vacancy.model_dump(
+            mode="json",
+            exclude={"professional_facts", "analysis", "raw_payload", "collected_at", "id"},
+        )
+        raw_hash = payload_hash(vacancy.raw_payload)
+        await self.session.execute(
+            self.insert(VacancyFactSource)
+            .values(
+                vacancy_id=vacancy.id,
+                revision=digest({"source": payload, "raw": raw_hash}),
+                input_revision=vacancy_fact_input_revision(vacancy),
+                content_revision=analysis_input_hash(vacancy),
+                raw_payload_hash=raw_hash,
+                source_payload=payload,
+                recorded_at=vacancy.collected_at,
+            )
+            .on_conflict_do_nothing(index_elements=["vacancy_id", "revision"])
+        )
+
+    async def source_history(self, vacancy_id, *, input_revision=None):
+        from storage.models.vacancy import VacancyFactSource
+
+        statement = select(VacancyFactSource).where(VacancyFactSource.vacancy_id == vacancy_id)
+        if input_revision is not None:
+            statement = statement.where(VacancyFactSource.input_revision == input_revision)
+        return list(await self.session.scalars(statement.order_by(VacancyFactSource.recorded_at)))
+
+    async def projection_state(self, vacancy_id):
+        """API: distinguish searchable rules from enrichment and stale/missing fields."""
+        from scoring.fact_projection import projection_contract, projection_revision
+
+        row = await self.session.get(VacancyModel, vacancy_id, populate_existing=True)
+        if row is None:
+            return None
+        vacancy = _to_domain(row)
+        ready = bool(
+            row.search_document is not None
+            and row.search_terms is not None
+            and row.search_revision == analysis_input_hash(vacancy)
+            and row.facts_input_revision == vacancy_fact_input_revision(vacancy)
+            and row.projection_contract == projection_contract()
+            and row.facts_revision == vacancy.professional_facts.revision
+            and row.projection_facts_revision == row.facts_revision
+            and row.projection_revision == projection_revision(vacancy, vacancy.professional_facts)
+        )
+        return dict(
+            status="ready" if ready else "stale" if row.search_document else "missing",
+            facts_status=row.facts_status,
+            facts_revision=row.facts_revision,
+            projection_revision=row.projection_revision,
+            source_revision=row.content_revision,
+            document=row.search_document if ready else None,
+        )
 
     async def list_recent(
         self,

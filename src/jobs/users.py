@@ -13,10 +13,13 @@ from observability.actions import observed
 from observability.transactions import after_commit
 from storage.models import (
     BackgroundJob,
+    FactBackfillModel,
+    FactRevisionModel,
     FeedbackEventModel,
     FeedbackModel,
     NotificationModel,
     ResumeModel,
+    ResumeSourceModel,
     SavedSelectionModel,
     SearchPlanModel,
     TelegramUserModel,
@@ -53,6 +56,24 @@ class UserService:
 
     async def check_ready(self) -> None:
         async with self.sessions() as session:
+            await session.execute(
+                select(
+                    TelegramUserModel.profile_revision,
+                    TelegramUserModel.profile_schema_version,
+                    TelegramUserModel.professional_facts,
+                    TelegramUserModel.facts_input_revision,
+                ).limit(1)
+            )
+            await session.execute(
+                select(
+                    VacancyModel.professional_facts,
+                    VacancyModel.facts_input_revision,
+                    VacancyModel.projection_revision,
+                    VacancyModel.projection_contract,
+                ).limit(1)
+            )
+            await session.execute(select(FactRevisionModel.revision).limit(1))
+            await session.execute(select(FactBackfillModel.name).limit(1))
             await session.execute(select(SavedSelectionModel.owner_id).limit(1))
             await session.execute(select(TelegramUserModel.user_id).limit(1))
             await session.execute(select(TelegramUserModel.history_reset_token).limit(1))
@@ -61,6 +82,7 @@ class UserService:
             await session.execute(select(NotificationModel.exposure_context).limit(1))
             await session.execute(select(NotificationModel.history_reset_at).limit(1))
             await session.execute(select(ResumeModel.user_id).limit(1))
+            await session.execute(select(ResumeSourceModel.user_id).limit(1))
             await session.execute(select(ResumeModel.processing_job_id).limit(1))
             await session.execute(select(BackgroundJob.id).limit(1))
             await session.execute(select(VacancyModel.analysis).limit(1))
@@ -95,8 +117,7 @@ class UserService:
             if user is None:
                 raise ValueError("Сначала зарегистрируйтесь командой /start")
             user = replace(user, form_state="edit:" + field)
-            await repository.save(user)
-            return user
+            return await repository.save(user)
 
     @observed("history")
     async def cancel(self, user_id: int) -> RegisteredUser:
@@ -106,7 +127,7 @@ class UserService:
             if user is None:
                 raise ValueError("Сначала зарегистрируйтесь командой /start")
             user = replace(user, form_state=None)
-            await repository.save(user)
+            user = await repository.save(user)
             row = await session.get(TelegramUserModel, user_id)
             if row.history_reset_token is not None:
                 after_commit(
@@ -138,8 +159,7 @@ class UserService:
                 if index + 1 < len(FIELDS):
                     next_state = "setup:" + FIELDS[index + 1]
             user = replace(user, profile=profile, form_state=next_state)
-            await repository.save(user)
-            return user
+            return await repository.save(user, confirmed_fields={field})
 
     async def notifications(
         self,

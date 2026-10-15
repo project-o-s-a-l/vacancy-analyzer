@@ -73,10 +73,27 @@ class AnalysisWorker:
         self.vacancy_analyzer = vacancy_analyzer
         self.resume_analyzer = resume_analyzer
         self.lease_seconds = lease_seconds
+        from nlp.ollama_resume import OllamaResumeAnalyzer
+
+        if isinstance(resume_analyzer, OllamaResumeAnalyzer):
+            self.lease_seconds = max(lease_seconds, resume_analyzer.total_seconds + 60)
+        from nlp.ollama import OllamaVacancyAnalyzer
+
+        if isinstance(vacancy_analyzer, OllamaVacancyAnalyzer):
+            self.lease_seconds = max(self.lease_seconds, vacancy_analyzer.total_seconds + 60)
         self.owner = owner or uuid4().hex
         self.allow_resumes = allow_resumes
 
     async def run_once(self, *, job_id=None):
+        # Deterministic repair needs no model slot and works with LLM disabled.
+        async with self.sessions.begin() as session:
+            projection = await JobRepository(session).claim(
+                self.owner, lease_seconds=60, kinds=["vacancy_projection"], job_id=job_id
+            )
+        if projection is not None:
+            from jobs.vacancy_projection import process_projection
+
+            return await process_projection(self.sessions, projection)
         async with inference_lease(self.engine) as acquired:
             if not acquired:
                 return None
@@ -270,7 +287,7 @@ class AnalysisWorker:
             if cached
             else (await analyzer.analyze(vacancy))
         )
-        if not cached:
+        if not cached and analysis.processing_status == "complete":
             await analyzer.ready()
             if analyzer.model_digest != analysis.model_digest:
                 await self._error(job, "model_changed", retry=True)
@@ -300,7 +317,11 @@ class AnalysisWorker:
             if analysis.pipeline_hash != job.pipeline:
                 await repo.finish(owned, state="failed", code="invalid_analysis_identity")
                 return "failed"
-            saved = await VacancyRepository(session).set_analysis(job.vacancy_id, analysis)
+            saved = await VacancyRepository(session).set_analysis(
+                job.vacancy_id,
+                analysis,
+                expected_facts_revision=vacancy.professional_facts.revision,
+            )
             await repo.finish(
                 owned,
                 state="succeeded" if saved else "superseded",
@@ -309,6 +330,9 @@ class AnalysisWorker:
                     "model_digest": analysis.model_digest,
                     "pipeline": analysis.pipeline_hash,
                     "cache_hit": cached,
+                    "processing_status": analysis.processing_status,
+                    "completed_chunks": analysis.completed_chunks,
+                    "total_chunks": analysis.total_chunks,
                 },
             )
         return "cached" if cached else "analyzed"
@@ -407,7 +431,7 @@ async def background_analysis(settings, engine, *, enabled=None):
             session_factory(engine),
             vacancy_analyzer=vacancy,
             resume_analyzer=resume,
-            lease_seconds=settings.ollama_timeout + 60,
+            lease_seconds=max(settings.ollama_timeout, settings.resume_total_timeout) + 60,
         )
         stop = asyncio.Event()
         from jobs.analysis_queue import enqueue_catalog
@@ -426,7 +450,10 @@ async def background_analysis(settings, engine, *, enabled=None):
             try:
                 # Finish the in-flight request before closing clients and releasing
                 # the application slot. A killed process is recovered by its lease.
-                await asyncio.wait_for(asyncio.shield(task), timeout=settings.ollama_timeout + 30)
+                await asyncio.wait_for(
+                    asyncio.shield(task),
+                    timeout=max(settings.ollama_timeout, settings.resume_total_timeout) + 30,
+                )
             except TimeoutError:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)

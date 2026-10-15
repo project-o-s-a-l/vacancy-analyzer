@@ -144,6 +144,25 @@ def _logical_lines(text: str) -> list[str]:
     return result
 
 
+def skill_details(value):
+    """Only a directly attached self-report is a skill level/tenure, never job dates."""
+    match = re.fullmatch(
+        r"(.+?)\s*[:—–]\s*(?:(\d+(?:[.,]\d+)?)\s*(?:лет|года?|years?)\s*)?"
+        r"(?:(?:уровень\s*)?(начинающий|средний|продвинутый|beginner|intermediate|advanced))?",
+        value,
+        re.I,
+    )
+    if not match or not (match[2] or match[3]):
+        return value, None, None
+    years = float(match[2].replace(",", ".")) if match[2] else None
+    if years is not None and years > 80:
+        return match[1], None, None
+    level = {"начинающий": "beginner", "средний": "intermediate", "продвинутый": "advanced"}.get(
+        (match[3] or "").lower(), (match[3] or "").lower() or None
+    )
+    return match[1], years, level
+
+
 def extract_resume(text: str) -> ResumeExtraction:
     skills, positions, experience = [], [], []
     in_skills = False
@@ -187,12 +206,18 @@ def extract_resume(text: str) -> ResumeExtraction:
     names = {}
     for value in skills:
         value = value.strip().strip("•●▪*–- ")
+        value, _, _ = skill_details(value)
         if invalid_resume_skill(value, positions):
             notes.append(
                 "Должность, сведения об опыте и личный статус исключены из списка навыков."
             )
             continue
-        if re.search(r"@|https?://|www\.|\+?\d[\d() -]{8,}", value, re.I):
+        if re.search(
+            r"@|https?://|www\.|\+?\d[\d() -]{8,}|не (?:знаю|владею|умею)|"
+            r"нет опыта|без опыта|no experience",
+            value,
+            re.I,
+        ):
             continue
         if value and len(value) <= 100:
             names.setdefault(skill_key(value), canonical_skill(value))

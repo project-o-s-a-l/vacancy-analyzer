@@ -465,16 +465,19 @@ async def test_unavailable_model_errors_do_not_expose_response_body(job, extract
     assert "Java" not in str(error.value) and "http" not in str(error.value)
 
 
-async def test_oversized_input_is_not_truncated_or_sent(job, extraction):
+async def test_oversized_input_is_covered_with_explicit_chunk_failures(job, extraction):
     job.description = "x" * 25000
     requests = []
     async with httpx.AsyncClient(
         base_url="http://localhost", transport=transport(extraction, requests=requests)
     ) as client:
         analyzer = OllamaVacancyAnalyzer(client, model="qwen3:4b")
-        with pytest.raises(VacancyAnalysisError, match="не обрезан"):
-            await analyzer.analyze(job)
-    assert requests == []
+        parsed = await analyzer.analyze(job)
+    assert parsed.processing_status == "partial"
+    assert parsed.completed_chunks == 0
+    chats = [r for r in requests if r.url.path == "/api/chat"]
+    assert len(chats) == parsed.total_chunks > 1
+    assert all(len(json.loads(r.content)["messages"][1]["content"]) <= 6000 for r in chats)
 
 
 async def test_disabled_llm_does_not_start_http_client():
@@ -730,7 +733,7 @@ def test_old_analysis_without_warnings_remains_readable(job, extraction):
     assert parsed.input_scope == "full" and parsed.omitted_description_fragments == 0
 
 
-async def test_long_job_uses_one_bounded_request_then_reuses_persisted_scoped_analysis(
+async def test_long_job_excludes_company_context_and_reuses_professional_analysis(
     sessions, job, extraction
 ):
     job.description = (
@@ -756,13 +759,13 @@ async def test_long_job_uses_one_bounded_request_then_reuses_persisted_scoped_an
     sent = json.loads(body["messages"][1]["content"])
     allowed = body["format"]["$defs"]["SourceReference"]["enum"]
     assert set(allowed) == {key for group in sent.values() for key in group}
-    assert "d1" not in allowed  # Omitted company context cannot be selected by the model.
+    assert "Описание работодателя" not in json.dumps(sent, ensure_ascii=False)
     assert body["options"]["num_ctx"] == 8192 and body["options"]["num_thread"] == 2
     async with sessions() as session:
         saved = await VacancyRepository(session).get_by_source(job.source, job.source_id)
-    assert saved.analysis.input_scope == "work_sections"
-    assert saved.analysis.requirements_source == "rules"
-    assert saved.analysis.omitted_description_fragments > 0
+    assert saved.analysis.input_scope == "full"
+    assert saved.analysis.requirements_source == "llm"
+    assert saved.analysis.processing_status == "complete"
     assert saved.analysis.extraction.experience_min_years == 3
     assert saved.description == job.description and saved.raw_payload == job.raw_payload
 
@@ -774,11 +777,13 @@ async def test_reference_to_omitted_context_is_rejected_even_when_original_text_
         "О компании:\n" + "Описание работодателя. " * 500 + "\nТребования:\n" + job.description
     )
     payload = reference_payload(extraction)
-    payload["role_evidence"] = "d1"  # Present in the full source, absent from the sent selection.
+    payload["role_evidence"] = "d9999"  # Reference absent from the professional input.
     async with httpx.AsyncClient(
         base_url="http://localhost", transport=transport(payload, references=True)
     ) as client:
-        with pytest.raises(VacancyAnalysisError, match="role_evidence: нет исходного фрагмента d1"):
+        with pytest.raises(
+            VacancyAnalysisError, match="role_evidence: нет исходного фрагмента d9999"
+        ):
             await OllamaVacancyAnalyzer(client, model="qwen3:4b").analyze(job)
 
 
@@ -793,7 +798,7 @@ def test_partial_llm_coverage_does_not_hide_requirements_from_full_description(
     profile.skills = {"java": next(iter(profile.skills.values()))}
     match = score_vacancy(job, profile)
     fallback = score_vacancy(job.model_copy(update={"analysis": None}), profile)
-    assert "sql" in match.missing_required
+    assert "sql" in match.missing_unspecified  # Preferred and required are an explicit conflict.
     assert match.components["skills"] == fallback.components["skills"]
     assert match.requirements_version == fallback.requirements_version == "requirements-v2"
     assert "Категория: IT и данные" in render_card(job, match)

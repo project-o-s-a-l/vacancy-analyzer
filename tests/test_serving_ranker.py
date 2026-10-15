@@ -224,16 +224,22 @@ async def test_frozen_shown_features_owner_scope_and_old_message_exclusion(
     v = await seed(sessions, vacancy, profile)
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=10))
     users = UserService(sessions, min_score=0)
+    shown_profile = (await users.get(42)).profile
     assert (await (await users.notifications(42)).deliver(sender)).sent == 1
     async with sessions.begin() as session:
         await UserRepository(session).save(
-            RegisteredUser(42, CandidateProfile(skills={"java": {}}), None)
+            RegisteredUser(
+                42,
+                CandidateProfile(skills={"java": {}}),
+                None,
+                (await UserRepository(session).get(42)).revision,
+            )
         )
     feedback = FeedbackService(sessions)
     await feedback.record(42, v.id, "dislike", event_key="one", exposure_message_id=10)
     result = await feedback_observations(sessions, 42)
     assert len(result["observations"]) == 1 and result["observations"][0]["label"] is None
-    assert result["observations"][0]["profile_revision"] == profile_revision(profile)
+    assert result["observations"][0]["profile_revision"] == profile_revision(shown_profile)
     assert result["observations"][0]["review_required"]
     assert (await feedback_observations(sessions, 43))["observations"] == []
     await feedback.record(42, v.id, "like", event_key="old-message", exposure_message_id=999)

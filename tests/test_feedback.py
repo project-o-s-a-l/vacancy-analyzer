@@ -30,8 +30,8 @@ async def seed(sessions, vacancy, profile, *, users=(42,), context=None):
         await VacancyRepository(session).save(vacancy)
         for identifier in users:
             repo = UserRepository(session)
-            await repo.register(identifier)
-            await repo.save(RegisteredUser(identifier, profile, None))
+            user = await repo.register(identifier)
+            await repo.save(RegisteredUser(identifier, profile, None, user.revision))
             notifications = NotificationRepository(session)
             token = await notifications.claim(identifier, vacancy.id, exposure_context=context)
             await notifications.finish(identifier, vacancy.id, token, "sent", message_id=10)

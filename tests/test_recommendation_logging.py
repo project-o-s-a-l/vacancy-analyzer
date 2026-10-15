@@ -208,7 +208,9 @@ async def test_profile_change_before_claim_is_a_skip(log_sessions, vacancy, prof
         changed = profile.model_copy(deep=True)
         changed.experience_years = 100
         async with log_sessions.begin() as session:
-            await UserRepository(session).save(RegisteredUser(42, changed, None))
+            await UserRepository(session).save(
+                RegisteredUser(42, changed, None, (await UserRepository(session).get(42)).revision)
+            )
         return result
 
     service._selection = change_after_selection
@@ -371,7 +373,9 @@ async def test_profile_stale_resume_is_not_applied(log_sessions, capsys):
     changed = user.profile.model_copy(deep=True)
     changed.experience_years = 100
     async with log_sessions.begin() as session:
-        await UserRepository(session).save(RegisteredUser(42, changed, None))
+        await UserRepository(session).save(
+            RegisteredUser(42, changed, None, (await UserRepository(session).get(42)).revision)
+        )
     with logging_session(console_format="json"):
         with pytest.raises(ValueError):
             await resumes.confirm(42, draft.token)
@@ -430,6 +434,8 @@ async def test_competing_delivery_of_different_copy_ids(
     from scoring import score_vacancy
 
     cards = await seed(postgres_sessions, vacancy, profile)
+    async with postgres_sessions() as session:
+        cards = [await VacancyRepository(session).get_by_id(card.id) for card in cards]
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=19))
 
     async def deliver(card):

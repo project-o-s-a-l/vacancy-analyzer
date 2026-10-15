@@ -35,7 +35,10 @@ async def run_online() -> None:
         await engine.dispose()
 
 
-if context.is_offline_mode():
+supplied_connection = context.config.attributes.get("connection")
+if supplied_connection is not None:
+    configure(supplied_connection)
+elif context.is_offline_mode():
     context.configure(
         url=Settings().database_url,
         target_metadata=target_metadata,

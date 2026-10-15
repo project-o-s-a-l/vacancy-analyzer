@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, String
+from sqlalchemy import JSON, BigInteger, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -17,3 +17,9 @@ class TelegramUserModel(Base):
     history_reset_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    profile_revision: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    profile_schema_version: Mapped[str | None] = mapped_column(String(40))
+    professional_facts: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
+    )
+    facts_input_revision: Mapped[str | None] = mapped_column(String(64))

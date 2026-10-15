@@ -50,7 +50,7 @@ async def feedback_observations(sessions, user_id, *, limit=500):
                 group = snapshot["profile_revision"]
                 original = CandidateProfile.model_validate(context["profile"])
                 if (
-                    snapshot.get("version") != "ranking-exposure-v1"
+                    snapshot.get("version") not in {"ranking-exposure-v1", "ranking-exposure-v2"}
                     or not isinstance(group, str)
                     or not re.fullmatch(r"[a-f0-9]{64}", group)
                     or group != profile_revision(original)

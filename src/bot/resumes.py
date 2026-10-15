@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from bot.cards import split_message
 from bot.common import registered, send_form
-from bot.resume_cards import RESUME_PROMPT, render_resume, resume_keyboard
+from bot.resume_cards import RESUME_PROMPT, render_resume, render_resume_details, resume_keyboard
 from jobs.users import UserService
 from nlp.resume import looks_like_resume
 from processing.resume import (
@@ -104,10 +104,38 @@ def register_resumes(router: Router, service: UserService) -> None:
         if await registered(service, message, user_id):
             await service.resumes.delete(user_id)
             await message.answer(
-                "Текст резюме и черновик удалены. Поля профиля сохранены; "
+                "Тексты импортов и черновик удалены. Подтверждённые сведения и их цитаты "
+                "сохранены в профиле и истории; "
                 "их можно изменить через /profile.",
                 parse_mode=None,
             )
+
+    @router.message(Command("resume_details", "resume_edit"))
+    async def review_resume(message: Message, user_id: int) -> None:
+        if not await registered(service, message, user_id):
+            return
+        draft = await service.resumes.pending(user_id)
+        if draft is None:
+            await message.answer("Сначала загрузите резюме через /resume.", parse_mode=None)
+            return
+        parts = (message.text or "").split(maxsplit=2)
+        if parts[0].split("@")[0] == "/resume_details":
+            for chunk in split_message(render_resume_details(draft)):
+                await message.answer(chunk, parse_mode=None)
+            return
+        if len(parts) != 3:
+            await message.answer(
+                "Пример: /resume_edit skills Python, SQL. "
+                "Поля: skills, positions, experience, mode, remove.",
+                parse_mode=None,
+            )
+            return
+        try:
+            draft = await service.resumes.revise(user_id, draft.token, parts[1], parts[2])
+        except ValueError as exc:
+            await message.answer(str(exc), parse_mode=None)
+            return
+        await show_resume(message, user_id, draft)
 
     @router.message(F.document)
     async def resume_file(message: Message, bot: Bot, user_id: int) -> None:

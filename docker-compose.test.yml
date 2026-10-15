@@ -1,0 +1,22 @@
+# Deliberately independent of docker-compose.yml and the project's .env.
+# Only disposable test data; no production volumes or credentials.
+name: vacancy-analyzer-test
+services:
+  postgres:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    environment:
+      POSTGRES_DB: vacancy_analyzer_test
+      POSTGRES_USER: va_test
+      POSTGRES_PASSWORD: disposable-test-only
+    ports:
+      - "127.0.0.1:55432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U va_test -d vacancy_analyzer_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    cpus: 2.0
+    mem_limit: 1g
+    restart: "no"

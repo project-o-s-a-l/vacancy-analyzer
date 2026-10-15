@@ -1,0 +1,57 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><title>разметка</title>
+<style>
+[hidden]{display:none!important}body{font:16px system-ui;max-width:1100px;margin:24px auto;padding:0 20px;color:#162338;background:#f6f8fb}
+button,input,select,textarea{font:inherit;padding:8px;margin:4px 0;box-sizing:border-box}button{cursor:pointer}
+textarea{width:100%;min-height:90px}#source,#other{height:260px;background:white}.row{display:flex;gap:16px}.row>*{flex:1;min-width:0}
+section{padding:18px;background:white;border:1px solid #ccd4df;margin:12px 0;border-radius:8px}label{display:block;margin:8px 0}#nav{width:100%}pre{white-space:pre-wrap}#message{color:#154c30}
+</style>
+<h1>независимая разметка</h1><p id="who"></p>
+<p>Инструкция: <a href="INSTRUCTIONS.md">INSTRUCTIONS.md</a>. 0 — не подходит; 1 — частично; 2 — подходит; 3 — особенно хорошо.
+Неизвестное не означает отсутствие. Оценивайте на дату карточки. Факты и пригодность пары — разные задания.</p>
+<select id="filter"><option value="">Все задания</option><option value="pair:">Пары</option><option value="facts:">Факты</option></select>
+<button id="previous">←</button><button id="next">→</button><span id="progress"></span><select id="nav"></select>
+<h2 id="task"></h2><pre id="context"></pre>
+<div class="row"><div><label id="sourceLabel"></label><textarea id="source" readonly></textarea></div>
+<div id="otherWrap"><label>Исходный текст вакансии</label><textarea id="other" readonly></textarea></div></div>
+<section id="pairForm"><label>Соответствие <select id="grade"><option value="">Выберите 0–3</option><option>0</option><option>1</option><option>2</option><option>3</option></select></label>
+<label><input type="checkbox" id="violation"> Доказано нарушение обязательного условия (тогда 0)</label>
+<label>Основания через запятую: role, skills, experience, seniority, remote, location, salary, qualification, publication, uncertain, other<input id="reasons" style="width:100%"></label>
+<p>Выделите цитату в исходном тексте профиля или вакансии.</p><button id="pairEvidence">Добавить цитату</button><button id="clearEvidence">Очистить цитаты</button><pre id="evidenceList"></pre></section>
+<section id="factForm"><p>Выделите подтверждающий фрагмент, заполните значение и добавьте факт. Проверьте весь длинный документ.</p>
+<select id="field"><option>position</option><option>skill</option><option>experience_total</option><option>experience_role</option><option>task</option><option>seniority</option><option>qualification</option><option>remote</option><option>location</option><option>salary</option><option>publication</option><option>archived</option></select>
+<input id="value" placeholder="Текст, число, true/false/null"><select id="status"><option>known</option><option>unknown</option><option>conflicting</option></select>
+<select id="importance"><option>unspecified</option><option>required</option><option>preferred</option><option>not_required</option><option>context</option></select>
+<input id="alternative" placeholder="Группа «один из» или пусто"><button id="addFact">Добавить факт из выделения</button><button id="removeFact">Удалить последний</button><pre id="factList"></pre>
+<label><input id="complete" type="checkbox"> Проверил весь документ и перечислил все известные факты указанных типов</label></section>
+<section><label>Неизвестное / спорное (по одному на строке)<textarea id="unknowns"></textarea></label>
+<label>Обоснование (не менее 10 символов)<textarea id="rationale"></textarea></label>
+<label id="resolvesWrap">Арбитр: два SHA-256 импортов с расхождением через запятую<input id="resolves" style="width:100%"></label>
+<button id="save">Сохранить задание</button><button id="skip">Пропустить</button><p id="message" role="status"></p></section>
+<section><label><input id="attest" type="checkbox"> Я лично проверил исходники; автоматические оценки не выдаю за человеческие</label>
+<button id="download">Скачать завершённые оценки JSON</button><p>Прогресс хранится в этом браузере. Регулярно скачивайте JSON.
+Отдайте файл оператору вместе с assignment.json. Существующие оценки не перезаписываются.</p></section>
+<script>
+const packageData=__REVIEW_PACKAGE__;
+const $=id=>document.getElementById(id),cards=packageData.cards,assignment=packageData.assignment,storageKey='F01-'+packageData.assignment_hash;
+let records={};try{records=JSON.parse(localStorage.getItem(storageKey)||'{}')}catch(e){}
+let atoms=[],evidence=[],selection=null,keys=[];
+$('who').textContent='Проверяющий: '+assignment.reviewer+'; часть: '+assignment.split+'; роль: '+assignment.role;$('resolvesWrap').hidden=assignment.role!=='adjudicator';
+function notify(t){$('message').textContent=t}
+function store(){try{localStorage.setItem(storageKey,JSON.stringify(records))}catch(e){notify('Хранилище недоступно: скачайте JSON перед закрытием.')}}
+function fillNav(){const current=$('nav').value;keys=Object.keys(cards).sort().filter(k=>k.startsWith($('filter').value));$('nav').replaceChildren(...keys.map(k=>{const o=document.createElement('option');o.value=k;o.textContent=(records[k]?'✓ ':'')+k;return o}));if(keys.includes(current))$('nav').value=current;load()}
+function renderLists(){$('factList').textContent=JSON.stringify(atoms,null,2);$('evidenceList').textContent=JSON.stringify(evidence,null,2)}
+function load(){const key=$('nav').value,c=cards[key],r=records[key],p=r?.payload;selection=null;$('task').textContent=key;$('progress').textContent=Object.keys(records).length+' / '+Object.keys(cards).length+' сохранено';const pair=c.kind==='pair';$('pairForm').hidden=!pair;$('factForm').hidden=pair;$('otherWrap').hidden=!pair;
+$('sourceLabel').textContent=pair?'Исходный текст профиля':'Исходный документ';$('source').value=pair?c.profile_text:c.document;$('other').value=pair?c.vacancy_text:'';
+$('context').textContent=pair?'Момент оценки: '+c.reference_time+'\nПодтверждённый профиль:\n'+JSON.stringify(c.confirmed_profile,null,2)+'\nПоля вакансии:\n'+JSON.stringify({...c.vacancy,description:undefined},null,2):'';
+$('grade').value=p?.relevance??'';$('violation').checked=p?.violates_required??false;$('reasons').value=p?.reasons?.join(', ')||'';$('complete').checked=p?.complete??false;$('unknowns').value=p?.unknowns?.join('\n')||'';$('rationale').value=p?.rationale||'';$('resolves').value=r?.resolves?.join(', ')||'';atoms=p?.facts?structuredClone(p.facts):[];evidence=p?.evidence?structuredClone(p.evidence):[];renderLists();notify('')}
+function move(n){const i=keys.indexOf($('nav').value);$('nav').value=keys[(i+n+keys.length)%keys.length];load()}
+for(const id of ['source','other'])$(id).addEventListener('select',()=>{const el=$(id);selection={id,start:Array.from(el.value.slice(0,el.selectionStart)).length,end:Array.from(el.value.slice(0,el.selectionEnd)).length,quote:el.value.slice(el.selectionStart,el.selectionEnd)}});
+$('pairEvidence').onclick=()=>{if(!selection?.quote)return notify('Сначала выделите цитату.');evidence.push({source:selection.id==='source'?'profile_text':'vacancy_text',quote:selection.quote});renderLists()};$('clearEvidence').onclick=()=>{evidence=[];renderLists()};
+$('addFact').onclick=()=>{if(!selection?.quote||selection.id!=='source')return notify('Выделите фрагмент документа.');let value=$('value').value;try{value=JSON.parse(value)}catch(e){};if(value==='')return notify('Укажите значение. Неизвестное — null, status unknown.');atoms.push({field:$('field').value,value,status:$('status').value,importance:$('importance').value,alternative_group:$('alternative').value||null,start:selection.start,end:selection.end,quote:selection.quote});renderLists()};$('removeFact').onclick=()=>{atoms.pop();renderLists()};
+$('save').onclick=()=>{const key=$('nav').value,c=cards[key],rationale=$('rationale').value.trim(),unknowns=$('unknowns').value.split('\n').map(s=>s.trim()).filter(Boolean);if(rationale.length<10)return notify('Добавьте обоснование.');let payload;
+if(c.kind==='pair'){if($('grade').value===''||!evidence.length||!$('reasons').value.trim())return notify('Укажите оценку, основания и цитату.');if($('violation').checked&&$('grade').value!=='0')return notify('Обязательное нарушение требует 0.');payload={relevance:Number($('grade').value),violates_required:$('violation').checked,reasons:$('reasons').value.split(',').map(s=>s.trim()).filter(Boolean),unknowns,evidence,rationale}}
+else{if(!$('complete').checked)return notify('Подтвердите проверку полного документа.');payload={complete:true,facts:atoms,unknowns,rationale}}
+records[key]={task_id:key,payload:structuredClone(payload),resolves:$('resolves').value.split(',').map(s=>s.trim()).filter(Boolean)};store();fillNav();notify('Задание сохранено.')};
+$('download').onclick=()=>{if(!$('attest').checked)return notify('Подтвердите личную проверку.');const result={version:'evaluation-review-v1',assignment_hash:packageData.assignment_hash,reviewer:assignment.reviewer,reviewed_at:new Date().toISOString(),attestation:'I personally reviewed the frozen sources; no automatic labels',records:Object.values(records)};const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}));a.download='review-'+assignment.reviewer+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+$('nav').onchange=load;$('filter').onchange=fillNav;$('previous').onclick=()=>move(-1);$('next').onclick=()=>move(1);$('skip').onclick=()=>move(1);fillNav();
+</script></html>

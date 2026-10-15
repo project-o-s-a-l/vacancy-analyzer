@@ -70,6 +70,33 @@ def parser() -> argparse.ArgumentParser:
         prog="vacancy-analyzer", description="Сбор и объяснимое ранжирование вакансий"
     )
     commands = root.add_subparsers(dest="command", required=True)
+    from jobs.evaluation_cli import add_commands
+
+    add_commands(commands)
+    resume = commands.add_parser("resume", help="Загрузить, проверить и применить резюме")
+    resume.add_argument("--user-id", type=_positive, required=True)
+    resume.add_argument("--file", type=Path)
+    resume.add_argument("--details", action="store_true")
+    resume.add_argument("--edit", nargs=2, metavar=("FIELD", "VALUE"))
+    action = resume.add_mutually_exclusive_group()
+    action.add_argument(
+        "--apply", action="store_true", help="Показать результат и запросить подтверждение"
+    )
+    action.add_argument("--cancel", action="store_true")
+    action.add_argument("--delete", action="store_true")
+    vacancy_backfill = commands.add_parser(
+        "vacancy-backfill", help="Факты/проекции каталога, актуальные сначала"
+    )
+    vacancy_backfill.add_argument("--batch-size", type=_positive, default=100)
+    vacancy_backfill.add_argument("--max-batches", type=_positive, default=1)
+    vacancy_backfill.add_argument("--restart", action="store_true")
+    vacancy_backfill.add_argument("--enqueue-analysis", action="store_true")
+    backfill = commands.add_parser("facts-backfill", help="Ограниченный backfill фактов без LLM")
+    backfill.add_argument("--batch-size", type=_positive, default=100)
+    backfill.add_argument("--max-batches", type=_positive, default=1)
+    backfill.add_argument(
+        "--restart", action="store_true", help="Начать повторную проверку с начала"
+    )
     telegram_id = commands.add_parser("telegram-id", help="Узнать ID своего личного чата с ботом")
     telegram_id.add_argument(
         "--wait",
@@ -335,6 +362,11 @@ async def run_telegram(args: argparse.Namespace) -> None:
 
 
 async def run_command(args: argparse.Namespace) -> None:
+    if args.command.startswith("evaluation-"):
+        from jobs.evaluation_cli import run_command as run_evaluation
+
+        await run_evaluation(args)
+        return
     if args.command == "semantic-check":
         from jobs.semantic_acceptance import acceptance
 
@@ -515,6 +547,40 @@ async def run_command(args: argparse.Namespace) -> None:
     engine = create_engine(settings.database_url)
     try:
         sessions = session_factory(engine)
+        if args.command == "resume":
+            from jobs.resume_cli import run_resume_cli
+
+            await run_resume_cli(args, settings, sessions)
+            return
+        if args.command == "facts-backfill":
+            from jobs.fact_backfill import backfill_batch
+
+            if args.batch_size > 500 or args.max_batches > 100:
+                raise ValueError("Backfill ограничен 500 строками × 100 пакетами за запуск")
+            for index in range(args.max_batches):
+                result = await backfill_batch(
+                    sessions, batch_size=args.batch_size, restart=args.restart and index == 0
+                )
+                print(json.dumps(result, ensure_ascii=False))
+                if result["done"]:
+                    break
+            return
+        if args.command == "vacancy-backfill":
+            from jobs.vacancy_backfill import backfill_vacancies
+
+            if args.batch_size > 500 or args.max_batches > 100:
+                raise ValueError("Backfill ограничен 500 строками × 100 пакетами за запуск")
+            for index in range(args.max_batches):
+                result = await backfill_vacancies(
+                    sessions,
+                    batch_size=args.batch_size,
+                    restart=args.restart and index == 0,
+                    model=settings.ollama_model if args.enqueue_analysis else None,
+                )
+                print(json.dumps(result, ensure_ascii=False))
+                if result["done"]:
+                    break
+            return
         if args.command == "feedback-training":
             from jobs.feedback_training import feedback_observations
 
@@ -543,7 +609,8 @@ async def run_command(args: argparse.Namespace) -> None:
                         sessions,
                         vacancy_analyzer=vacancy,
                         resume_analyzer=resume,
-                        lease_seconds=settings.ollama_timeout + 60,
+                        lease_seconds=max(settings.ollama_timeout, settings.resume_total_timeout)
+                        + 60,
                     ).run_once()
                     print(outcome or "Нет готового задания или слот занят.")
             else:

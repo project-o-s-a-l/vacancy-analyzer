@@ -1,0 +1,19 @@
+{
+  "skills": {
+    "python": {
+      "years": null
+    }
+  },
+  "experience_years": 3.0,
+  "preferences": {
+    "positions": [],
+    "remote": "any",
+    "locations": [],
+    "salary_min": null,
+    "currency": "RUB",
+    "salary_gross": true,
+    "salary_required": false,
+    "locations_required": false
+  },
+  "qualifications": []
+}

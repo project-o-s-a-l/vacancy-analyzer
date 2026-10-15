@@ -146,6 +146,10 @@ class FeedbackService:
                 expected_version=expected_version,
                 exposure_message_id=exposure_message_id,
                 action_context={
+                    "version": "feedback-action-v2",
+                    "profile_revision": user.revision,
+                    "candidate_facts_revision": user.profile.professional_facts.revision,
+                    "vacancy_facts_revision": vacancy.professional_facts.revision,
                     "profile": user.profile.model_dump(mode="json"),
                     "payload_hash": payload_hash(vacancy.raw_payload),
                 },

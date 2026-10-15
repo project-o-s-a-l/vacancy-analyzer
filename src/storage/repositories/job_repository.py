@@ -176,10 +176,11 @@ class JobRepository:
             select(BackgroundJob.id)
             .where(
                 BackgroundJob.lease_until > now,
+                BackgroundJob.kind != "vacancy_projection",
             )
             .limit(1)
         )
-        if active:
+        if active and kinds != ["vacancy_projection"]:
             return None
         ready = or_(
             and_(BackgroundJob.state == "pending", BackgroundJob.next_run_at <= now),
