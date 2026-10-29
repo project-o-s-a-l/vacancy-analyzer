@@ -10,7 +10,6 @@ from domain import Vacancy
 from domain.contracts import facts_contract
 from domain.professional import ProfessionalFacts
 from domain.retrieval import RETRIEVAL_VERSION
-from domain.skill_gap import SkillGapVacancy
 from domain.vacancy_analysis import VacancyAnalysis, VacancyCategory, analysis_input_hash
 from domain.vacancy_duplicates import vacancy_duplicate_key
 from nlp.professional_facts import (
@@ -34,6 +33,8 @@ def _to_domain(row: VacancyModel) -> Vacancy:
     values = {name: getattr(row, name) for name in Vacancy.model_fields}
     for name in ("published_at", "collected_at"):
         values[name] = _aware(values[name])
+    if values["last_checked_at"] is not None:
+        values["last_checked_at"] = _aware(values["last_checked_at"])
     if values["valid_until"] is not None:
         values["valid_until"] = _aware(values["valid_until"])
     vacancy = Vacancy.model_validate(values)
@@ -55,7 +56,9 @@ class VacancyRepository:
             raise ValueError(f"Unsupported database dialect: {dialect}")
         self.insert = pg_insert if dialect == "postgresql" else sqlite_insert
 
-    async def save(self, vacancy: Vacancy, *, seen_in_search: bool = True) -> UUID:
+    async def save(
+        self, vacancy: Vacancy, *, seen_in_search: bool = True, verified: bool = True
+    ) -> UUID:
         values = vacancy.model_dump(mode="python", exclude={"professional_facts"})
         values["url"] = str(vacancy.url)
         values["company_url"] = str(vacancy.company_url) if vacancy.company_url else None
@@ -65,7 +68,10 @@ class VacancyRepository:
             values["analysis"] = vacancy.analysis.model_dump(mode="json")
         observed = vacancy.collected_at
         values["last_seen_at"] = observed
-        values["last_checked_at"] = observed
+        values["last_checked_at"] = observed if verified else None
+        values["last_check_attempt_at"] = observed if verified else None
+        values["next_check_at"] = None
+        values["check_requested_at"] = None
         values["availability"] = (
             "closed"
             if vacancy.archived
@@ -84,6 +90,7 @@ class VacancyRepository:
                 "source",
                 "source_id",
                 "collected_at",
+                "last_checked_at",
                 "published_at",
                 "description",
                 "description_html",
@@ -129,8 +136,19 @@ class VacancyRepository:
             # Identical source: touch observation metadata without rewriting HTML,
             # normalised fields, analysis or snapshot payloads.
             metadata = {
-                name: values[name] for name in ("last_checked_at", "availability", "check_error")
+                name: values[name]
+                for name in (
+                    "last_checked_at",
+                    "availability",
+                    "check_error",
+                    "last_check_attempt_at",
+                    "next_check_at",
+                    "check_requested_at",
+                )
             }
+            if not verified:
+                # Offline replay of identical content cannot certify or invalidate a live check.
+                metadata = {}
             if seen_in_search:
                 metadata["last_seen_at"] = observed
             metadata["closed_at"] = case(
@@ -502,15 +520,17 @@ class VacancyRepository:
 
     async def skill_gap_sample(
         self, *, since: datetime, until: datetime, limit: int = 2000
-    ) -> tuple[list[SkillGapVacancy], bool]:
+    ) -> tuple[list[Vacancy], bool]:
         if limit < 1 or since.tzinfo is None or until.tzinfo is None or since > until:
             raise ValueError("Invalid analysis window or limit")
         since, until = since.astimezone(UTC), until.astimezone(UTC)
-        # Select only analysis fields: never transfer raw HTML or historical payloads.
+        from storage.repositories.candidate_repository import CandidateRepository
+
+        # needs the same facts and conditions as ranking, never raw source payloads.
         rows = (
             (
                 await self.session.execute(
-                    select(*(getattr(VacancyModel, name) for name in SkillGapVacancy.model_fields))
+                    select(*CandidateRepository.projection(analysis=True))
                     .where(
                         VacancyModel.published_at >= since.astimezone(UTC),
                         VacancyModel.published_at <= until.astimezone(UTC),
@@ -528,7 +548,4 @@ class VacancyRepository:
             .mappings()
             .all()
         )
-        return [
-            SkillGapVacancy.model_validate({**row, "published_at": _aware(row["published_at"])})
-            for row in rows[:limit]
-        ], len(rows) > limit
+        return [CandidateRepository.vacancy(row) for row in rows[:limit]], len(rows) > limit

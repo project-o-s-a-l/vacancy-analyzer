@@ -156,6 +156,11 @@ async def test_cli_review_and_apply_use_current_preview_without_printing_tokens(
         user_id=42, file=path, details=True, edit=None, apply=False, cancel=False, delete=False
     )
     await run_resume_cli(args, Settings(_env_file=None), sessions)
+    from jobs.analysis_worker import AnalysisWorker
+
+    assert await users.resumes.pending(42) is None
+    assert "очереди" in capsys.readouterr().out
+    assert await AnalysisWorker(sessions).run_once() == "resume"
     draft = await users.resumes.pending(42)
     assert draft.token not in capsys.readouterr().out
     args.file, args.apply, args.edit = None, True, ["experience", "4"]

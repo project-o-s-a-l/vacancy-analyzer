@@ -48,6 +48,11 @@ def choice_options(clause: str, terms: list[str]) -> list[str] | None:
         return None
     if atomic := _branch_skill(clause, terms):
         return [atomic]
+    # A single trailing duration qualifies the complete simple choice. Multiple
+    # branch-specific numbers remain unresolved instead of sharing one bound.
+    duration = r"(?:от|не менее|at least)\s+\d+(?:[.,]\d+)?\s*(?:лет|года?|years?)\.?$"
+    if len(re.findall(r"\d+(?:[.,]\d+)?", clause)) == 1:
+        clause = re.sub(duration, "", clause, flags=re.I).strip()
     branches = OR.split(clause)
     if len(branches) < 2:
         return None

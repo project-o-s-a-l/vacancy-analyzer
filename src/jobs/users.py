@@ -13,6 +13,7 @@ from observability.actions import observed
 from observability.transactions import after_commit
 from storage.models import (
     BackgroundJob,
+    ExposureModel,
     FactBackfillModel,
     FactRevisionModel,
     FeedbackEventModel,
@@ -22,6 +23,7 @@ from storage.models import (
     ResumeSourceModel,
     SavedSelectionModel,
     SearchPlanModel,
+    ServingRevisionModel,
     TelegramUserModel,
     VacancyModel,
 )
@@ -74,7 +76,16 @@ class UserService:
             )
             await session.execute(select(FactRevisionModel.revision).limit(1))
             await session.execute(select(FactBackfillModel.name).limit(1))
-            await session.execute(select(SavedSelectionModel.owner_id).limit(1))
+            await session.execute(
+                select(
+                    SavedSelectionModel.owner_id,
+                    SavedSelectionModel.candidate_context,
+                    SavedSelectionModel.candidate_entries,
+                    SavedSelectionModel.candidate_expires_at,
+                ).limit(1)
+            )
+            await session.execute(select(ServingRevisionModel.revision).limit(1))
+            await session.execute(select(ExposureModel.id).limit(1))
             await session.execute(select(TelegramUserModel.user_id).limit(1))
             await session.execute(select(TelegramUserModel.history_reset_token).limit(1))
             await session.execute(select(FeedbackModel.user_id).limit(1))
@@ -167,11 +178,17 @@ class UserService:
         *,
         require_profile: bool = True,
     ) -> NotificationService:
-        user = await self.get(user_id)
-        if user is None:
-            raise ValueError("Сначала зарегистрируйтесь командой /start")
-        if require_profile and not user.profile.skills:
-            raise ValueError("Сначала укажите навыки в /profile.")
+        from storage.repositories.selection_repository import SelectionRepository
+
+        # Capture profile and deletion epoch under the same short owner lock.
+        # Separate reads can accidentally bind an old profile to a new ABA epoch.
+        async with self.sessions.begin() as session:
+            user = await UserRepository(session).get(user_id, lock=True)
+            if user is None:
+                raise ValueError("Сначала зарегистрируйтесь командой /start")
+            if require_profile and not user.profile.skills:
+                raise ValueError("Сначала укажите навыки в /profile.")
+            epoch = await SelectionRepository(session).owner_epoch(user_id)
         return NotificationService(
             self.sessions,
             user.profile,
@@ -181,6 +198,8 @@ class UserService:
             fresh_days=self.fresh_days,
             ranker_policy=self.ranker_policy,
             saved_selections_enabled=self.saved_selections_enabled,
+            expected_profile_revision=user.revision,
+            expected_owner_epoch=epoch,
         )
 
     async def skill_gap(self, user_id: int):

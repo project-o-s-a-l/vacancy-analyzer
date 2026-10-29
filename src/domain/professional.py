@@ -184,6 +184,15 @@ class SourceReference(StrictModel):
     kind: Literal["profile", "resume", "vacancy", "extraction", "legacy"]
 
 
+class LexicalObservation(StrictModel):
+    """Candidate-independent phrase index; matching never reparses source text."""
+
+    tokens: list[str]
+    importance: Literal["required", "preferred", "context", "not_required", "unspecified"]
+    ambiguous: bool = False
+    evidence: Evidence
+
+
 class ProfessionalFacts(StrictModel):
     schema_version: Literal["professional-facts-v1"] = FACT_SCHEMA
     document_id: Name
@@ -208,6 +217,7 @@ class ProfessionalFacts(StrictModel):
     episodes: list[ExperienceEpisode] = Field(default_factory=list)
     requirements: list[Requirement] = Field(default_factory=list)
     alternatives: list[Alternative] = Field(default_factory=list)
+    lexical_observations: list[LexicalObservation] = Field(default_factory=list)
     # Calendar overlaps are never summed automatically into total/relevant tenure.
     overlap_policy: Literal["unaggregated", "calendar_union_v1"] = "unaggregated"
 
@@ -263,7 +273,7 @@ class ProfessionalFacts(StrictModel):
                 for child in value:
                     inspect(child)
 
-        for collection in (self.facts, self.episodes, self.requirements):
+        for collection in (self.facts, self.episodes, self.requirements, self.lexical_observations):
             inspect(collection)
         return self
 

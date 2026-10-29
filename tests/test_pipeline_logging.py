@@ -358,7 +358,9 @@ async def test_resume_invalid_response_uses_rules_before_success(log_sessions, c
         r["event"] == "model.rules_fallback" and r["code"] == "invalid_response_fallback"
         for r in rows
     )
-    assert rows[-1]["event"] == "job.finished" and rows[-1]["job_state"] == "succeeded"
+    finished = [r for r in rows if r["event"] == "job.finished"]
+    assert finished[-1]["job_state"] == "succeeded"
+    assert any(r["event"] == "model.stage_finished" and r["stage"] == "result_write" for r in rows)
 
 
 @pytest.mark.parametrize("outcome", ["ok", "timeout", "rejected"])

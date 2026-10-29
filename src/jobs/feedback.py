@@ -24,6 +24,27 @@ class FeedbackService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self.sessions = sessions
 
+    async def confirm_display(self, user_id, vacancy, profile, match, message_id):
+        """Persist exactly the rendered history/bookmark card after send returned an ID."""
+        from scoring.serving_features import shown_context
+
+        async with self.sessions.begin() as session:
+            await self._history_user(session, user_id)
+            await NotificationRepository(session).confirm_exposure(
+                user_id,
+                vacancy.id,
+                message_id,
+                {
+                    "version": "recommendation-exposure-v3",
+                    "profile": profile.model_dump(mode="json"),
+                    "match": match.model_dump(mode="json"),
+                    "rank": 1,
+                    "payload_hash": payload_hash(vacancy.raw_payload),
+                    "ranker_context": shown_context(vacancy, profile, match, 1),
+                    "surface": "history",
+                },
+            )
+
     async def _history_user(self, session: AsyncSession, user_id: int) -> TelegramUserModel:
         user = await session.scalar(
             select(TelegramUserModel).where(TelegramUserModel.user_id == user_id).with_for_update()

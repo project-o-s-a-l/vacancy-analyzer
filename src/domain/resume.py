@@ -45,6 +45,7 @@ class ResumePeriod(BaseModel):
 
 class ResumeCost(BaseModel):
     requests: int = 0
+    cache_hits: int = 0
     request_bytes: list[int] = Field(default_factory=list)
     input_token_upper_bounds: list[int] = Field(default_factory=list)
     prompt_tokens: int = 0

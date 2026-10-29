@@ -672,6 +672,45 @@
       "type": "object"
     },
     "JsonValue": {},
+    "LexicalObservation": {
+      "additionalProperties": false,
+      "description": "Candidate-independent phrase index; matching never reparses source text.",
+      "properties": {
+        "tokens": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tokens",
+          "type": "array"
+        },
+        "importance": {
+          "enum": [
+            "required",
+            "preferred",
+            "context",
+            "not_required",
+            "unspecified"
+          ],
+          "title": "Importance",
+          "type": "string"
+        },
+        "ambiguous": {
+          "default": false,
+          "title": "Ambiguous",
+          "type": "boolean"
+        },
+        "evidence": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "required": [
+        "tokens",
+        "importance",
+        "evidence"
+      ],
+      "title": "LexicalObservation",
+      "type": "object"
+    },
     "QualificationFact": {
       "additionalProperties": false,
       "properties": {
@@ -1165,6 +1204,13 @@
         "$ref": "#/$defs/Alternative"
       },
       "title": "Alternatives",
+      "type": "array"
+    },
+    "lexical_observations": {
+      "items": {
+        "$ref": "#/$defs/LexicalObservation"
+      },
+      "title": "Lexical Observations",
       "type": "array"
     },
     "overlap_policy": {

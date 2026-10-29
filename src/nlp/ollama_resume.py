@@ -11,8 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from domain.resume import MAX_RESUME_TEXT, ResumeExtraction, ResumeObservation
 from nlp.extraction import canonical_skill, extract_skills
+from nlp.inference_metrics import cache_key, record, server_timings, stage
 from nlp.ollama import OllamaUnavailable, OllamaVacancyAnalyzer
-from nlp.ollama_slot import model_slot
+from nlp.ollama_runtime import request_slot
 from nlp.resume import EXPERIENCE, NO_EXPERIENCE, extract_resume, invalid_resume_skill
 from nlp.resume_document import NEGATED, extract_document, merge_extraction, sections
 
@@ -36,7 +37,7 @@ OUTPUT_TOKENS = 1536
 TEMPLATE_MARGIN = 512
 INPUT_TOKEN_BUDGET = CONTEXT_TOKENS - OUTPUT_TOKENS - TEMPLATE_MARGIN
 DEFAULT_TOTAL_SECONDS = 300
-Reference = Annotated[str, Field(pattern=r"^d[1-9]\d{0,3}$")]
+Reference = Annotated[str, Field(pattern=r"^d[1-9][0-9]{0,3}$")]
 
 
 class _NamedEvidence(BaseModel):
@@ -87,7 +88,7 @@ def request_body(text, model):
         "model": model,
         "stream": False,
         "think": False,
-        "keep_alive": 0,
+        "keep_alive": 30,
         "format": schema,
         "options": {
             "temperature": 0,
@@ -111,22 +112,31 @@ class OllamaResumeAnalyzer:
         model: str,
         total_seconds=DEFAULT_TOTAL_SECONDS,
         request_seconds=180,
+        runtime=None,
     ) -> None:
         self.client = client
         self.model = model
         self.model_digest = None
         self.total_seconds = total_seconds
         self.request_seconds = request_seconds
+        self.runtime = runtime
 
     async def analyze(
-        self, text: str, *, reference_time=None, still_current=None
+        self, text: str, *, reference_time=None, still_current=None, cache=None, prepared=None
     ) -> ResumeExtraction:
         if len(text) > MAX_RESUME_TEXT:
             raise ResumeAnalysisError("Текст превышает допустимые 60 000 символов.")
+        self.model_digest = None  # Readiness belongs to this document, not the previous job.
         started = time.monotonic()
-        result = extract_document(text, reference_time=reference_time)
+        with stage("document_prepare"):
+            result = (
+                prepared.model_copy(deep=True)
+                if prepared is not None
+                else extract_document(text, reference_time=reference_time)
+            )
+            blocks = sections(text)
         ready = False
-        for block, coverage in zip(sections(text), result.coverage, strict=True):
+        for block, coverage in zip(blocks, result.coverage, strict=True):
             if coverage.status != "unresolved":
                 continue
             remaining = self.total_seconds - (time.monotonic() - started)
@@ -142,7 +152,9 @@ class OllamaResumeAnalyzer:
                         await identity.ready()
                         self.model_digest = identity.model_digest
                         ready = True
-                    parsed = await self._block(text[block.context_start : block.end], result.cost)
+                    parsed = await self._block(
+                        text[block.context_start : block.end], result.cost, cache=cache
+                    )
             except (ResumeAnalysisError, OllamaUnavailable, TimeoutError) as exc:
                 coverage.reason = (
                     "timeout"
@@ -190,8 +202,16 @@ class OllamaResumeAnalyzer:
             result.notes.append("Общий стаж не определён; проверьте даты и общий стаж.")
         return result
 
-    async def _block(self, text, cost):
+    async def _block(self, text, cost, *, cache=None):
+        prepared_at = time.perf_counter()
         body, fragments, offsets, upper = request_body(text, self.model)
+        if self.runtime:
+            body["keep_alive"] = self.runtime.keep_alive
+        record("input_prepare", (time.perf_counter() - prepared_at) * 1000)
+        key = cache_key("resume_analysis", self.model, self.model_digest, body)
+        if cache and (saved := await cache.get(key)) is not None:
+            cost.cache_hits += 1
+            return ResumeExtraction.model_validate(saved)
         cost.requests += 1
         cost.request_bytes.append(
             len(self.client.build_request("POST", "/api/chat", json=body).content)
@@ -200,7 +220,7 @@ class OllamaResumeAnalyzer:
         earlier_usage_complete = cost.usage_complete
         cost.usage_complete = False
         try:
-            async with model_slot():
+            async with request_slot(self.runtime, body):
                 async with self.client.stream("POST", "/api/chat", json=body) as response:
                     response.raise_for_status()
                     raw = bytearray()
@@ -208,7 +228,9 @@ class OllamaResumeAnalyzer:
                         raw.extend(chunk)
                         if len(raw) > 64_000:
                             raise ResumeAnalysisError("Ответ локальной модели превышает лимит")
+            validation_at = time.perf_counter()
             payload = json.loads(raw)
+            server_timings(payload)
             cost.prompt_tokens += max(0, int(payload.get("prompt_eval_count", 0)))
             cost.output_tokens += max(0, int(payload.get("eval_count", 0)))
             cost.usage_complete = (
@@ -300,4 +322,11 @@ class OllamaResumeAnalyzer:
                 result.experience_years = extract_resume(source).experience_years
             elif source.casefold() in {"без опыта", "нет опыта", "no experience"}:
                 result.experience_years = 0
+        record("validation", (time.perf_counter() - validation_at) * 1000)
+        if cache and result.completeness == "complete":
+            identity = OllamaVacancyAnalyzer(self.client, model=self.model)
+            await identity.ready()
+            if identity.model_digest != self.model_digest:
+                raise OllamaUnavailable("Веса модели изменились во время разбора")
+            await cache.put(key, result.model_dump(mode="json"))
         return result

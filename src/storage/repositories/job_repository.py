@@ -5,12 +5,12 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from uuid import uuid4
 
-from sqlalchemy import and_, case, or_, select, update
+from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from observability.transactions import after_commit
-from storage.models import BackgroundJob
+from storage.models import BackgroundJob, InferenceGate
 
 TERMINAL = {"succeeded", "failed", "superseded", "cancelled"}
 
@@ -20,6 +20,26 @@ class JobRepository:
         self.session = session
         self.insert = (
             pg_insert if session.get_bind().dialect.name == "postgresql" else sqlite_insert
+        )
+
+    async def gate(self):
+        await self.session.execute(
+            self.insert(InferenceGate)
+            .values(name="global", resume_streak=0)
+            .on_conflict_do_nothing(index_elements=["name"])
+        )
+        return await self.session.scalar(
+            select(InferenceGate)
+            .where(InferenceGate.name == "global")
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+
+    async def clear_gate(self, token):
+        await self.session.execute(
+            update(InferenceGate)
+            .where(InferenceGate.name == "global", InferenceGate.token == token)
+            .values(token=None, until=None, runtime=None)
         )
 
     def _event(self, name, row, *, code=None, **fields):
@@ -91,6 +111,40 @@ class JobRepository:
     ):
         now = datetime.now(UTC)
         key = sha256(f"{kind}:{entity_key}:{revision}:{pipeline}".encode()).hexdigest()
+        from jobs.queue_policy import QueueFull, SubmissionLimited, queue_settings
+
+        limits = queue_settings()
+        # Serialize admission across all producers, including separate containers.
+        # Entity/user locks are always acquired before this gate, never in reverse.
+        await self.gate()
+        existing = await self.session.scalar(
+            select(BackgroundJob).where(BackgroundJob.dedupe_key == key)
+        )
+        if existing is None or existing.state in TERMINAL:
+            if user_id is not None:
+                recent = await self.session.scalar(
+                    select(func.count())
+                    .select_from(BackgroundJob)
+                    .where(
+                        BackgroundJob.user_id == user_id,
+                        BackgroundJob.created_at > now - timedelta(minutes=1),
+                    )
+                )
+                if recent >= limits.analysis_user_per_minute:
+                    raise SubmissionLimited()
+            active_count = await self.session.scalar(
+                select(func.count())
+                .select_from(BackgroundJob)
+                .where(
+                    BackgroundJob.state.in_(["pending", "running"]),
+                    ~and_(BackgroundJob.kind == kind, BackgroundJob.entity_key == entity_key),
+                )
+            )
+            limit = limits.analysis_queue_limit
+            if kind != "resume_analysis":
+                limit -= min(limits.analysis_resume_reserve, limit - 1)
+            if active_count >= limit:
+                raise QueueFull()
         obsolete = and_(
             BackgroundJob.kind == kind,
             BackgroundJob.entity_key == entity_key,
@@ -168,8 +222,25 @@ class JobRepository:
         )
         return row
 
-    async def claim(self, owner, *, lease_seconds=240, now=None, kinds=None, job_id=None):
+    async def claim(
+        self,
+        owner,
+        *,
+        lease_seconds=240,
+        now=None,
+        kinds=None,
+        job_id=None,
+        runtime=None,
+        model_work=True,
+    ):
         now = now or datetime.now(UTC)
+        gate = await self.gate()
+        from jobs.queue_policy import queue_settings
+
+        inference = model_work and kinds != ["vacancy_projection"]
+        # Native/legacy tests with no remote runtime still retain the original lease fence.
+        if inference and gate.token and gate.runtime:
+            return None  # Only a verified drain may remove uncertain remote work.
         # A crashed client might leave Ollama generating. Do not open another slot
         # until its bounded request deadline, even after its PG session lock vanished.
         active = await self.session.scalar(
@@ -180,7 +251,7 @@ class JobRepository:
             )
             .limit(1)
         )
-        if active and kinds != ["vacancy_projection"]:
+        if active and inference:
             return None
         ready = or_(
             and_(BackgroundJob.state == "pending", BackgroundJob.next_run_at <= now),
@@ -211,7 +282,9 @@ class JobRepository:
         selected = (
             await self.session.execute(
                 statement.order_by(
-                    BackgroundJob.priority,
+                    case((BackgroundJob.kind != "resume_analysis", 0), else_=1)
+                    if inference and gate.resume_streak >= queue_settings().analysis_resume_burst
+                    else BackgroundJob.priority,
                     BackgroundJob.created_at,
                     BackgroundJob.id,
                 )
@@ -241,10 +314,31 @@ class JobRepository:
             )
         ).scalar_one_or_none()
         if row is not None:
+            if inference and row.kind != "vacancy_projection":
+                gate.resume_streak = (
+                    min(gate.resume_streak + 1, queue_settings().analysis_resume_burst)
+                    if row.kind == "resume_analysis"
+                    else 0
+                )
+                gate.token, gate.until, gate.runtime = token, row.lease_until, runtime
+            elif inference and row.kind == "vacancy_projection":
+                gate.resume_streak = 0
             self._event(
                 "job.lease_recovered" if selected.state == "running" else "job.claimed",
                 row,
                 result="ready",
+                wait_ms=max(
+                    0,
+                    (
+                        now
+                        - (
+                            row.created_at.replace(tzinfo=UTC)
+                            if row.created_at.tzinfo is None
+                            else row.created_at
+                        )
+                    ).total_seconds()
+                    * 1000,
+                ),
             )
         return row
 
@@ -303,7 +397,7 @@ class JobRepository:
             .values(state="cancelled", payload=None, result=None, updated_at=datetime.now(UTC))
         )
 
-    async def release(self, job):
+    async def release(self, job, *, remote_settled=False):
         # An obsolete/cancelled request has now actually returned; its cooldown
         # may be removed, but only by the exact claimant (ABA fencing).
         await self.session.execute(
@@ -312,7 +406,11 @@ class JobRepository:
                 BackgroundJob.id == job.id,
                 BackgroundJob.lease_token == job.lease_token,
                 BackgroundJob.owner == job.owner,
-                BackgroundJob.state.in_(["superseded", "cancelled"]),
+                BackgroundJob.state.in_(
+                    ["superseded", "cancelled", "pending", "failed", "succeeded"]
+                    if remote_settled
+                    else ["superseded", "cancelled"]
+                ),
             )
             .values(lease_until=None, lease_token=None, owner=None)
         )

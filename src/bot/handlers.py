@@ -2,6 +2,7 @@ from aiogram import Dispatcher, Router
 from aiogram.types import Message
 
 from bot.common import PrivateChatsMiddleware
+from bot.concurrent import OrderedDispatcher
 from bot.help import HELP
 from bot.profiles import register_profiles
 from bot.recommendations import register_recommendations
@@ -21,6 +22,6 @@ def build_dispatcher(service: UserService) -> Dispatcher:
     async def fallback(message: Message) -> None:
         await message.answer(HELP, parse_mode=None)
 
-    dispatcher = Dispatcher()
+    dispatcher = OrderedDispatcher()
     dispatcher.include_router(router)
     return dispatcher

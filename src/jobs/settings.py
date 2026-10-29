@@ -19,7 +19,10 @@ class Settings(BaseSettings):
     hh_profile_check_interval: float = Field(default=60, ge=10, allow_inf_nan=False)
     hh_snapshots_dir: Path = Path("data/raw/hh")
     hh_auto_collect: bool = True
-    hh_check_limit: int = Field(default=2, ge=0, le=10)
+    hh_source: Literal["html", "api"] = "html"
+    hh_search_requests_per_hour: int = Field(default=30, ge=1, le=1000)
+    hh_detail_requests_per_hour: int = Field(default=90, ge=1, le=5000)
+    hh_check_limit: int = Field(default=20, ge=0, le=100)
     hh_check_interval: float = Field(default=86400, ge=3600, allow_inf_nan=False)
     hh_check_batch_interval: float = Field(default=3600, ge=3600, allow_inf_nan=False)
     vacancy_llm_enabled: bool = False
@@ -30,12 +33,22 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_model: str = Field(default="qwen3:4b", min_length=1)
     ollama_timeout: float = Field(default=180, ge=5, le=600, allow_inf_nan=False)
+    ollama_keep_alive: int = Field(default=30, ge=0, le=120)
+    inference_min_available_mb: int = Field(default=4096, ge=256, le=65536)
+    analysis_queue_limit: int = Field(default=256, ge=8, le=5000)
+    analysis_resume_reserve: int = Field(default=32, ge=1, le=512)
+    analysis_resume_burst: int = Field(default=3, ge=1, le=10)
+    analysis_user_per_minute: int = Field(default=3, ge=1, le=30)
     telegram_bot_token: SecretStr | None = None
     telegram_top: int = Field(default=5, ge=1, le=20)
     telegram_min_score: float = Field(default=50, ge=0, le=100, allow_inf_nan=False)
     ranker_mode: Literal["rules", "shadow", "model"] = "rules"
     ranker_model_path: Path | None = None
     saved_selections_enabled: bool = True
+    retrieval_k: int = Field(default=64, ge=1, le=5000)
+    retrieval_pool_factor: int = Field(default=4, ge=1, le=16)
+    retrieval_normalization: Literal["legacy", "coverage"] = "coverage"
+    retrieval_backend: Literal["sql", "compact"] = "sql"
 
     @field_validator("ranker_model_path", mode="before")
     @classmethod

@@ -53,6 +53,8 @@ class Vacancy(BaseModel):
     published_at: AwareDatetime
     valid_until: AwareDatetime | None = None
     collected_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    # Operational read metadata; never changes source/fact/training wire hashes.
+    last_checked_at: AwareDatetime | None = Field(default=None, exclude=True)
     raw_payload: dict[str, JsonValue]
     analysis: VacancyAnalysis | None = None
     professional_facts: ProfessionalFacts | None = None

@@ -10,6 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from domain.contracts import facts_contract
 from jobs.analysis_queue import enqueue_vacancy
 from nlp.analysis_identity import pipeline_hash
+from scoring.fact_projection import projection_contract
 from storage.models import FactBackfillModel
 from storage.models import VacancyModel as V
 from storage.repositories.vacancy_repository import VacancyRepository
@@ -22,6 +23,8 @@ async def backfill_vacancies(sessions, *, batch_size=100, restart=False, model=N
     name = (
         "f04-vacancies-"
         + facts_contract()[:24]
+        + "-"
+        + projection_contract()[:12]
         + ("-" + pipeline_hash("vacancy_analysis", model)[:12] if model else "-rules")
     )
     now = datetime.now(UTC)

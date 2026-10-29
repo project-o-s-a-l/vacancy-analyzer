@@ -41,6 +41,7 @@ def vacancy_fact_input_revision(vacancy):
             "id",
             "raw_payload",
             "collected_at",
+            "last_checked_at",
             "analysis",
             "professional_facts",
             "description_html",

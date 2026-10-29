@@ -17,6 +17,7 @@ from bot.keyboards import (
     reason_keyboard,
     vacancy_keyboard,
 )
+from jobs.serving_compute import compute
 from jobs.users import UserService
 from scoring import score_vacancy
 from scoring.skill_gap import render_skill_gap
@@ -25,6 +26,7 @@ from scoring.skill_gap import render_skill_gap
 def register_recommendations(router: Router, service: UserService) -> None:
     @router.message(Command("latest"))
     async def latest(message: Message, bot: Bot, user_id: int) -> None:
+        await message.answer("Подбираю новые вакансии. Результат появится здесь.", parse_mode=None)
         try:
             notifications = await service.notifications(user_id)
         except ValueError as exc:
@@ -63,13 +65,17 @@ def register_recommendations(router: Router, service: UserService) -> None:
         await message.answer(f"{title} · страница {page + 1}", parse_mode=None)
         for vacancy, state in items[:5]:
             await asyncio.sleep(1.05)
-            text = render_card(vacancy, score_vacancy(vacancy, profile))
+            match = await compute(score_vacancy, vacancy, profile)
+            text = render_card(vacancy, match)
             if vacancy.archived or (
                 vacancy.valid_until and vacancy.valid_until <= datetime.now(UTC)
             ):
                 text = "Вакансия в архиве или срок её действия истёк.\n\n" + text
-            await message.answer(
+            sent = await message.answer(
                 text, reply_markup=vacancy_keyboard(vacancy, state), parse_mode=None
+            )
+            await service.feedback.confirm_display(
+                user_id, vacancy, profile, match, sent.message_id
             )
         navigation = page_keyboard(kind, page, len(items) > 5)
         if navigation:

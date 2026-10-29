@@ -8,7 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domain import Vacancy
 from domain.feedback import ACTIONS, REASONS, FeedbackAction, FeedbackState
 from observability.transactions import after_commit
-from storage.models import FeedbackEventModel, FeedbackModel, NotificationModel, VacancyModel
+from storage.models import (
+    ExposureModel,
+    FeedbackEventModel,
+    FeedbackModel,
+    NotificationModel,
+    VacancyModel,
+)
 from storage.repositories.vacancy_repository import _to_domain
 
 
@@ -56,10 +62,23 @@ class FeedbackRepository:
         if reason is not None and (action != "reason" or reason not in REASONS):
             raise ValueError("Некорректная причина")
         exposure = await self._exposure(user_id, vacancy_id)
-        resolved = exposure_message_id is None or exposure.message_id == exposure_message_id
+        message_id = exposure_message_id if exposure_message_id is not None else exposure.message_id
+        statement = select(ExposureModel).where(
+            ExposureModel.chat_id == user_id,
+            ExposureModel.vacancy_id == vacancy_id,
+        )
         if exposure_message_id is not None:
-            action_context = deepcopy(action_context or {})
-            action_context["exposure_resolution"] = "current_message" if resolved else "unresolved"
+            statement = statement.where(ExposureModel.message_id == message_id)
+        # Non-UI callers explicitly act on the latest confirmed snapshot, even if a
+        # later redelivery failed. UI callbacks must resolve their exact message.
+        snapshot = await self.session.scalar(
+            statement.order_by(ExposureModel.confirmed_at.desc()).limit(1)
+        )
+        if snapshot is None:
+            raise ValueError("Показ этой карточки не подтверждён. Откройте /history заново.")
+        action_context = deepcopy(action_context or {})
+        action_context["exposure_resolution"] = "confirmed_snapshot"
+        action_context["snapshot_id"] = str(snapshot.id)
         previous = await self.session.get(FeedbackEventModel, (user_id, event_key))
         row = await self.session.get(FeedbackModel, (user_id, vacancy_id), populate_existing=True)
         if previous is not None:
@@ -109,7 +128,7 @@ class FeedbackRepository:
                 vacancy_id=vacancy_id,
                 action=action,
                 reason=reason,
-                exposure_context=deepcopy(exposure.exposure_context) if resolved else None,
+                exposure_context=deepcopy(snapshot.context),
                 action_context=deepcopy(action_context),
                 created_at=now,
             )

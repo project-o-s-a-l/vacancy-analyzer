@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, computed_field
 
+from domain.comparison import State
+
 
 class EligibilityEvidence(BaseModel):
     source: Literal["hh", "description", "title", "profile"]
@@ -13,9 +15,18 @@ class EligibilityEvidence(BaseModel):
 class EligibilityIssue(BaseModel):
     code: str
     field: Literal[
-        "publication", "experience", "seniority", "remote", "location", "salary", "qualification"
+        "publication",
+        "experience",
+        "seniority",
+        "remote",
+        "location",
+        "salary",
+        "qualification",
+        "skill",
     ]
     message: str
+    state: State = "unknown"
+    mandatory: bool = False
     evidence: list[EligibilityEvidence] = Field(default_factory=list)
 
 
@@ -28,7 +39,7 @@ class ExperienceRequirement(BaseModel):
 
 
 class EligibilityResult(BaseModel):
-    version: Literal["eligibility-v1"] = "eligibility-v1"
+    version: Literal["eligibility-v1", "eligibility-v2"] = "eligibility-v2"
     exclusions: list[EligibilityIssue] = Field(default_factory=list)
     uncertainties: list[EligibilityIssue] = Field(default_factory=list)
     experience: ExperienceRequirement = Field(default_factory=ExperienceRequirement)

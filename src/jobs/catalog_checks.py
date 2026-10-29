@@ -10,7 +10,9 @@ import requests
 from sqlalchemy import or_, select, update
 
 from collectors.errors import CollectionStopped, VacancyParseError
-from jobs.analysis_queue import enqueue_vacancy
+from jobs.analysis_queue import schedule_collected
+from jobs.catalog_freshness import check_interval
+from jobs.collection_budget import BudgetDeferred
 from observability import emit_event, operation
 from observability.transactions import after_commit
 from storage.models import VacancyModel
@@ -51,7 +53,7 @@ async def check_catalog(
 
 
 async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline, now):
-    if not 1 <= limit <= 10 or interval < 3600:
+    if not 1 <= limit <= 100 or interval < 3600:
         raise ValueError("Недопустимый бюджет проверки каталога")
     now = now or datetime.now(UTC)
     started = time.monotonic()
@@ -80,17 +82,31 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
         due = list(
             (
                 await session.execute(
-                    select(VacancyModel.id, VacancyModel.source_id)
+                    select(
+                        VacancyModel.id, VacancyModel.source_id, VacancyModel.last_check_attempt_at
+                    )
                     .where(
                         VacancyModel.source == "hh",
                         VacancyModel.availability.in_(["active", "unknown"]),
                         or_(VacancyModel.valid_until.is_(None), VacancyModel.valid_until > now),
                         or_(
+                            VacancyModel.check_requested_at.is_not(None),
                             VacancyModel.last_checked_at.is_(None),
                             VacancyModel.last_checked_at <= now - timedelta(seconds=interval),
+                            VacancyModel.next_check_at <= now,
+                        ),
+                        or_(
+                            VacancyModel.next_check_at.is_(None),
+                            VacancyModel.next_check_at <= now,
+                            # Priority checks may accelerate a healthy card, never a failed retry.
+                            (
+                                VacancyModel.check_requested_at.is_not(None)
+                                & VacancyModel.check_error.is_(None)
+                            ),
                         ),
                     )
                     .order_by(
+                        VacancyModel.check_requested_at.asc().nulls_last(),
                         VacancyModel.last_checked_at.asc().nulls_first(),
                         VacancyModel.collected_at,
                         VacancyModel.source_id,
@@ -99,13 +115,16 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
                 )
             ).all()
         )
-    for key, source_id in due:
+    checked = 0
+    for key, source_id, previous_attempt in due:
         state, error, stop = None, None, None
         status = None
         try:
             vacancy = await source.get_vacancy(source_id)
             if vacancy.source != "hh" or vacancy.source_id != source_id:
                 raise VacancyParseError("Источник вернул другую вакансию")
+        except BudgetDeferred:
+            break
         except (requests.HTTPError, httpx.HTTPStatusError) as exc:
             status = exc.response.status_code if exc.response is not None else None
             state, error = ("closed", None) if status in {404, 410} else ("unknown", "http_error")
@@ -132,9 +151,16 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
                 if stop:
                     raise stop
                 continue
+            if row.last_check_attempt_at != previous_attempt:
+                # A newer source writer committed while this request was in flight.
+                continue
+            row.last_check_attempt_at = now
+            checked += 1
             if state is not None:
-                row.availability, row.last_checked_at, row.check_error = state, now, error
+                row.availability, row.check_error = state, error
+                row.next_check_at = now + timedelta(hours=1)
                 if state == "closed":
+                    row.last_checked_at = now
                     row.archived = True
                     row.closed_at = row.closed_at or now
                 after_commit(
@@ -151,12 +177,14 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
                 # Use the actual check time, never the original collection time.
                 vacancy = vacancy.model_copy(update={"collected_at": now})
                 await VacancyRepository(session).save(vacancy, seen_in_search=False)
+                await session.refresh(row)
+                row.next_check_at = now + timedelta(seconds=check_interval(row, now, interval))
                 if (
                     analysis_pipeline
                     and not vacancy.archived
                     and (vacancy.valid_until is None or vacancy.valid_until > now)
                 ):
-                    await enqueue_vacancy(
+                    await schedule_collected(
                         session, vacancy.model_copy(update={"id": key}), pipeline=analysis_pipeline
                     )
                 after_commit(
@@ -172,8 +200,8 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
     emit_event(
         logger,
         "catalog.check_finished",
-        count=len(due),
+        count=checked,
         result="success",
         duration_ms=(time.monotonic() - started) * 1000,
     )
-    return len(due)
+    return checked

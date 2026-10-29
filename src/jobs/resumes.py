@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import delete
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domain import CandidateProfile, Skill
@@ -15,6 +15,7 @@ from domain.resume import RESUME_VERSION, ResumeDraft
 from jobs.model_telemetry import validation_code
 from nlp.analysis_identity import pipeline_hash
 from nlp.extraction import skill_key
+from nlp.inference_metrics import stage
 from nlp.ollama import OllamaUnavailable
 from nlp.ollama_resume import OllamaResumeAnalyzer, ResumeAnalysisError
 from nlp.professional_facts import confirm_resume_facts, profile_payload, resume_facts
@@ -23,7 +24,13 @@ from observability import emit_event
 from observability.actions import observed
 from observability.transactions import after_commit
 from processing.resume import normalize_resume_text
-from storage.models import BackgroundJob, FactRevisionModel, ResumeModel, ResumeSourceModel
+from storage.models import (
+    BackgroundJob,
+    ExtractionCache,
+    FactRevisionModel,
+    ResumeModel,
+    ResumeSourceModel,
+)
 from storage.repositories.job_repository import JobRepository
 from storage.repositories.user_repository import RegisteredUser, UserRepository
 
@@ -167,11 +174,63 @@ class ResumeService:
             job = await session.get(BackgroundJob, row.processing_job_id)
             if job is None or job.user_id != user_id:
                 return None
+            now = datetime.now(UTC)
+            ahead = await session.scalar(
+                select(func.count())
+                .select_from(BackgroundJob)
+                .where(
+                    BackgroundJob.kind == "resume_analysis",
+                    BackgroundJob.state == "pending",
+                    BackgroundJob.created_at < job.created_at,
+                )
+            )
+            from jobs.queue_policy import queue_settings
+            from storage.models import InferenceGate
+
+            gate = await session.get(InferenceGate, "global")
+            not_before = job.next_run_at
+            if not_before.tzinfo is None:
+                not_before = not_before.replace(tzinfo=UTC)
+            slot_state = None
+            if gate and gate.token:
+                slot_state = await session.scalar(
+                    select(BackgroundJob.state).where(
+                        BackgroundJob.lease_token == gate.token,
+                    )
+                )
+            deadline = (
+                gate.until.replace(tzinfo=UTC)
+                if gate and gate.until and gate.until.tzinfo is None
+                else gate.until
+                if gate
+                else None
+            )
+            recovering = bool(
+                gate
+                and gate.runtime
+                and (slot_state != "running" or (deadline and deadline <= now))
+            )
+            if recovering and gate.until:
+                until = gate.until.replace(tzinfo=UTC) if gate.until.tzinfo is None else gate.until
+                not_before = max(not_before, until)
+            limits = queue_settings()
             return {
                 "id": job.id.hex,
                 "state": job.state,
                 "attempts": job.attempts,
                 "error_code": job.error_code,
+                "resume_ahead": ahead,
+                "not_before": not_before.isoformat() if not_before > now else None,
+                "active_lease_deadline": gate.until.isoformat() if gate and gate.until else None,
+                "wait_reason": "runtime_recovery"
+                if recovering
+                else "retry"
+                if job.error_code
+                else "slot_busy"
+                if slot_state == "running"
+                else "queue",
+                "job_budget_seconds": max(300, limits.resume_total_timeout, limits.ollama_timeout)
+                + 30,
             }
 
     async def pending(self, user_id: int) -> ResumeDraft | None:
@@ -242,7 +301,8 @@ class ResumeService:
                 if _job and await JobRepository(session).owned(_job) is None:
                     raise StaleResumeWork("Обработка уже остановлена; загрузите резюме ещё раз.")
 
-        extraction = extract_document(text, reference_time=reference_time)
+        with stage("document_prepare"):
+            extraction = extract_document(text, reference_time=reference_time)
         fallback_code = "rules_fallback" if _fallback_note else None
         version = RESUME_VERSION
         if _fallback_note:
@@ -251,9 +311,31 @@ class ResumeService:
             try:
                 await still_current()
                 if isinstance(self.analyzer, OllamaResumeAnalyzer):
-                    extraction = await self.analyzer.analyze(
-                        text, reference_time=reference_time, still_current=still_current
+                    from jobs.extraction_cache import ValidatedCache
+
+                    inferred = await self.analyzer.analyze(
+                        text,
+                        reference_time=reference_time,
+                        still_current=still_current,
+                        prepared=extraction,
+                        cache=ValidatedCache(
+                            self.sessions,
+                            job=_job,
+                            user_id=user_id,
+                            generation=generation,
+                            profile_revision=expected_revision,
+                        ),
                     )
+                    if self.analyzer.model_digest is not None:
+                        from nlp.ollama import OllamaVacancyAnalyzer
+
+                        identity = OllamaVacancyAnalyzer(
+                            self.analyzer.client, model=self.analyzer.model
+                        )
+                        await identity.ready()
+                        if identity.model_digest != self.analyzer.model_digest:
+                            raise OllamaUnavailable("Веса модели изменились во время разбора")
+                    extraction = inferred
                 else:
                     inferred = await self.analyzer.analyze(text)
                     extraction = merge_extraction(extraction, inferred)
@@ -289,97 +371,105 @@ class ResumeService:
                 n for n in extraction.notes if not n.startswith("Желаемая должность не определена")
             ]
         await still_current()
-        async with self.sessions.begin() as session:
-            user = await UserRepository(session).get(user_id, lock=True)
-            if user is None:
-                raise ValueError("Сначала зарегистрируйтесь командой /start.")
-            if expected != profile_hash(user.profile) or (
-                expected_revision is not None and expected_revision != user.revision
-            ):
-                emit_event(logger, "resume.rejected", result="rejected", code="stale_resume")
-                raise StaleResumeWork("Профиль изменился; загрузите резюме ещё раз.")
-            owned = None
-            if not _job:
-                pending = await session.get(ResumeModel, user_id)
-                if pending is None or (pending.draft or {}).get("preparing_token") != generation:
-                    raise StaleResumeWork("Резюме отменено или заменено новой загрузкой.")
-            if _job:
-                owned = await JobRepository(session).owned(_job)
-                pending = await session.get(ResumeModel, user_id)
-                if owned is None or pending is None or pending.processing_job_id != _job.id:
-                    emit_event(
-                        logger,
-                        "resume.rejected",
-                        result="rejected",
-                        code="stale_resume",
-                        job_id=_job.id,
-                    )
-                    raise StaleResumeWork("Резюме отменено или заменено новой загрузкой.")
-                current_recipe = pipeline_hash("resume_analysis", _pipeline_model)
-                if current_recipe != _job.pipeline:
-                    updated = await JobRepository(session).enqueue(
-                        kind=_job.kind,
-                        entity_key=_job.entity_key,
-                        user_id=user_id,
-                        revision=_job.revision,
-                        pipeline=current_recipe,
-                        payload=_job.payload,
-                    )
-                    pending.processing_job_id = updated.id
-                    after_commit(
-                        session,
-                        "resume.rejected",
-                        result="superseded",
-                        code="pipeline_changed",
-                        job_id=_job.id,
-                    )
-                    return None
-            draft = ResumeDraft(
-                token=_job.payload["token"] if _job else uuid4().hex,
-                text=text,
-                format=format,
-                extraction=extraction,
-                profile_hash=expected,
-                version=version,
-                profile_revision=user.revision,
-                professional_facts=resume_facts(text, extraction, user_id, version=version),
-            )
-            row = await session.get(ResumeModel, user_id)
-            if row is None:
-                row = ResumeModel(user_id=user_id)
-                session.add(row)
-            row.draft = draft.model_dump(mode="json")
-            from storage.repositories.fact_repository import FactRepository
-
-            if isinstance(self.analyzer, OllamaResumeAnalyzer) and extraction.cost.requests:
-                draft.professional_facts.model_id = self.analyzer.model
-                draft.professional_facts.model_digest = self.analyzer.model_digest
-                draft.professional_facts.analysis_pipeline = pipeline_hash(
-                    "resume_analysis", self.analyzer.model
-                )
-                row.draft = draft.model_dump(mode="json")
-
-            await FactRepository(session).record(
-                "resume_proposal", user_id, draft.professional_facts
-            )
-            if owned is not None:
-                await JobRepository(session).finish(
-                    owned,
-                    result={
-                        "parser_version": version,
-                        "pipeline": _job.pipeline,
-                        "model_digest": getattr(self.analyzer, "model_digest", None),
-                        "completeness": extraction.completeness,
-                        "cost": extraction.cost.model_dump(mode="json"),
-                    },
-                    code=fallback_code,
-                )
-                if _fallback_note or any(
-                    c.reason in {"timeout", "model_unavailable"} for c in extraction.coverage
+        with stage("result_write"):
+            async with self.sessions.begin() as session:
+                user = await UserRepository(session).get(user_id, lock=True)
+                if user is None:
+                    raise ValueError("Сначала зарегистрируйтесь командой /start.")
+                if expected != profile_hash(user.profile) or (
+                    expected_revision is not None and expected_revision != user.revision
                 ):
-                    owned.lease_until = _job.lease_until
-                    owned.owner, owned.lease_token = _job.owner, _job.lease_token
-            return draft
+                    emit_event(logger, "resume.rejected", result="rejected", code="stale_resume")
+                    raise StaleResumeWork("Профиль изменился; загрузите резюме ещё раз.")
+                owned = None
+                if not _job:
+                    pending = await session.get(ResumeModel, user_id)
+                    if (
+                        pending is None
+                        or (pending.draft or {}).get("preparing_token") != generation
+                    ):
+                        raise StaleResumeWork("Резюме отменено или заменено новой загрузкой.")
+                if _job:
+                    repo = JobRepository(session)
+                    await repo.gate()  # A recipe migration may enqueue while holding this job.
+                    owned = await repo.owned(_job)
+                    pending = await session.get(ResumeModel, user_id)
+                    if owned is None or pending is None or pending.processing_job_id != _job.id:
+                        emit_event(
+                            logger,
+                            "resume.rejected",
+                            result="rejected",
+                            code="stale_resume",
+                            job_id=_job.id,
+                        )
+                        raise StaleResumeWork("Резюме отменено или заменено новой загрузкой.")
+                    current_recipe = pipeline_hash("resume_analysis", _pipeline_model)
+                    if current_recipe != _job.pipeline:
+                        updated = await JobRepository(session).enqueue(
+                            kind=_job.kind,
+                            entity_key=_job.entity_key,
+                            user_id=user_id,
+                            revision=_job.revision,
+                            pipeline=current_recipe,
+                            payload=_job.payload,
+                        )
+                        pending.processing_job_id = updated.id
+                        after_commit(
+                            session,
+                            "resume.rejected",
+                            result="superseded",
+                            code="pipeline_changed",
+                            job_id=_job.id,
+                        )
+                        return None
+                draft = ResumeDraft(
+                    token=_job.payload["token"] if _job else uuid4().hex,
+                    text=text,
+                    format=format,
+                    extraction=extraction,
+                    profile_hash=expected,
+                    version=version,
+                    profile_revision=user.revision,
+                    professional_facts=resume_facts(text, extraction, user_id, version=version),
+                )
+                row = await session.get(ResumeModel, user_id)
+                if row is None:
+                    row = ResumeModel(user_id=user_id)
+                    session.add(row)
+                row.draft = draft.model_dump(mode="json")
+                from storage.repositories.fact_repository import FactRepository
+
+                if isinstance(self.analyzer, OllamaResumeAnalyzer) and (
+                    extraction.cost.requests or extraction.cost.cache_hits
+                ):
+                    draft.professional_facts.model_id = self.analyzer.model
+                    draft.professional_facts.model_digest = self.analyzer.model_digest
+                    draft.professional_facts.analysis_pipeline = pipeline_hash(
+                        "resume_analysis", self.analyzer.model
+                    )
+                    row.draft = draft.model_dump(mode="json")
+
+                await FactRepository(session).record(
+                    "resume_proposal", user_id, draft.professional_facts
+                )
+                if owned is not None:
+                    await JobRepository(session).finish(
+                        owned,
+                        result={
+                            "parser_version": version,
+                            "pipeline": _job.pipeline,
+                            "model_digest": getattr(self.analyzer, "model_digest", None),
+                            "completeness": extraction.completeness,
+                            "cost": extraction.cost.model_dump(mode="json"),
+                        },
+                        code=fallback_code,
+                    )
+                    if _fallback_note or any(
+                        c.reason in {"timeout", "model_unavailable"} for c in extraction.coverage
+                    ):
+                        owned.lease_until = _job.lease_until
+                        owned.owner, owned.lease_token = _job.owner, _job.lease_token
+                return draft
 
     @observed("resume")
     async def confirm(self, user_id: int, token: str) -> RegisteredUser:
@@ -572,6 +662,7 @@ class ResumeService:
         async with self.sessions.begin() as session:
             await UserRepository(session).get(user_id, lock=True)
             await JobRepository(session).cancel_user(user_id)
+            await session.execute(delete(ExtractionCache).where(ExtractionCache.user_id == user_id))
             row = await session.get(ResumeModel, user_id)
             if row:
                 await session.delete(row)

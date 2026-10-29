@@ -26,9 +26,43 @@ def encode_bounded(tasks, model_directory):
         if not ollama_slot._lock(stream):
             raise ValueError("Слот модели занят. Повторите эксперимент после текущего разбора")
         try:
+            _release_retained_ollama()
             return _encode_bounded(tasks, model_directory)
         finally:
             ollama_slot._unlock(stream)
+
+
+def _release_retained_ollama():
+    """The file slot serializes native work; retained weights must also be released."""
+    import httpx
+
+    from jobs.settings import Settings
+    from nlp import ollama_slot
+
+    if ollama_slot.LOCK_PATH.with_suffix(".uncertain.json").exists():
+        raise ValueError("Предыдущий запрос модели не завершён; дождитесь восстановления worker")
+    with httpx.Client(base_url=Settings().ollama_base_url, timeout=10, trust_env=False) as client:
+        try:
+            response = client.get("/api/ps", timeout=2)
+        except httpx.ConnectError:
+            return  # No local service is running; ONNX still has its own watchdog.
+        response.raise_for_status()
+        for loaded in response.json()["models"]:
+            reply = client.post(
+                "/api/generate", json={"model": loaded["name"], "keep_alive": 0, "stream": False}
+            )
+            reply.raise_for_status()
+            if not reply.json().get("done"):
+                raise ValueError("Не подтверждено освобождение модели")
+        deadline = time.monotonic() + 10
+        while True:
+            state = client.get("/api/ps", timeout=2)
+            state.raise_for_status()
+            if not state.json()["models"]:
+                break
+            if time.monotonic() >= deadline:
+                raise ValueError("Модель ещё занята; семантический эксперимент отложен")
+            time.sleep(0.1)
 
 
 def _encode_bounded(tasks, model_directory):

@@ -6,6 +6,7 @@ from collections import Counter
 from functools import lru_cache
 from math import sqrt
 
+from domain.comparison import COMPARISON_VERSION
 from domain.contracts import feature_dependencies
 from domain.matching_dataset import PairFeatures
 from domain.retrieval import RetrievalParameters
@@ -22,7 +23,9 @@ FEATURE_SPEC = {
     "max_job_characters": 20000,
     "max_query_characters": 8000,
     "fit_scope": "none",
-    "eligibility": "full_text_before_features",
+    "eligibility": "ready_facts_before_features",
+    "comparison": COMPARISON_VERSION,
+    "admission": "legacy-baseline-threshold-v1",
 }
 
 
@@ -93,6 +96,7 @@ def pair_features(vacancy, profile, match):
         missing_required=len(match.missing_required),
         missing_preferred=len(match.missing_preferred),
         missing_unspecified=len(match.missing_unspecified),
+        comparison_features=match.comparison.features if match.comparison else {},
     )
 
 
@@ -113,5 +117,6 @@ def shown_context(vacancy, profile, match, rank):
         "profile_revision": profile_revision(profile),
         "features": features.model_dump(mode="json"),
         "display_rank": rank,
+        "comparison": match.comparison.model_dump(mode="json") if match.comparison else None,
         "decision": match.ranking.model_dump(mode="json") if match.ranking else None,
     }

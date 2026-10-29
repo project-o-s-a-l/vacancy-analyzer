@@ -1,6 +1,8 @@
 """Fixed pipeline vocabulary; never interpolate source or model text into messages."""
 
 PIPELINE_EVENTS = {
+    "collection.deferred": "Сетевой запрос отложен по бюджету или состоянию источника",
+    "collection.progress": "Сохранён прогресс обхода каталога",
     "component.started": "Компонент запускается",
     "component.ready": "Компонент готов",
     "component.finished": "Компонент завершён",
@@ -34,6 +36,9 @@ PIPELINE_EVENTS = {
     "model.request_finished": "Обмен с моделью завершён",
     "model.request_failed": "Обращение к модели не выполнено",
     "model.cache_hit": "Повторно использован совместимый разбор",
+    "model.stage_finished": "Измерен этап обработки модели",
+    "model.unloaded": "Модель освобождена",
+    "model.memory_deferred": "Обработка отложена по бюджету памяти",
     "model.response_rejected": "Результат модели не прошёл проверку",
     "model.rules_fallback": "Использован разбор правилами",
     "model.corrected": "Разбор модели сохранит безопасные уточнения",
@@ -41,6 +46,11 @@ PIPELINE_EVENTS = {
 }
 
 PIPELINE_CODES = {
+    "memory_pressure": "Недостаточно свободной памяти; обработка отложена.",
+    "queue_full": "Очередь заполнена; исходные данные сохранены.",
+    "source_blocked": "Источник остановлен; требуется проверить доступ и явно возобновить сбор.",
+    "source_budget": "Часовой бюджет запросов исчерпан; прогресс сохранён.",
+    "source_cooldown": "Действует пауза источника; прогресс сохранён.",
     "source_empty": "Источник вернул пустую выдачу.",
     "source_repeated": "Страница не добавила новых ID.",
     "page_budget": "Достигнут бюджет поисковых страниц.",
@@ -93,6 +103,8 @@ RECOMMENDATION_EVENTS = {
 }
 
 RECOMMENDATION_CODES = {
+    "freshness_deferred": "Карточка ожидает проверки актуальности.",
+    "retrieval_budget_exhausted": "Поиск достиг бюджета проверок; полнота выдачи ограничена.",
     "no_active_candidates": "Отбор не нашёл подходящих активных кандидатов.",
     "history_feedback_blocked": "Доступные кандидаты заблокированы историей или оценками.",
     "below_threshold": "Новые кандидаты ниже порога оценки.",

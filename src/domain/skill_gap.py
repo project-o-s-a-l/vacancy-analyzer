@@ -1,18 +1,8 @@
 """Personal requirement coverage; this does not measure a person's abilities."""
 
 from datetime import datetime
-from uuid import UUID
 
 from pydantic import BaseModel, Field
-
-
-class SkillGapVacancy(BaseModel):
-    id: UUID
-    title: str
-    skills: list[str]
-    experience: str | None
-    remote: bool | None
-    published_at: datetime
 
 
 class SampleScope(BaseModel):
@@ -25,8 +15,8 @@ class SampleScope(BaseModel):
     vacancies: int
     with_skills: int
     note: str = (
-        "Только собранные активные вакансии. Навыки — явно указанные в карточках; "
-        "обязательность не определена. Лимит применяется до отбора направления. "
+        "Только собранные активные вакансии. Используются общие факты и ограничения подбора. "
+        "Лимит применяется до отбора направления. "
         "Даты публикаций — UTC. Отсутствие навыка в профиле не доказывает его отсутствия у вас."
     )
 
@@ -40,6 +30,11 @@ class SkillOpportunity(BaseModel):
 
 class SkillGapReport(BaseModel):
     scope: SampleScope
+    excluded_by_constraints: int = 0
+    comparison_version: str = "professional-comparison-v1"
+    requirement_coverage: float | None = None
+    uncertain_requirements: int = 0
+    confirmed_deficits: int = 0
     excluded_by_remote: int
     mean_skill_coverage: float | None
     fully_covered: int

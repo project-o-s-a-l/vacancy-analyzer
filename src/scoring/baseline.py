@@ -7,12 +7,17 @@ from domain import CandidateProfile, Vacancy
 from domain.matching import MatchResult
 from nlp.analysis_identity import current_vacancy_analysis as current_analysis
 from nlp.extraction import skill_key
-from nlp.qualifications import QUALIFICATIONS_VERSION, compare_qualifications
+from nlp.qualifications import QUALIFICATIONS_VERSION
 from nlp.requirements import RULES_VERSION
 from nlp.titles import title_tokens
 from nlp.vacancy_requirements import matching_requirements
-from processing.cleaner import clean_html
-from scoring.eligibility import check_eligibility, location_matches, salary_comparable
+from scoring.comparison import candidate_skill_names, compare_facts, qualification_matches
+from scoring.eligibility import (
+    check_eligibility,
+    condition_value,
+    location_matches,
+    salary_comparable,
+)
 from scoring.skill_score import match_skills
 
 WEIGHTS = {
@@ -33,23 +38,17 @@ def score_vacancy(
         raise ValueError("now must contain a timezone")
     warnings: list[str] = []
     reasons: list[str] = []
-    text = vacancy.description
-    if vacancy.description_html and (
-        text is None or clean_html(vacancy.description_html) == clean_html(text)
-    ):
-        text = vacancy.description_html
-    qualifications, _ = compare_qualifications(
-        text, profile.qualifications, today=now.astimezone(UTC).date(), explicit=vacancy.skills
-    )
-    eligibility = check_eligibility(vacancy, profile, now=now, qualifications=qualifications)
+    comparison = compare_facts(vacancy, profile, now=now)
+    qualifications = qualification_matches(comparison)
+    eligibility = check_eligibility(vacancy, profile, now=now, comparison=comparison)
     warnings.extend(item.message for item in [*eligibility.exclusions, *eligibility.uncertainties])
     analysis = current_analysis(vacancy)
     use_model_requirements = bool(
         analysis and analysis.input_scope == "full" and analysis.requirements_source == "llm"
     )
-    requirements = matching_requirements(vacancy, profile.skills)
+    requirements = matching_requirements(vacancy, candidate_skill_names(profile))
     skills = match_skills(
-        profile.skills,
+        candidate_skill_names(profile),
         requirements.names("required"),
         requirements.names("preferred"),
         unspecified=requirements.names("unspecified"),
@@ -82,6 +81,9 @@ def score_vacancy(
             warnings.append(label + ": " + ", ".join(missing_by_importance[status]))
     warnings.extend(requirements.warnings)
     for group in skills.alternatives:
+        compared = next((item for item in comparison.items if item.id == "or:" + group.id), None)
+        if compared is not None:
+            group.satisfied = compared.state == "match"
         if not group.counted_in_score:
             continue
         label = {
@@ -95,22 +97,29 @@ def score_vacancy(
                 f"Выполнено условие «один из» ({label}): " + ", ".join(group.matched_options)
             )
         else:
-            warnings.append(f"Один из навыков не найден в профиле ({label}): {options}")
+            warnings.append(f"Условие «один из» не подтверждено ({label}): {options}")
     if skills.score is None:
         warnings.append("Навыки вакансии не определены")
 
-    minimum = eligibility.experience.minimum_years
-    experience = None
-    if (
-        minimum is not None
-        and profile.experience_years is not None
-        and not (minimum == 0 and eligibility.experience.conflict)
-    ):
-        experience = min(1.0, profile.experience_years / minimum) if minimum else 1.0
-        if experience == 1:
-            reasons.append("Достаточный опыт по нижней границе требований")
-        else:
-            warnings.append(f"Требуется опыт от {minimum} лет")
+    experience = comparison.features["experience_fit"]
+    for item in comparison.items:
+        if item.state == "match" and item.years_required is not None:
+            reasons.append(f"{item.name}: {item.detail}; требование от {item.years_required:g} лет")
+    # Required/preferred weights are the existing 3/1/2 policy; scopes and OR
+    # now use the same evidence states as admission. No learned contribution is claimed.
+    skill_items = [
+        i
+        for i in comparison.items
+        if i.kind == "skill"
+        and not (i.id.startswith("req:experience:") and i.years_required is None)
+    ]
+    weights = {"required": 3, "preferred": 1, "unspecified": 2}
+    denominator = sum(weights.get(i.importance, 0) for i in skill_items)
+    skill_score = (
+        (sum(weights.get(i.importance, 0) * (i.ratio or 0) for i in skill_items) / denominator)
+        if denominator
+        else None
+    )
 
     preferences = profile.preferences
     title = None
@@ -126,10 +135,23 @@ def score_vacancy(
             else 0.0
         )
 
+    context = [
+        comparison.features[key]
+        for key in ("role_match", "task_match")
+        if comparison.features[key] is not None
+    ]
+    if context:
+        title = sum([*context, *([title] if title is not None else [])]) / (
+            len(context) + (title is not None)
+        )
+        reasons.append("Сопоставлены роли и задачи по нормализованным фактам")
+
     salary = None
     if preferences.salary_min is not None:
         comparable = salary_comparable(vacancy, profile)
-        upper = vacancy.salary_to if vacancy.salary_to is not None else vacancy.salary_from
+        upper = condition_value(vacancy, "salary_to")
+        if upper is None:
+            upper = condition_value(vacancy, "salary_from")
         if comparable and upper is not None:
             salary = min(1.0, upper / preferences.salary_min) if preferences.salary_min else 1.0
             if vacancy.salary_from is None or vacancy.salary_from < preferences.salary_min:
@@ -138,21 +160,23 @@ def score_vacancy(
             warnings.append("Зарплата неизвестна или несопоставима по валюте/периоду/gross")
 
     preference_parts: list[float] = []
+    remote = condition_value(vacancy, "remote")
     if preferences.remote != "any":
-        if vacancy.remote is None:
+        if remote is None:
             warnings.append("Формат работы не указан")
         else:
-            remote_match = vacancy.remote if preferences.remote != "office" else not vacancy.remote
+            remote_match = remote if preferences.remote != "office" else not remote
             preference_parts.append(float(remote_match))
-    if preferences.locations and vacancy.remote is not True:
-        if vacancy.location:
-            preference_parts.append(float(location_matches(vacancy, profile)))
+    if preferences.locations and remote is not True:
+        location_match = location_matches(vacancy, profile)
+        if location_match is not None:
+            preference_parts.append(float(location_match))
         else:
             warnings.append("Местоположение не указано")
 
     age = max(0.0, (now - vacancy.published_at).total_seconds() / 86400)
     components = {
-        "skills": skills.score,
+        "skills": skill_score,
         "experience": experience,
         "title": title,
         "salary": salary,
@@ -173,6 +197,7 @@ def score_vacancy(
         warnings=list(dict.fromkeys(warnings)),
         eligible=eligibility.eligible,
         eligibility=eligibility,
+        comparison=comparison,
         requirements=requirements.skills,
         missing_required=missing_by_importance["required"],
         missing_preferred=missing_by_importance["preferred"],

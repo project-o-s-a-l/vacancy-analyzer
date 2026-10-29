@@ -242,12 +242,10 @@ async def test_frozen_shown_features_owner_scope_and_old_message_exclusion(
     assert result["observations"][0]["profile_revision"] == profile_revision(shown_profile)
     assert result["observations"][0]["review_required"]
     assert (await feedback_observations(sessions, 43))["observations"] == []
-    await feedback.record(42, v.id, "like", event_key="old-message", exposure_message_id=999)
+    with pytest.raises(ValueError, match="не подтверждён"):
+        await feedback.record(42, v.id, "like", event_key="old-message", exposure_message_id=999)
     result = await feedback_observations(sessions, 42)
-    assert (
-        result["skipped"]["unresolved_exposure"] == 1
-        and result["review_notes"][0]["action"] == "like"
-    )
+    assert len(result["observations"]) == 1
     assert "profile" not in result["observations"][0] and "user_id" not in result
     with pytest.raises(ValueError, match="не была показана"):
         await feedback.record(43, v.id, "like", event_key="foreign", exposure_message_id=10)

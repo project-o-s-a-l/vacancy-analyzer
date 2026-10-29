@@ -458,6 +458,8 @@ async def test_confirmed_resume_drives_real_catalog_ranking(sessions, vacancy):
                 update={
                     "title": "Java Developer",
                     "skills": ["Java", "SQL"],
+                    "description": "Java, SQL",
+                    "description_html": None,
                     "experience": "1-3",
                 }
             )

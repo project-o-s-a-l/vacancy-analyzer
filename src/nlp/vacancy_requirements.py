@@ -79,11 +79,7 @@ def fact_requirements(facts) -> RequirementAnalysis:
 
     skills = []
     for key, name in names.items():
-        items = [
-            r
-            for r in facts.requirements
-            if r.fact_id == key and not r.id.startswith("req:experience:")
-        ]
+        items = [r for r in facts.requirements if r.fact_id == key]
         standalone = [r for r in items if r.id not in grouped]
         req = next(iter(standalone or items), None)
         skills.append(
@@ -116,37 +112,50 @@ def fact_requirements(facts) -> RequirementAnalysis:
     )
 
 
+def phrase_requirements(facts, vocabulary=()):
+    """Bounded lookup in the public phrase index, never parse source per pair."""
+    from nlp.text import contains_phrase
+
+    known = {skill_key(f.name) for f in facts.facts if f.kind == "skill"}
+    output = []
+    extra = sorted(
+        {name for name in vocabulary if skill_key(name) not in known and not is_qualification(name)}
+    )[:128]
+    for name in extra:
+        key = skill_key(name)
+        observations = [
+            o for o in facts.lexical_observations if contains_phrase(tuple(o.tokens), key)
+        ]
+        if not observations:
+            continue
+        statuses = {o.importance for o in observations} - {"context", "unspecified"}
+        if statuses and statuses <= {"not_required"}:
+            continue
+        importance = next(iter(statuses)) if len(statuses) == 1 else "unspecified"
+        if any(o.ambiguous for o in observations):
+            importance = "unspecified"
+        output.append(
+            SkillRequirement(
+                skill=canonical_skill(name),
+                importance=importance,
+                evidence=[
+                    RequirementEvidence(
+                        origin="description", importance=o.importance, text=o.evidence.quote or name
+                    )
+                    for o in observations
+                ],
+            )
+        )
+    return output
+
+
 def matching_requirements(vacancy, vocabulary=()):
     from nlp.professional_facts import vacancy_facts, vacancy_facts_compatible
-    from nlp.requirements import analyze_requirements
-    from nlp.vacancy_document import professional_text
 
     facts = vacancy.professional_facts
     if facts is None or not vacancy_facts_compatible(facts, vacancy):
         facts = vacancy_facts(vacancy)
+        vacancy.professional_facts = facts
     result = fact_requirements(facts)
-    known = {skill_key(item.skill) for item in result.skills}
-    # Explicitly bounded local compatibility layer for rare candidate vocabulary.
-    # Never write its output to shared facts/projection. No model call is involved.
-    extra = sorted(
-        {v for v in vocabulary if skill_key(v) not in known and not is_qualification(v)}
-    )[:128]
-    if extra:
-        from nlp.qualifications import compare_qualifications
-
-        _, skill_text = compare_qualifications(
-            professional_text(vacancy.description or vacancy.description_html),
-            [],
-            today=vacancy.published_at.date(),
-            explicit=vacancy.skills,
-        )
-        supplemental = analyze_requirements(skill_text, vocabulary=extra)
-        result.skills.extend(
-            item for item in supplemental.skills if skill_key(item.skill) not in known
-        )
-        existing = {group.id for group in result.alternatives}
-        result.alternatives.extend(
-            group for group in supplemental.alternatives if group.id not in existing
-        )
-        result.warnings.extend(supplemental.warnings)
+    result.skills.extend(phrase_requirements(facts, vocabulary))
     return result

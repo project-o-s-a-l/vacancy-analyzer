@@ -42,6 +42,8 @@ async def seed(repository, vacancy, now, **values):
         "source_id": uuid4().hex,
         "published_at": now - timedelta(days=1),
         "title": "Бухгалтер",
+        "description": "",
+        "description_html": None,
         "skills": ["Excel", "Расчёт зарплат"],
         "salary_from": None,
         "salary_to": None,
@@ -79,7 +81,8 @@ async def test_sample_filters_before_limit_and_does_not_select_raw(session, vaca
     assert [v.id for v in sample] == [first.id]
     assert truncated
     assert sample[0].published_at.tzinfo is not None
-    assert "raw_payload" not in queries[0] and "description_html" not in queries[0]
+    assert "vacancies.raw_payload," not in queries[0]
+    assert "professional_facts" in queries[0]  # Same residual facts as ranking.
     sample, truncated = await repo.skill_gap_sample(
         since=now - timedelta(days=30), until=now, limit=2
     )
@@ -138,12 +141,13 @@ async def test_skill_gap_fixed_requirements_simulation_and_separate_experience(
     profile = candidate()
     original = profile.model_dump()
     report = await analyze_skill_gap(repo, now=now, profile=profile)
-    assert report.scope.vacancies == 4 and report.scope.with_skills == 3
-    assert report.mean_skill_coverage == pytest.approx((0.5 + 1 / 3 + 1) / 3)
+    assert report.scope.vacancies == 3 and report.scope.with_skills == 2
+    assert report.excluded_by_constraints == 1
+    assert report.mean_skill_coverage == pytest.approx((1 / 3 + 1) / 2)
     assert report.fully_covered == 1
-    gap = report.opportunities[0]
-    assert gap.skill == "расчёт зарплат" and gap.vacancies == 2
-    assert gap.mean_coverage_gain_pp == 27.78 and gap.additional_fully_covered == 1
+    gap = next(i for i in report.opportunities if i.skill == "расчёт зарплат")
+    assert gap.vacancies == 1
+    assert gap.mean_coverage_gain_pp == 16.67 and gap.additional_fully_covered == 0
     assert report.insufficient_experience == 1 and report.unknown_experience == 1
     assert profile.model_dump() == original
     assert "не вероятности найма" in render_skill_gap(report)
@@ -163,7 +167,7 @@ async def test_remote_required_excludes_unknown_but_preferred_keeps_it(session, 
     repo = VacancyRepository(session)
     for remote in (True, False, None):
         await seed(repo, vacancy, now, remote=remote)
-    for mode, size in (("required", 1), ("preferred", 3), ("office", 3)):
+    for mode, size in (("required", 1), ("preferred", 3), ("office", 1)):
         report = await analyze_skill_gap(repo, now=now, profile=candidate(remote=mode))
         assert report.scope.vacancies == size
         assert report.excluded_by_remote == 3 - size

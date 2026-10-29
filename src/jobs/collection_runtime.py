@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from collectors.base import SearchQuery
 from collectors.errors import CollectionStopped, VacancyParseError
 from collectors.registry import source_adapter
+from jobs.collection_budget import BudgetedSource
 from jobs.collection_scheduler import collection_loop
 from jobs.settings import Settings
 from nlp.analysis_identity import pipeline_hash
@@ -68,8 +69,10 @@ async def run_collection(
     *,
     watch: bool,
     query_texts: list[str] | None = None,
-    source: Literal["html", "api"] = "html",
+    source: Literal["html", "api"] | None = None,
 ) -> None:
+    source = source or settings.hh_source
+
     async def collect(adapter) -> None:
         emit_event(
             logger,
@@ -79,7 +82,15 @@ async def run_collection(
             result="ready",
         )
         await collection_loop(
-            adapter,
+            BudgetedSource(
+                adapter,
+                session_factory(engine),
+                search_limit=settings.hh_search_requests_per_hour,
+                detail_limit=settings.hh_detail_requests_per_hour,
+                delay=settings.hh_request_delay,
+            )
+            if getattr(adapter, "paging_kind", None)
+            else adapter,
             session_factory(engine),
             query,
             watch,

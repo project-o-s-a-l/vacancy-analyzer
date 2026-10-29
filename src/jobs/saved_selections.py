@@ -1,12 +1,14 @@
-"""Reuse invariant rule work, always select current Top-K and refresh time-dependent scores."""
+"""Bounded baseline score cache; current candidate IDs and exact-time freshness stay separate."""
 
 from datetime import UTC, timedelta
 from functools import lru_cache
 from pathlib import Path
 
+from domain.contracts import source_contract
 from domain.matching import MatchResult
 from scoring import score_vacancy
 from scoring.baseline import WEIGHTS
+from scoring.serving_cache import vacancy_revision  # public compatibility import
 from scoring.serving_features import digest, feature_contract, profile_revision
 from storage.repositories.selection_repository import MAX_POOL, SelectionRepository
 
@@ -20,19 +22,18 @@ def selection_contract():
         {
             "features": feature_contract(),
             "adapter": Path(__file__).read_text(encoding="utf-8"),
-            "version": "saved-selection-v1",
-        }
-    )
-
-
-def vacancy_revision(vacancy):
-    return digest(
-        dict(
-            source=vacancy.model_dump(
-                mode="json", exclude={"raw_payload", "collected_at", "professional_facts"}
+            "serving": source_contract(
+                (
+                    "jobs/candidate_cache.py",
+                    "jobs/candidates.py",
+                    "storage/repositories/candidate_repository.py",
+                    "storage/retrieval_sql.py",
+                    "scoring/serving_cache.py",
+                    "scoring/request_context.py",
+                )
             ),
-            facts=vacancy.professional_facts.revision if vacancy.professional_facts else None,
-        )
+            "version": "saved-selection-v2",
+        }
     )
 
 
@@ -64,11 +65,12 @@ async def score_selection(
     category,
     include_ineligible,
     stats=None,
+    owner_epoch=None,
 ):
     if owner_id < 1:
         raise ValueError("Invalid selection owner")
     context = {
-        "version": "saved-selection-v1",
+        "version": "saved-selection-v2",
         "profile_revision": profile_revision(profile),
         "contract": selection_contract(),
         "parameters": selection.parameters.model_dump(),
@@ -76,14 +78,29 @@ async def score_selection(
         "category": category.value if category else None,
         "include_ineligible": include_ineligible,
         "utc_date": now.astimezone(UTC).date().isoformat(),
-        # No single catalogue counter is needed: current selection is read every request,
-        # and each retained entry is addressed by the full normalized vacancy revision.
-        "catalogue_strategy": "live-selection-and-per-vacancy-revision",
+        "catalogue_strategy": "revision-fenced-candidates-and-per-vacancy-baseline",
         "model_strategy": "always-apply-current-model-after-baseline",
     }
     revision = digest(context)
     store = SelectionRepository(repository.session)
     entries = await store.load(owner_id, revision, now)
+    from jobs.serving_compute import compute
+
+    current, ranked, hits = await compute(
+        _score_entries, entries, selection, profile, now, include_ineligible
+    )
+    if not entries or hits != len(selection.items):
+        await store.save(
+            owner_id, revision, now, now + TTL, context, current, owner_epoch=owner_epoch
+        )
+    if stats is not None:
+        stats.update(
+            selected=len(selection.items), reused=hits, recomputed=len(selection.items) - hits
+        )
+    return ranked
+
+
+def _score_entries(entries, selection, profile, now, include_ineligible):
     old = {entry.get("id"): entry for entry in entries if isinstance(entry, dict)}
     current, ranked, hits = [], [], 0
     for vacancy in selection.items:
@@ -93,7 +110,11 @@ async def score_selection(
         if entry.get("revision") == content:
             try:
                 match = MatchResult.model_validate(entry["match"])
-                if match.vacancy_id != str(vacancy.id) or not match.eligible:
+                if (
+                    match.vacancy_id != str(vacancy.id)
+                    or not match.eligible
+                    or match.comparison is None
+                ):
                     match = None
             except (ValueError, TypeError, KeyError):
                 pass
@@ -102,6 +123,15 @@ async def score_selection(
         else:
             hits += 1
             refresh_time(match, vacancy, now)
+            from scoring.eligibility import check_eligibility
+
+            # Pair atoms depend on the UTC date, already in the key. The exact-time
+            # availability and publication constraints are still checked below.
+            match.comparison = match.comparison.model_copy(update={"checked_at": now})
+            match.eligibility = check_eligibility(
+                vacancy, profile, now=now, comparison=match.comparison
+            )
+            match.eligible = match.eligibility.eligible
         current.append(
             {
                 "id": str(vacancy.id),
@@ -115,13 +145,9 @@ async def score_selection(
     retained = [
         entry for entry in entries if isinstance(entry, dict) and entry.get("id") not in current_ids
     ]
-    # Sliding retention is bounded; incompatible/expired pools are replaced wholesale.
-    await store.save(owner_id, revision, now, now + TTL, context, (current + retained)[:MAX_POOL])
-    if stats is not None:
-        stats.update(
-            selected=len(selection.items), reused=hits, recomputed=len(selection.items) - hits
-        )
-    return sorted(
+    # Incompatible/expired pools are replaced. Hits alone do not extend retention.
+    ranked = sorted(
         ranked,
         key=lambda pair: (-pair[1].score, -pair[0].published_at.timestamp(), pair[0].source_id),
     )
+    return (current + retained)[:MAX_POOL], ranked, hits

@@ -90,6 +90,7 @@ def build_matching_dataset(
                     missing_required=len(match.missing_required),
                     missing_preferred=len(match.missing_preferred),
                     missing_unspecified=len(match.missing_unspecified),
+                    comparison_features=match.comparison.features if match.comparison else {},
                 ),
             )
         )

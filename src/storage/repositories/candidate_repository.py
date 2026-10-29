@@ -2,8 +2,22 @@
 
 from datetime import UTC
 
-from sqlalchemy import Text, and_, cast, exists, func, not_, or_, select, text, true
-from sqlalchemy.dialects.postgresql import ARRAY, array
+from sqlalchemy import (
+    Text,
+    Uuid,
+    and_,
+    any_,
+    cast,
+    exists,
+    func,
+    literal,
+    not_,
+    or_,
+    select,
+    text,
+    true,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from domain import Vacancy
 from scoring.fact_projection import projection_contract
@@ -18,7 +32,7 @@ class CandidateRepository:
 
     def _overlap(self, terms):
         if self.session.get_bind().dialect.name == "postgresql":
-            return V.search_terms.op("?|")(cast(array(sorted(terms)), ARRAY(Text)))
+            return V.search_terms.op("?|")(literal(sorted(terms), type_=ARRAY(Text)))
         words = func.json_each(V.search_terms).table_valued("key", "value")
         return exists(select(1).select_from(words).where(words.c.value.in_(sorted(terms))))
 
@@ -27,7 +41,7 @@ class CandidateRepository:
         names = set(Vacancy.model_fields) - {"raw_payload"}
         if not analysis:
             names.remove("analysis")
-            names.remove("professional_facts")
+            # residual filters require ready facts before Top-K truncation.
         return [
             *(getattr(V, name) for name in sorted(names)),
             V.search_document.label("lexical_document"),
@@ -39,12 +53,13 @@ class CandidateRepository:
             V.projection_contract.label("lexical_contract"),
             V.facts_revision.label("facts_revision"),
             V.projection_facts_revision.label("projection_facts_revision"),
+            V.projection_revision,
         ]
 
     @staticmethod
     def vacancy(row):
         values = {name: row[name] for name in Vacancy.model_fields if name in row}
-        for name in ("published_at", "collected_at", "valid_until"):
+        for name in ("published_at", "collected_at", "valid_until", "last_checked_at"):
             if values.get(name) is not None:
                 values[name] = _aware(values[name])
         vacancy = Vacancy.model_validate(values | {"raw_payload": {}})
@@ -91,13 +106,20 @@ class CandidateRepository:
                 )
         return and_(*criteria)
 
-    @staticmethod
-    def _unblocked_predicate(excluded_ids, excluded_keys):
+    def _unblocked_predicate(self, excluded_ids, excluded_keys):
         criteria = [true()]
+        pg = self.session.get_bind().dialect.name == "postgresql"
         if excluded_ids:
-            criteria.append(V.id.not_in(excluded_ids))
+            criteria.append(
+                not_(V.id == any_(literal(list(excluded_ids), type_=ARRAY(Uuid))))
+                if pg
+                else V.id.not_in(excluded_ids)
+            )
         if excluded_keys:
-            criteria.append(or_(V.duplicate_key.is_(None), V.duplicate_key.not_in(excluded_keys)))
+            blocked = V.duplicate_key == any_(literal(list(excluded_keys), type_=ARRAY(Text)))
+            if not pg:
+                blocked = V.duplicate_key.in_(excluded_keys)
+            criteria.append(or_(V.duplicate_key.is_(None), not_(blocked)))
         return and_(*criteria)
 
     async def diagnostic_counts(
@@ -126,26 +148,23 @@ class CandidateRepository:
             available_rows=available,
         )
 
-    async def batches(
-        self,
-        profile,
-        query,
-        *,
-        now,
-        since,
-        category,
-        include_ineligible,
-        excluded_ids,
-        excluded_keys,
-        positive,
-        batch_size,
-    ):
-        statement = select(*self.projection()).where(
-            self._state_predicate(now, since, category),
-            self._required_predicate(profile, include_ineligible),
-            self._unblocked_predicate(excluded_ids, excluded_keys),
+    async def duplicate_keys_for_ids(self, ids):
+        if not ids:
+            return set()
+        predicate = (
+            V.id == any_(literal(list(ids), type_=ARRAY(Uuid)))
+            if self.session.get_bind().dialect.name == "postgresql"
+            else V.id.in_(ids)
         )
-        unknown = or_(
+        return set(
+            await self.session.scalars(
+                select(V.duplicate_key).where(predicate, V.duplicate_key.is_not(None))
+            )
+        )
+
+    @staticmethod
+    def unknown():
+        return or_(
             text("(" + SEARCH_REPAIR_PREDICATE + ")"),
             V.projection_contract.is_(None),
             V.projection_contract != projection_contract(),
@@ -153,23 +172,135 @@ class CandidateRepository:
             V.projection_facts_revision.is_(None),
             V.projection_facts_revision != V.facts_revision,
         )
-        known = not_(unknown)
-        if positive is None:
-            statement = statement.where(unknown)
-        elif query.terms:
-            overlap = self._overlap(query.terms)
-            statement = statement.where(known, overlap if positive else not_(overlap))
+
+    def predicates(self, profile, options):
+        predicates = [
+            self._state_predicate(options["now"], options["since"], options["category"]),
+            self._required_predicate(profile, options["include_ineligible"]),
+            self._unblocked_predicate(options["excluded_ids"], options["excluded_keys"]),
+        ]
+        if (
+            not options["include_ineligible"]
+            and profile.preferences.locations_required
+            and profile.preferences.locations
+        ):
+            from scoring.eligibility import location_key
+
+            # Missing/stale projections go to bounded repair, never treated as a failed location.
+            predicates.append(
+                or_(
+                    self.unknown(),
+                    V.remote.is_(True),
+                    V.search_document["location_key"]
+                    .as_string()
+                    .in_([location_key(v) for v in profile.preferences.locations]),
+                )
+            )
+        return predicates
+
+    async def stale_ids(self, profile, *, limit, **options):
+        return list(
+            (
+                await self.session.execute(
+                    select(V.id)
+                    .where(*self.predicates(profile, options), self.unknown())
+                    .order_by(V.id)
+                    .limit(limit)
+                )
+            ).mappings()
+        )
+
+    def shortlist_statement(self, profile, query, parameters, *, limit, positive, **options):
+        score = (
+            func.va_lexical_rank_v2(
+                V.search_document,
+                literal(query.payload(), type_=JSONB),
+                literal(parameters.model_dump(), type_=JSONB),
+            )
+            if positive
+            else literal(0.0)
+        )
+        group = func.coalesce(V.duplicate_key, cast(V.id, Text))
+        order = [score.desc(), V.published_at.desc(), V.source_id, V.id]
+        statement = select(
+            V.id,
+            V.source_id,
+            V.published_at,
+            V.duplicate_key.label("duplicate_group"),
+            V.content_revision.label("source_revision"),
+            V.facts_revision,
+            V.projection_revision,
+            score.label("lexical_score"),
+            func.row_number().over(partition_by=group, order_by=order).label("copy_number"),
+            func.count().over(partition_by=group).label("copy_count"),
+        ).where(*self.predicates(profile, options), not_(self.unknown()))
+        if query.terms:
+            statement = statement.where(
+                self._overlap(query.terms) if positive else not_(self._overlap(query.terms))
+            )
         elif positive:
-            return
-        else:
-            statement = statement.where(known)
-        statement = statement.order_by(V.published_at.desc(), V.source_id, V.id)
-        stream = await self.session.stream(statement.execution_options(yield_per=batch_size))
+            statement = statement.where(False)
+        ranked = statement.subquery()
+        return (
+            select(ranked)
+            .where(ranked.c.copy_number == 1)
+            .order_by(
+                ranked.c.lexical_score.desc(),
+                ranked.c.published_at.desc(),
+                ranked.c.source_id,
+                ranked.c.id,
+            )
+            .limit(limit)
+        )
+
+    async def shortlist(self, profile, query, parameters, *, limit, positive, **options):
+        if self.session.get_bind().dialect.name == "postgresql" and parameters.backend == "sql":
+            return list(
+                (
+                    await self.session.execute(
+                        self.shortlist_statement(
+                            profile, query, parameters, limit=limit, positive=positive, **options
+                        )
+                    )
+                ).mappings()
+            )
+        # Portable rollback / SQLite: score compact ready documents, never descriptions/facts.
+        statement = select(
+            V.id,
+            V.source_id,
+            V.published_at,
+            V.duplicate_key.label("duplicate_group"),
+            V.content_revision.label("source_revision"),
+            V.facts_revision,
+            V.projection_revision,
+            V.search_document.label("lexical_document"),
+        ).where(*self.predicates(profile, options), not_(self.unknown()))
+        if query.terms:
+            statement = statement.where(
+                self._overlap(query.terms) if positive else not_(self._overlap(query.terms))
+            )
+        elif positive:
+            return []
+        from scoring.retrieval import lexical_evidence
+
+        groups = {}
+        stream = await self.session.stream(statement.execution_options(yield_per=128))
         try:
-            async for batch in stream.mappings().partitions(batch_size):
-                yield batch
+            async for row in stream.mappings():
+                row = dict(row)
+                row["lexical_score"] = lexical_evidence(
+                    row.pop("lexical_document"), query, parameters
+                ).lexical_score
+                key = row["duplicate_group"] or row["id"]
+                old = groups.get(key)
+                row["copy_count"] = (old["copy_count"] if old else 0) + 1
+                if old is None or compact_order(row) < compact_order(old):
+                    groups[key] = row
+                else:
+                    old["copy_count"] = row["copy_count"]
         finally:
             await stream.close()
+        return sorted(groups.values(), key=compact_order)[:limit]
 
     async def load_selected(self, ids):
         if not ids:
@@ -183,3 +314,12 @@ class CandidateRepository:
             .mappings()
             .all()
         )
+
+
+def compact_order(row):
+    return (
+        -row["lexical_score"],
+        -_aware(row["published_at"]).timestamp(),
+        row["source_id"],
+        str(row["id"]),
+    )

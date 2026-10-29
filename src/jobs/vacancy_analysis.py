@@ -12,6 +12,7 @@ from domain.vacancy_analysis import is_fresh
 from jobs.model_telemetry import ObservedOllamaClient
 from jobs.settings import Settings
 from nlp.ollama import OllamaVacancyAnalyzer
+from nlp.ollama_runtime import OllamaRuntime
 from storage.models import VacancyModel
 from storage.repositories import VacancyRepository
 
@@ -29,7 +30,17 @@ async def vacancy_analyzer(settings: Settings) -> AsyncIterator[OllamaVacancyAna
         trust_env=False,
         follow_redirects=False,
     ) as client:
-        yield OllamaVacancyAnalyzer(client, model=settings.ollama_model)
+        yield OllamaVacancyAnalyzer(
+            client,
+            model=settings.ollama_model,
+            runtime=OllamaRuntime(
+                client,
+                model=settings.ollama_model,
+                keep_alive=settings.ollama_keep_alive,
+                min_available_mb=settings.inference_min_available_mb,
+                request_seconds=settings.ollama_timeout,
+            ),
+        )
 
 
 async def analyze_catalog(

@@ -15,7 +15,12 @@ async def run_resume_cli(args, settings, sessions):
     if user is None:
         raise ValueError("Сначала зарегистрируйтесь в боте командой /start.")
     async with resume_analyzer(settings) as analyzer:
-        service = ResumeService(sessions, analyzer=analyzer)
+        service = ResumeService(
+            sessions,
+            analyzer=analyzer,
+            queued=True,
+            model=settings.ollama_model if settings.resume_llm_enabled else "rules",
+        )
         if args.delete:
             await service.delete(args.user_id)
             print("Текст резюме и черновик удалены; профиль сохранён.")
@@ -27,10 +32,18 @@ async def run_resume_cli(args, settings, sessions):
         if args.file:
             with args.file.open("rb") as stream:
                 text, kind = read_resume(stream.read(MAX_RESUME_BYTES + 1), args.file.name)
-            draft = await service.prepare(args.user_id, text, format=kind)
+            await service.submit(args.user_id, text, format=kind)
+            print("Резюме сохранено в очереди. Запустите worker; затем откройте resume без --file.")
+            return
         else:
             draft = await service.pending(args.user_id)
         if draft is None:
+            status = await service.status(args.user_id)
+            if status:
+                import json
+
+                print(json.dumps(status, ensure_ascii=False, indent=2))
+                return
             raise ValueError("Нет черновика; загрузите резюме с --file.")
         if args.edit:
             draft = await service.revise(args.user_id, draft.token, *args.edit)

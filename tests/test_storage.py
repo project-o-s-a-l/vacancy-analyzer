@@ -14,7 +14,10 @@ async def test_round_trip_preserves_domain_and_raw_json(session, vacancy):
     async with session.begin():
         identifier = await repository.save(vacancy)
     loaded = await repository.get_by_id(identifier)
-    assert loaded.model_copy(update={"professional_facts": None}) == vacancy
+    assert loaded.last_checked_at == vacancy.collected_at
+    assert (
+        loaded.model_copy(update={"professional_facts": None, "last_checked_at": None}) == vacancy
+    )
     assert loaded.professional_facts.subject == "vacancy"
     assert await repository.get_by_id(uuid4()) is None
 

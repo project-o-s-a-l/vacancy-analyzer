@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 RETRIEVAL_VERSION = "lexical-v1"
+SELECTION_VERSION = "bounded-sql-v2"
 
 
 class RetrievalParameters(BaseModel):
@@ -12,9 +13,18 @@ class RetrievalParameters(BaseModel):
     version: Literal["lexical-v1"] = RETRIEVAL_VERSION
     k: int = Field(default=64, ge=1, le=5000)
     batch_size: int = Field(default=32, ge=1, le=128)
+    selection_version: Literal["bounded-sql-v2"] = SELECTION_VERSION
+    normalization: Literal["legacy", "coverage"] = "coverage"
+    pool_factor: int = Field(default=4, ge=1, le=16)
+    repair_budget: int = Field(default=32, ge=0, le=256)
+    backend: Literal["sql", "compact"] = "sql"
     title_weight: float = Field(default=0.60, ge=0, le=1, allow_inf_nan=False)
     skill_weight: float = Field(default=0.25, ge=0, le=1, allow_inf_nan=False)
     body_weight: float = Field(default=0.15, ge=0, le=1, allow_inf_nan=False)
+
+    @property
+    def pool_size(self):
+        return max(self.batch_size, self.k * self.pool_factor)
 
     @model_validator(mode="after")
     def weights_sum(self):
@@ -25,6 +35,7 @@ class RetrievalParameters(BaseModel):
 
 class RetrievalEvidence(BaseModel):
     version: str = RETRIEVAL_VERSION
+    selection_version: str = SELECTION_VERSION
     parameters_hash: str
     strategy: Literal["lexical", "recent_fallback"]
     lexical_score: float = Field(ge=0, le=1)

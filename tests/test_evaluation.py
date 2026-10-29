@@ -475,6 +475,7 @@ async def test_offline_sql_runtime_and_notification_agree(bundle, evaluation_ses
             return now
 
     monkeypatch.setattr("jobs.rank.datetime", FrozenDate)
+    monkeypatch.setattr("jobs.catalog_freshness.datetime", FrozenDate)
     service = NotificationService(
         sessions, case.profile, chat_id=123, saved_selections_enabled=False
     )

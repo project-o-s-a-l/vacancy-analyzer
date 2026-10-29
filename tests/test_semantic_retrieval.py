@@ -281,6 +281,7 @@ def test_watchdog_accounts_for_windows_launcher_children_and_kills_tree(
     from jobs import semantic_process as module
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "_release_retained_ollama", lambda: None)
     events = []
 
     class Member:
@@ -354,6 +355,8 @@ def test_low_available_ram_prevents_model_process_launch(monkeypatch):
     import sys
 
     from jobs import semantic_process as module
+
+    monkeypatch.setattr(module, "_release_retained_ollama", lambda: None)
 
     monkeypatch.setitem(
         sys.modules, "psutil", SimpleNamespace(virtual_memory=lambda: SimpleNamespace(available=1))

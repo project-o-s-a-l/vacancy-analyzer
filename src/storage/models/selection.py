@@ -18,3 +18,16 @@ class SavedSelectionModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     context: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     entries: Mapped[list] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+    candidate_context: Mapped[dict | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql")
+    )
+    candidate_entries: Mapped[list | None] = mapped_column(
+        JSON().with_variant(JSONB(), "postgresql")
+    )
+    candidate_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ServingRevisionModel(Base):
+    __tablename__ = "serving_revisions"
+    scope: Mapped[str] = mapped_column(String(80), primary_key=True)
+    revision: Mapped[int] = mapped_column(BigInteger)

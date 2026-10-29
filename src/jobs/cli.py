@@ -22,7 +22,7 @@ from domain.serving_ranker import RankerPolicy
 from domain.vacancy_analysis import VacancyCategory
 from jobs.collection_runtime import CollectionAlreadyRunning, run_collection
 from jobs.import_html import import_html_snapshots
-from jobs.rank import rank_recent
+from jobs.recommendations import recommend
 from jobs.settings import Settings
 from jobs.skill_gap import analyze_skill_gap
 from observability import emit_event, logging_session, operation
@@ -129,8 +129,16 @@ def parser() -> argparse.ArgumentParser:
     )
     collect.add_argument("--pages", type=_positive, default=1)
     collect.add_argument("--per-page", type=_positive, default=20)
-    collect.add_argument("--source", choices=["html", "api"], default="html")
+    collect.add_argument("--source", choices=["html", "api"], default=None)
+    collect.add_argument(
+        "--resume-source",
+        action="store_true",
+        help="Снять сохранённый stop после устранения 403/captcha; бюджет не сбрасывается",
+    )
     collect.add_argument("--watch", action="store_true", help="Повторять сбор по HH_POLL_INTERVAL")
+    commands.add_parser(
+        "catalog-status", help="JSON покрытия, давности и бюджета без запросов к HH"
+    )
     importer = commands.add_parser("import-html", help="Импортировать сохранённые HTML без сети")
     importer.add_argument("--directory", type=Path, required=True)
     rank = commands.add_parser("rank", help="Ранжировать сохранённые вакансии")
@@ -273,6 +281,9 @@ def parser() -> argparse.ArgumentParser:
         "worker", help="Исполнять сохранённые задания без Telegram и сбора HH"
     )
     worker.add_argument("--once", action="store_true", help="Выполнить не более одного задания")
+    commands.add_parser(
+        "inference-status", help="Очередь, модель, память и ожидание восстановления (JSON)"
+    )
     notify = commands.add_parser(
         "notify", help="Отправить рекомендации зарегистрированному пользователю"
     )
@@ -547,6 +558,18 @@ async def run_command(args: argparse.Namespace) -> None:
     engine = create_engine(settings.database_url)
     try:
         sessions = session_factory(engine)
+        if args.command == "inference-status":
+            from jobs.inference_status import inference_status
+
+            print(
+                json.dumps(await inference_status(sessions, settings), ensure_ascii=False, indent=2)
+            )
+            return
+        if args.command == "catalog-status":
+            from jobs.catalog_metrics import catalog_status
+
+            print(json.dumps(await catalog_status(sessions), ensure_ascii=False, indent=2))
+            return
         if args.command == "resume":
             from jobs.resume_cli import run_resume_cli
 
@@ -618,6 +641,10 @@ async def run_command(args: argparse.Namespace) -> None:
                     await asyncio.Event().wait()
             return
         if args.command == "collect":
+            if args.resume_source:
+                from jobs.collection_budget import resume_source
+
+                await resume_source(sessions)
             await run_collection(
                 settings,
                 engine,
@@ -675,7 +702,7 @@ async def run_command(args: argparse.Namespace) -> None:
         else:
             async with sessions() as session:
                 repository = VacancyRepository(session)
-                results = await rank_recent(
+                result = await recommend(
                     repository,
                     profile,
                     days=args.days,
@@ -683,7 +710,10 @@ async def run_command(args: argparse.Namespace) -> None:
                     limit=args.limit,
                     category=VacancyCategory(args.category) if args.category else None,
                     ranker_policy=RankerPolicy.from_settings(settings),
+                    min_score=settings.telegram_min_score,
+                    top=min(args.top, 20),
                 )
+                results = result.ranking if args.include_ineligible else result.admitted
                 print(render(results[: args.top], as_json=args.json))
     finally:
         await engine.dispose()

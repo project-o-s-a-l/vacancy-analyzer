@@ -109,10 +109,26 @@ async def collection_loop(
     check_batch_interval: float = 3600,
 ) -> None:
     """Check profiles between directions and during idle time; schedule each direction fairly."""
+    if getattr(source, "paging_kind", None):
+        await persisted_collection_loop(
+            source,
+            sessions,
+            template,
+            watch,
+            interval,
+            query_texts=query_texts,
+            profile_check_interval=profile_check_interval,
+            sleep=sleep,
+            check_limit=check_limit,
+            check_interval=check_interval,
+            check_batch_interval=check_batch_interval,
+            analysis_pipeline=analysis_pipeline,
+        )
+        return
     if (
         interval <= 0
         or profile_check_interval <= 0
-        or not 0 <= check_limit <= 10
+        or not 0 <= check_limit <= 100
         or check_interval < 3600
         or check_batch_interval < 3600
     ):
@@ -237,3 +253,83 @@ async def collection_loop(
         if check_limit:
             wait = min(wait, next_check - clock())
         await sleep(max(0, wait))
+
+
+async def persisted_collection_loop(
+    source,
+    sessions,
+    template,
+    watch,
+    interval,
+    *,
+    query_texts,
+    profile_check_interval,
+    sleep,
+    check_limit,
+    check_interval,
+    check_batch_interval,
+    analysis_pipeline,
+):
+    from collections import Counter
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from collectors.errors import CollectionStopped
+    from jobs.collection_budget import BudgetDeferred
+    from jobs.collection_progress import choose_direction, crawl_slice, sync_directions
+    from storage.models import CollectionBudget
+
+    fixed = build_queries(query_texts, template) if query_texts is not None else None
+    while True:
+        now = datetime.now(UTC)
+        queries = fixed if fixed is not None else await load_profile_queries(sessions, template)
+        demand = Counter()
+        if fixed is None:
+            async with sessions() as session:
+                for plan in await session.scalars(select(SearchPlanModel.queries)):
+                    demand.update({" ".join(q["text"].casefold().split()) for q in plan})
+        keys = await sync_directions(source, sessions, queries, demand=demand, now=now)
+        if watch and check_limit:
+            async with sessions() as session:
+                budget = await session.get(CollectionBudget, "hh")
+                last = budget.metrics.get("check_batch_at") if budget else None
+            if (
+                last is None
+                or datetime.fromisoformat(last) + timedelta(seconds=check_batch_interval) <= now
+            ):
+                try:
+                    await check_catalog(
+                        source,
+                        sessions,
+                        limit=check_limit,
+                        interval=check_interval,
+                        analysis_pipeline=analysis_pipeline,
+                        now=now,
+                    )
+                except (
+                    BudgetDeferred,
+                    CollectionStopped,
+                    httpx.HTTPError,
+                    requests.RequestException,
+                ):
+                    pass  # Durable source circuit/budget prevents further network work.
+                async with sessions.begin() as session:
+                    budget = await session.get(CollectionBudget, "hh", with_for_update=True)
+                    if budget:
+                        budget.metrics = dict(budget.metrics) | {"check_batch_at": now.isoformat()}
+        selected = [await choose_direction(sessions, keys, now=now)] if watch else list(keys)
+        for key in selected:
+            if key:
+                # --pages bounds work in this invocation; the cursor survives the invocation.
+                for _ in range(template.max_pages):
+                    await crawl_slice(
+                        source,
+                        sessions,
+                        keys[key],
+                        interval=interval,
+                        analysis_pipeline=analysis_pipeline,
+                    )
+        if not watch:
+            return
+        await sleep(profile_check_interval)

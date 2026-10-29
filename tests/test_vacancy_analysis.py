@@ -183,7 +183,7 @@ async def test_validated_structured_output_is_local_and_preserves_source(job, ex
     assert job.model_dump(mode="json") == original
     body = json.loads(requests[-1].content)
     assert body["stream"] is False and body["think"] is False
-    assert body["keep_alive"] == 0
+    assert body["keep_alive"] == 30
     assert body["options"] == {
         "temperature": 0,
         "num_ctx": 8192,
@@ -633,12 +633,13 @@ def test_llm_requirements_and_experience_affect_existing_matching_contract(
     job.analysis = analysis(job, extraction)
     profile.experience_years = 1
     match = score_vacancy(job, profile)
-    assert match.components["experience"] == pytest.approx(1 / 3)
+    assert match.components["experience"] is None
+    assert match.eligibility.experience.conflict
     assert "java" in match.missing_required and "sql" in match.missing_preferred
     assert len(match.alternatives) == 1
     assert match.requirements_version == "vacancy-analysis-v1"
     card = render_card(job, match)
-    assert "Категория: IT и данные" in card and "от 3 лет" in card
+    assert "Категория: IT и данные" in card and "конфликт" in card
     assert job.experience == "no_experience"
 
 

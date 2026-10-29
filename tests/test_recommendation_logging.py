@@ -45,22 +45,19 @@ def log_sessions(request):
 async def test_six_copies_reset_one_repeat_and_separate_users(
     log_sessions, vacancy, profile, capsys
 ):
-    cards = await seed(log_sessions, vacancy, profile)
+    await seed(log_sessions, vacancy, profile)
     service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=17))
     with logging_session(console_format="json"):
         assert (await service.deliver(sender)).sent == 1
         rows = logs(capsys)
         selection = facts(rows, "selection.finished")[0]
-        assert selection["catalog_rows"] == selection["scanned_count"] == 6
+        assert "catalog_rows" not in selection and selection["scanned_count"] == 1
         assert selection["copy_excluded"] == 5
         assert selection["retained_groups"] == selection["scored_count"] == 1
         assert selection["selected_count"] == 1 and selection["top_k"] == 64
-        copies = facts(rows, "selection.copy_excluded")
-        assert len(copies) == 5 and len({r["duplicate_group"] for r in copies}) == 1
-        assert {r["vacancy_id"] for r in copies} | {r["related_vacancy_id"] for r in copies} == {
-            str(c.id) for c in cards
-        }
+        assert facts(rows, "selection.copy_excluded") == []
+        assert selection["detail_count"] == 1 and selection["catalog_counts_sampled"] == 0
         delivery = [
             r
             for r in rows
@@ -82,14 +79,14 @@ async def test_six_copies_reset_one_repeat_and_separate_users(
         assert all(r["parent_operation_id"] == selection["operation_id"] for r in delivery)
         assert (await service.deliver(sender)).sent == 0
         blocked = facts(logs(capsys), "selection.finished")[0]
-        assert blocked["history_feedback_excluded"] == 6 and blocked["scanned_count"] == 0
+        assert blocked["history_ids"] >= 1 and blocked["scanned_count"] == 0
         assert blocked["code"] == "history_feedback_blocked"
         assert (
             len(await NotificationService(log_sessions, profile, chat_id=99, min_score=0).pending())
             == 1
         )
         other = facts(logs(capsys), "selection.finished")[0]
-        assert other["history_feedback_excluded"] == 0
+        assert other["history_ids"] == 0
         feedback = FeedbackService(log_sessions)
         request = await feedback.request_history_reset(42)
         assert await feedback.confirm_history_reset(42, request.token) == 1
@@ -229,7 +226,7 @@ async def test_copy_details_are_bounded_but_total_is_exact(sessions, vacancy, pr
         selected = await NotificationService(sessions, profile, chat_id=42, min_score=0).pending()
         rows = logs(capsys)
     assert len(selected) == 1
-    assert len(facts(rows, "selection.copy_excluded")) == 16
+    assert len(facts(rows, "selection.copy_excluded")) == 0
     assert facts(rows, "selection.finished")[0]["copy_excluded"] == 23
 
 
@@ -270,9 +267,9 @@ async def test_selection_counter_stages(log_sessions, vacancy, profile, capsys):
     with logging_session(console_format="json"):
         assert len(await service.pending()) == 1
         summary = facts(logs(capsys), "selection.finished")[0]
-    assert summary["catalog_rows"] == 4
-    assert summary["state_excluded"] == summary["required_sql_excluded"] == 1
-    assert summary["available_rows"] == summary["scanned_count"] == 2
+    assert "catalog_rows" not in summary
+    assert summary["scanned_count"] == summary["detail_count"] == 1
+    assert summary["copy_excluded"] == 1
     assert summary["retained_groups"] == summary["selected_count"] == 1
 
 
@@ -285,7 +282,7 @@ async def test_empty_reason_is_about_selection_not_entire_catalog(
     with logging_session(console_format="json"):
         assert await NotificationService(log_sessions, profile, chat_id=42).pending() == []
         summary = facts(logs(capsys), "selection.finished")[0]
-    assert summary["catalog_rows"] == summary["required_sql_excluded"] == 6
+    assert "catalog_rows" not in summary and summary["scanned_count"] == 0
     assert summary["code"] == "no_active_candidates"
 
 
@@ -325,7 +322,7 @@ async def test_feedback_still_blocks_copies_after_clear(
         rows = logs(capsys)
     assert len(facts(rows, "feedback.changed")) == len(facts(rows, "feedback.reused")) == 1
     assert facts(rows, "feedback.rejected")[0]["code"] == "feedback_not_allowed"
-    assert facts(rows, "selection.finished")[0]["history_feedback_excluded"] == 6
+    assert facts(rows, "selection.finished")[0]["history_ids"] >= 1
 
 
 async def test_resume_and_history_no_tokens_text_or_values(log_sessions, capsys, tmp_path):

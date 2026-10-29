@@ -7,7 +7,7 @@
   "input_sha256": "3921bc1fe840576be7d1c423d46be9574fc9dc9e699014c2e4039c9350706678",
   "extractor": "profile-adapter",
   "extractor_version": "professional-adapters-v1",
-  "extractor_contract": "d68941b4c6f1eee33091022ed5173819ac24e9e9b3c8087b382fa438acc699ac",
+  "extractor_contract": "4266e63f524d48202861754ed8fec9331b1f6c78304db971b78f46b3e82cfe7b",
   "model_id": null,
   "model_digest": null,
   "analysis_pipeline": null,
@@ -397,5 +397,6 @@
   ],
   "requirements": [],
   "alternatives": [],
+  "lexical_observations": [],
   "overlap_policy": "unaggregated"
 }

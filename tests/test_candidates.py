@@ -55,6 +55,9 @@ def job(vacancy, **updates):
 
 
 async def bulk(sessions, vacancies):
+    from nlp.professional_facts import vacancy_facts
+    from scoring.fact_projection import fact_projection, projection_contract, projection_revision
+
     values = []
     for vacancy in vacancies:
         row = vacancy.model_dump()
@@ -62,11 +65,20 @@ async def bulk(sessions, vacancies):
             url=str(vacancy.url),
             company_url=str(vacancy.company_url) if vacancy.company_url else None,
             last_seen_at=vacancy.collected_at,
+            last_checked_at=vacancy.collected_at,
+            last_check_attempt_at=vacancy.collected_at,
             raw_payload_hash=payload_hash(vacancy.raw_payload),
             duplicate_key=vacancy_duplicate_key(vacancy),
         )
-        document = search_document(row)
+        facts = vacancy_facts(vacancy)
+        document = fact_projection(vacancy, facts)
         row.update(
+            professional_facts=facts.model_dump(mode="json"),
+            facts_input_revision=facts.input_sha256,
+            facts_revision=facts.revision,
+            projection_facts_revision=facts.revision,
+            projection_revision=projection_revision(vacancy, facts),
+            projection_contract=projection_contract(),
             search_version=document["version"],
             search_revision=analysis_input_hash(vacancy),
             content_revision=analysis_input_hash(vacancy),

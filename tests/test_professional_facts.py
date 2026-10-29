@@ -513,6 +513,7 @@ async def test_0013_data_drafts_and_exposure_survive_real_migration(postgres_ses
 
 
 async def test_memory_retrieval_category_and_compact_scan_match_full_load(vacancy):
+    from domain.retrieval import RetrievalParameters
     from domain.vacancy_analysis import VacancyCategory
     from jobs.retrieval_evaluation import MemoryCandidateSource
     from scoring.retrieval import profile_query
@@ -526,18 +527,19 @@ async def test_memory_retrieval_category_and_compact_scan_match_full_load(vacanc
         excluded_ids=(),
         excluded_keys=(),
         positive=True,
-        batch_size=8,
+        include_ineligible=False,
+        limit=8,
     )
-    rows = [
-        r async for batch in source.batches(CandidateProfile(), query, **options) for r in batch
-    ]
-    assert rows and "professional_facts" not in rows[0] and "analysis" not in rows[0]
+    rows = await source.shortlist(CandidateProfile(), query, RetrievalParameters(), **options)
+    assert rows and "professional_facts" not in rows[0] and "description" not in rows[0]
     loaded = (await source.load_selected([vacancy.id]))[0]
     assert source.vacancy(loaded).professional_facts
-    assert [
-        r
-        async for batch in source.batches(
-            CandidateProfile(), query, **(options | {"category": VacancyCategory.IT})
+    assert (
+        await source.shortlist(
+            CandidateProfile(),
+            query,
+            RetrievalParameters(),
+            **(options | {"category": VacancyCategory.IT}),
         )
-        for r in batch
-    ] == []
+        == []
+    )

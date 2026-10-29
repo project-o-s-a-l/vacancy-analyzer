@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
 
+from domain.comparison import ComparisonResult
 from domain.eligibility import EligibilityResult
 from domain.qualifications import QualificationMatch
 from domain.requirements import AlternativeMatch, SkillRequirement
@@ -18,6 +19,7 @@ class MatchResult(BaseModel):
     warnings: list[str]
     eligible: bool
     eligibility: EligibilityResult | None = None
+    comparison: ComparisonResult | None = None
     requirements: list[SkillRequirement] = Field(default_factory=list)
     missing_required: list[str] = Field(default_factory=list)
     missing_preferred: list[str] = Field(default_factory=list)

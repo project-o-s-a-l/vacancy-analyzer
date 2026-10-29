@@ -20,6 +20,7 @@ class PairFeatures(BaseModel):
     missing_required: int = Field(ge=0)
     missing_preferred: int = Field(ge=0)
     missing_unspecified: int = Field(ge=0)
+    comparison_features: dict[str, FiniteFloat | None] = Field(default_factory=dict)
 
 
 class ReviewPair(BaseModel):

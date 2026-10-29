@@ -84,7 +84,7 @@ def test_senior_role_is_blocked_even_when_score_passes(vacancy, now):
     result = score_vacancy(v, profile, now=now)
     assert result.score >= 50
     assert not result.eligible
-    assert {"experience_required", "seniority_mismatch"} <= codes(result.eligibility)
+    assert {"experience_contradiction", "seniority_mismatch"} <= codes(result.eligibility)
     assert result.eligibility.experience.minimum_years == 3
     assert {e.source for e in result.eligibility.experience.evidence} == {"hh", "description"}
     assert not rank_vacancies([v], profile, now=now)
@@ -97,14 +97,16 @@ def test_senior_role_is_blocked_even_when_score_passes(vacancy, now):
     "years,minimum,eligible",
     [
         (0, 3, False),
-        (2, 3, True),
+        (2, 3, False),
         (1, 3, False),
         (3, 3, True),
         (None, 3, True),
         (0, 0, True),
     ],
 )
-def test_experience_policy_and_one_year_tolerance(vacancy, now, years, minimum, eligible):
+def test_explicit_total_below_required_role_minimum_is_not_tolerated(
+    vacancy, now, years, minimum, eligible
+):
     text = f"Требования:\nОпыт работы от {minimum} лет." if minimum else "Без опыта работы."
     v = job(vacancy, now, description=text)
     result = check_eligibility(v, candidate(years), now=now)
@@ -112,7 +114,7 @@ def test_experience_policy_and_one_year_tolerance(vacancy, now, years, minimum, 
     if years is None:
         assert any(i.code == "candidate_experience_unknown" for i in result.uncertainties)
     if years == 2:
-        assert any(i.code == "experience_gap" for i in result.uncertainties)
+        assert any(i.code == "experience_contradiction" for i in result.exclusions)
 
 
 @pytest.mark.parametrize(

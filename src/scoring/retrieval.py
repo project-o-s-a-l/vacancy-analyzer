@@ -1,7 +1,6 @@
 """Small corpus-independent lexical features; no fitted or pretrained weights."""
 
 from dataclasses import dataclass
-from datetime import UTC
 
 from domain.retrieval import RETRIEVAL_VERSION, RetrievalEvidence
 from nlp.extraction import canonical_skill, extract_skills
@@ -42,10 +41,19 @@ class RetrievalQuery:
     skills: frozenset[str]
     terms: frozenset[str]
 
+    def payload(self):
+        return dict(
+            titles=[sorted(t) for t in self.titles],
+            skills=sorted(self.skills),
+            terms=sorted(self.terms),
+        )
+
 
 def profile_query(profile):
+    from scoring.comparison import candidate_skill_names
+
     titles = tuple(frozenset(tokens(position)) for position in profile.preferences.positions)
-    skills = frozenset(word for skill in profile.skills for word in tokens(skill))
+    skills = frozenset(word for skill in candidate_skill_names(profile) for word in tokens(skill))
     return RetrievalQuery(titles, skills, frozenset().union(skills, *titles))
 
 
@@ -58,8 +66,13 @@ def lexical_evidence(document, query, parameters):
     title_score = max(
         (len(wanted & title) / len(wanted) for wanted in query.titles if wanted), default=0
     )
-    skill_score = len(skill_matches) / len(query.skills) if query.skills else 0
-    body_score = len(body_matches) / len(query.terms) if query.terms else 0
+    skill_denominator = len(query.skills)
+    body_denominator = len(query.terms)
+    if parameters.normalization == "coverage":
+        skill_denominator = min(skill_denominator, max(1, len(skills)))
+        body_denominator = min(body_denominator, max(1, len(body)))
+    skill_score = min(1, len(skill_matches) / max(1, skill_denominator))
+    body_score = len(body_matches) / max(1, body_denominator)
     score = round(
         parameters.title_weight * title_score
         + parameters.skill_weight * skill_score
@@ -77,15 +90,6 @@ def lexical_evidence(document, query, parameters):
 
 
 def retrieval_eligibility(vacancy, profile, now):
-    from nlp.qualifications import compare_qualifications
     from scoring.eligibility import check_eligibility
 
-    text = vacancy.description
-    if vacancy.description_html and (
-        text is None or clean_html(vacancy.description_html) == clean_html(text)
-    ):
-        text = vacancy.description_html
-    qualifications, _ = compare_qualifications(
-        text, profile.qualifications, today=now.astimezone(UTC).date(), explicit=vacancy.skills
-    )
-    return check_eligibility(vacancy, profile, now=now, qualifications=qualifications)
+    return check_eligibility(vacancy, profile, now=now)

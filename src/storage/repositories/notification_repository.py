@@ -1,4 +1,5 @@
 import hashlib
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID, uuid4
@@ -9,7 +10,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from observability.transactions import after_commit
-from storage.models import NotificationModel, VacancyModel
+from storage.models import ExposureModel, NotificationModel, VacancyModel
 
 DeliveryStatus = Literal["sent", "failed", "uncertain"]
 
@@ -63,6 +64,12 @@ class NotificationRepository:
                 )
                 return None
         token = uuid4()
+        if (
+            exposure_context is not None
+            and exposure_context.get("version") == "recommendation-exposure-v3"
+        ):
+            exposure_context = deepcopy(exposure_context)
+            exposure_context["snapshot_id"] = str(token)
         statement = self.insert(NotificationModel).values(
             chat_id=chat_id,
             vacancy_id=vacancy_id,
@@ -132,17 +139,37 @@ class NotificationRepository:
                 NotificationModel.status == "sending",
             )
             .values(**values)
-            .returning(NotificationModel.duplicate_key)
+            .returning(NotificationModel.duplicate_key, NotificationModel.exposure_context)
         )
         row = (await self.session.execute(statement)).one_or_none()
         if row is None:
             raise ValueError("Delivery claim no longer belongs to this attempt")
+        if status == "sent":
+            await self.confirm_exposure(chat_id, vacancy_id, message_id, row[1], snapshot_id=token)
         after_commit(
             self.session,
             "delivery.persisted",
             vacancy_id=vacancy_id,
             duplicate_group=row[0],
             result=status,
+        )
+
+    async def confirm_exposure(self, chat_id, vacancy_id, message_id, context, *, snapshot_id=None):
+        snapshot_id = snapshot_id or uuid4()
+        context = deepcopy(context)
+        if context is not None and context.get("version") == "recommendation-exposure-v3":
+            context["snapshot_id"] = str(snapshot_id)
+        await self.session.execute(
+            self.insert(ExposureModel)
+            .values(
+                id=snapshot_id,
+                chat_id=chat_id,
+                vacancy_id=vacancy_id,
+                message_id=message_id,
+                confirmed_at=datetime.now(UTC),
+                context=context,
+            )
+            .on_conflict_do_nothing(index_elements=["chat_id", "message_id"])
         )
 
     async def blocked_ids(self, chat_id: int) -> set[UUID]:

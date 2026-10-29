@@ -143,7 +143,7 @@ async def test_long_partial_model_keeps_full_rules_and_new_skill(vacancy):
         analyzer.model_digest = "weights"
         seen = []
 
-        async def block(vacancy, document):
+        async def block(vacancy, document, **kwargs):
             seen.append(document)
             if len(seen) == 2:
                 raise VacancyAnalysisError("bad chunk")

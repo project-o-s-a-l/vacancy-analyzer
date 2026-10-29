@@ -7,6 +7,7 @@ from domain.contracts import facts_contract
 from domain.professional import (
     Alternative,
     Evidence,
+    LexicalObservation,
     ProfessionalFacts,
     QualificationFact,
     Requirement,
@@ -147,12 +148,40 @@ def extract_vacancy_facts(vacancy, *, legacy=False):
         assertion=_assert(True, "source", [evidence("title", vacancy.title)]),
     )
     facts, reqs, alternatives = [role], [], []
+    from nlp.alternatives import OR
+    from nlp.text import word_tokens
+
+    lexical = []
+    for part in sections(text):
+        if part.kind in {"nonprofessional", "conditions", "tasks"}:
+            continue
+        default = "required" if part.kind == "requirements" else "unspecified"
+        for pattern, status in _HEADER_PATTERNS:
+            if pattern.match(part.heading):
+                default = status
+                break
+        for line in re.split(r"[;\n]+|(?<=[.!?])\s+", part.text):
+            if line.startswith(part.heading + ":"):
+                line = line[len(part.heading) + 1 :].strip()
+            if not line:
+                continue
+            importance_value, ambiguous = _importance(line, default)
+            _, skill_line = compare_qualifications(line, [], today=vacancy.published_at.date())
+            lexical.append(
+                LexicalObservation(
+                    tokens=list(word_tokens(skill_line)),
+                    importance=importance_value,
+                    ambiguous=ambiguous or bool(OR.search(line)),
+                    evidence=evidence("description", line),
+                )
+            )
     requirements = reconciled_requirements(vacancy)
     for item in requirements.skills:
         key = _identity("skill", item.skill)
         ev = evs(item.evidence)
         facts.append(SkillFact(id=key, name=item.skill, assertion=_assert(True, origin, ev)))
         if item.counted_separately:
+            standalone = [e for e in item.evidence if not e.alternative_id]
             reqs.append(
                 Requirement(
                     id="req:" + key,
@@ -160,9 +189,9 @@ def extract_vacancy_facts(vacancy, *, legacy=False):
                     scope="skill",
                     scope_id=key,
                     importance=importance(
-                        item.importance, ev, [e.importance for e in item.evidence]
+                        item.importance, evs(standalone), [e.importance for e in standalone]
                     ),
-                    evidence=ev,
+                    evidence=evs(standalone),
                 )
             )
     for group in requirements.alternatives:
@@ -198,17 +227,57 @@ def extract_vacancy_facts(vacancy, *, legacy=False):
         today=vacancy.published_at.date(),
         explicit=vacancy.skills,
     )
+    # Only explicit named levels, not an inferred default or ambiguous adjectives.
+    for fact in facts:
+        if fact.kind != "skill":
+            continue
+        pattern = re.compile(
+            re.escape(fact.name) + r"\s*[:—-]?\s*(?:уровень\s*[:—-]?\s*)?"
+            r"(beginner|intermediate|advanced)\b",
+            re.I,
+        )
+        observations = list(pattern.finditer(text))
+        levels = sorted({m[1].lower() for m in observations})
+        ev = [evidence("description", m[0]) for m in observations]
+        if levels:
+            fact.level = type(fact.level)(
+                **(
+                    _assert(levels[0], origin, ev)
+                    if len(levels) == 1
+                    else dict(status="conflict", alternatives=levels, origin=origin, evidence=ev)
+                )
+            )
+
+    document_groups = {}
     for item in qualifications:
         key, ev = _identity("qualification", item.name), evs(item.evidence)
-        facts.append(QualificationFact(id=key, name=item.name, assertion=_assert(True, origin, ev)))
-        reqs.append(
-            Requirement(
-                id="req:" + key,
-                fact_id=key,
-                importance=importance(item.importance, ev, [e.importance for e in item.evidence]),
-                evidence=ev,
-            )
+        groups = {e.alternative_id for e in item.evidence if e.alternative_id}
+        assertion = (
+            _assert(True, origin, ev)
+            if item.status != "uncertain" or groups
+            else dict(status="unknown", origin=origin, evidence=ev)
         )
+        facts.append(QualificationFact(id=key, name=item.name, assertion=assertion))
+        for group_id in sorted(
+            groups | ({""} if any(not e.alternative_id for e in item.evidence) else set())
+        ):
+            observations = [e for e in item.evidence if (e.alternative_id or "") == group_id]
+            req_id = "req:" + ("or:" + group_id + ":" if group_id else "") + key
+            reqs.append(
+                Requirement(
+                    id=req_id,
+                    fact_id=key,
+                    importance=importance(
+                        item.importance, evs(observations), [e.importance for e in observations]
+                    ),
+                    evidence=evs(observations),
+                )
+            )
+            if group_id:
+                document_groups.setdefault(group_id, []).append(req_id)
+    for group_id, keys in document_groups.items():
+        if len(keys) >= 2:
+            alternatives.append(Alternative(id="or:document:" + group_id, requirement_ids=keys))
 
     # Parse every relevant line; company age and benefits never become candidate tenure.
     experience = {}
@@ -251,7 +320,9 @@ def extract_vacancy_facts(vacancy, *, legacy=False):
                 id="req:source:experience",
                 fact_id=role.id,
                 importance=importance(
-                    "unspecified", [evidence("experience")], claim_origin="source"
+                    "required" if hh else "not_required",
+                    [evidence("experience")],
+                    claim_origin="source",
                 ),
                 years_min=_assert(hh, "source", [evidence("experience")]),
                 evidence=[evidence("experience")],
@@ -275,17 +346,70 @@ def extract_vacancy_facts(vacancy, *, legacy=False):
             else dict(status="unknown", origin=origin, evidence=ev)
         )
         scope = "role" if target == role.id else "skill"
+        if any(OR.search(e.quote or "") for e in ev):
+            grouped_ids = {key for group in alternatives for key in group.requirement_ids}
+            matched_or = [
+                r
+                for r in reqs
+                if r.id in grouped_ids
+                and r.fact_id == target
+                and any(
+                    a.quote and b.quote and (a.quote in b.quote or b.quote in a.quote)
+                    for a in r.evidence
+                    for b in ev
+                )
+            ]
+            if matched_or:
+                for requirement in matched_or:
+                    requirement.years_min = type(requirement.years_min)(**years)
+                continue
+            # Unsupported alternative (e.g. employment OR academic project) is not AND.
+            status = "unspecified"
+            requirements.warnings.append("Не определена область альтернативы требования опыта")
         reqs.append(
             Requirement(
                 id=f"req:experience:{index}",
                 fact_id=target,
                 scope=scope,
                 scope_id=target,
-                importance=importance(status, ev),
+                importance=importance(
+                    "unspecified" if years.get("status") == "conflict" else status, ev
+                ),
                 years_min=years,
                 evidence=ev,
             )
         )
+
+    # A positive scoped duration already requires presence; don't count the
+    # same standalone condition twice. Independent OR/AND clauses retain IDs.
+    duration_subjects = {
+        (r.fact_id, r.importance.value)
+        for r in reqs
+        if r.id.startswith("req:experience:") and r.years_min.value is not None
+    }
+    reqs = [
+        r
+        for r in reqs
+        if not (
+            r.id.startswith("req:skill:") and (r.fact_id, r.importance.value) in duration_subjects
+        )
+    ]
+
+    if hh == 0 and any(
+        r.scope == "role" and r.importance.value == "required" and r.years_min.status == "unknown"
+        for r in reqs
+    ):
+        for req in reqs:
+            if req.id == "req:source:experience":
+                req.years_min = type(req.years_min)(status="unknown", evidence=req.evidence)
+                req.importance = type(req.importance)(status="unknown")
+
+    role_conflicts = [r for r in reqs if r.scope == "role" and r.years_min.status == "conflict"]
+    if role_conflicts:
+        for req in reqs:
+            if req.id == "req:source:experience":
+                req.years_min = role_conflicts[0].years_min.model_copy(deep=True)
+                req.importance = type(req.importance)(status="unknown")
 
     if analysis:
         for extraction in analysis.chunks or [analysis.extraction]:
@@ -385,6 +509,7 @@ def extract_vacancy_facts(vacancy, *, legacy=False):
         sources=[SourceReference(id=source_id, revision=revision, kind="vacancy")],
         facts=facts,
         requirements=reqs,
+        lexical_observations=lexical,
         alternatives=alternatives,
     )
     result.verify_text(source_id, revision, {"title": vacancy.title, "description": text})

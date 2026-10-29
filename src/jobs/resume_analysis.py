@@ -7,6 +7,7 @@ import httpx
 from jobs.model_telemetry import ObservedOllamaClient
 from jobs.settings import Settings
 from nlp.ollama_resume import OllamaResumeAnalyzer
+from nlp.ollama_runtime import OllamaRuntime
 
 
 @asynccontextmanager
@@ -27,4 +28,11 @@ async def resume_analyzer(settings: Settings):
             model=settings.ollama_model,
             total_seconds=settings.resume_total_timeout,
             request_seconds=settings.ollama_timeout,
+            runtime=OllamaRuntime(
+                client,
+                model=settings.ollama_model,
+                keep_alive=settings.ollama_keep_alive,
+                min_available_mb=settings.inference_min_available_mb,
+                request_seconds=settings.ollama_timeout,
+            ),
         )

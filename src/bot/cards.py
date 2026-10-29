@@ -88,7 +88,24 @@ def render_card(vacancy: Vacancy, match: MatchResult) -> str:
         experience = "Без опыта" if minimum == 0 else f"от {minimum:g} лет (по описанию)"
     elif analysis and analysis.extraction.experience_evidence is not None:
         experience = "требуется, минимум лет не указан в описании"
+    if match.comparison is not None:
+        scopes = [
+            f"{item.name}: от {item.years_required:g} лет"
+            for item in match.comparison.items
+            if item.years_required is not None
+        ]
+        experience = (
+            "; ".join(dict.fromkeys(scopes)) or "минимум лет не указан; смотрите неопределённость"
+        )
+        experience = _short(experience, 250)
     lines = [
+        "Проверено: "
+        + (
+            vacancy.last_checked_at.strftime("%d.%m.%Y %H:%M UTC")
+            if vacancy.last_checked_at
+            else "дата проверки неизвестна"
+        ),
+        "Опубликовано: " + vacancy.published_at.strftime("%d.%m.%Y"),
         f"Соответствие: {match.score:.1f}%",
         _short(vacancy.title, 200),
         _short(vacancy.company, 150),

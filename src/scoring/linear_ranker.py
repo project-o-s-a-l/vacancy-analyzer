@@ -10,6 +10,7 @@ from hashlib import sha256
 from importlib.metadata import version
 from math import fsum, isfinite, log1p, sqrt
 
+from domain.comparison import COMPARISON_FEATURES
 from domain.matching_dataset import MatchingDataset, PairFeatures
 from domain.ranker import LinearRankerModel
 from scoring.text_features import (
@@ -24,6 +25,11 @@ COUNTS = ("matched_skills", "missing_required", "missing_preferred", "missing_un
 FEATURE_NAMES = [
     name for field in (*COMPONENTS, *SIMILARITIES) for name in (field, field + "_missing")
 ] + ["baseline_coverage", *("log1p_" + field for field in COUNTS)]
+FEATURE_NAMES += [
+    name
+    for field in COMPARISON_FEATURES
+    for name in ("comparison_" + field, "comparison_" + field + "_missing")
+]
 MAX_COMPARISONS = 1000
 
 
@@ -62,6 +68,11 @@ def feature_vector(features: PairFeatures) -> list[float]:
         values.extend([float(value or 0), float(value is None)])
     values.append(features.baseline_coverage)
     values.extend(log1p(getattr(features, field)) for field in COUNTS)
+    for field in COMPARISON_FEATURES:
+        value = features.comparison_features.get(field)
+        if value is not None and not 0 <= value <= 1:
+            raise ValueError("Comparison feature outside 0..1")
+        values.extend([float(value or 0), float(value is None)])
     return values
 
 

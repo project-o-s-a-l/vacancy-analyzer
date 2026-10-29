@@ -28,6 +28,9 @@ from observability.repeats import RepeatLimiter
 
 MAX_RECORD_BYTES = 4096
 EVENTS = {
+    "serving.command_finished": "Команда обработана",
+    "serving.loop_health": "Задержка цикла событий",
+    "delivery.http_finished": "Сетевой запрос Telegram завершён",
     "application.started": "Приложение запущено",
     "application.finished": "Приложение завершено",
     "application.failed": "Операция завершилась ошибкой",
@@ -300,12 +303,25 @@ def _fields(values):
         "failed_count",
         "uncertain_count",
         "top_k",
+        "compact_count",
+        "detail_count",
+        "repair_count",
+        "refill_rounds",
+        "pool_limit",
+        "repair_limit",
+        "pool_budget_exhausted",
+        "projection_budget_exhausted",
+        "source_exhausted",
+        "catalog_counts_sampled",
+        "history_ids",
+        "history_groups",
+        "candidate_cache_hit",
     ):
         value = values.get(key)
         if type(value) is int and 0 <= value <= 10**9:
             if key != "status_code" or 100 <= value <= 599:
                 result[key] = value
-    for key in ("duration_ms", "wait_ms"):
+    for key in ("duration_ms", "wait_ms", "shortlist_ms", "detail_ms", "residual_ms", "repair_ms"):
         value = values.get(key)
         if type(value) in {int, float} and math.isfinite(value) and 0 <= value <= 10**12:
             result[key] = round(value, 3)
@@ -323,6 +339,16 @@ def _fields(values):
                 "search",
                 "model_ready",
                 "model_chat",
+                "input_prepare",
+                "document_prepare",
+                "model_load",
+                "prompt_eval",
+                "inference",
+                "validation",
+                "result_write",
+                "cache_write",
+                "slot_wait",
+                "queue_wait",
                 "blocked_probe",
             },
         ),

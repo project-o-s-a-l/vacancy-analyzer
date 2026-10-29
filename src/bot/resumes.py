@@ -55,6 +55,11 @@ def register_resumes(router: Router, service: UserService) -> None:
                 "Обработка временно недоступна; повтор запланирован. "
                 "Резюме сохранено, остальные команды доступны."
             )
+        if status["state"] == "pending":
+            labels["pending"] += f" Перед вами резюме: {status.get('resume_ahead', 0)}."
+            if status.get("wait_reason") == "runtime_recovery":
+                labels["pending"] += " Ожидается восстановление локальной модели."
+            labels["pending"] += " Фоновые задания получают время между загрузками резюме."
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [

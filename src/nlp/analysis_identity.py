@@ -1,9 +1,12 @@
 """Recipe identity includes prompt, schemas, deterministic rules and implementation."""
 
+from functools import lru_cache
+
 from domain.contracts import normalization_contract, source_contract
 from domain.professional import digest
 
 
+@lru_cache(maxsize=64)
 def pipeline_hash(kind: str, model: str) -> str:
     from domain.resume import RESUME_VERSION, ResumeExtraction
     from domain.vacancy_analysis import ANALYSIS_VERSION, VacancyExtraction

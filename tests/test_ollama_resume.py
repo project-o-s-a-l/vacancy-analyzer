@@ -46,7 +46,7 @@ async def test_summary_separates_skill_role_experience_and_status_with_one_reque
     assert parsed.notes == []
     assert [request.url.path for request in requests] == ["/api/tags", "/api/chat"]
     body = json.loads(requests[-1].content)
-    assert body["keep_alive"] == 0 and body["stream"] is False and body["think"] is False
+    assert body["keep_alive"] == 30 and body["stream"] is False and body["think"] is False
     assert body["options"] == {
         "temperature": 0,
         "num_ctx": 8192,

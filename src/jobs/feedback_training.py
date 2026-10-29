@@ -26,7 +26,10 @@ async def feedback_observations(sessions, user_id, *, limit=500):
         for row in rows:
             context = row.exposure_context or {}
             snapshot = context.get("ranker_context") or {}
-            if (row.action_context or {}).get("exposure_resolution") != "current_message":
+            if (row.action_context or {}).get("exposure_resolution") not in {
+                "current_message",
+                "confirmed_snapshot",
+            }:
                 rejected["unresolved_exposure"] += 1
                 review_notes.append(
                     {
@@ -66,6 +69,7 @@ async def feedback_observations(sessions, user_id, *, limit=500):
                     "vacancy_ref": digest(str(row.vacancy_id)),
                     "profile_revision": group,
                     "source_revision": context.get("payload_hash"),
+                    "snapshot_id": (row.action_context or {}).get("snapshot_id"),
                     "action": row.action,
                     "reason": row.reason,
                     "at": row.created_at.isoformat(),

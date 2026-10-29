@@ -15,9 +15,10 @@ from domain.vacancy_analysis import analysis_input_hash, is_fresh
 from jobs.model_telemetry import validation_code
 from jobs.resumes import ResumeService, StaleResumeWork
 from nlp.analysis_identity import pipeline_hash
+from nlp.inference_metrics import record, stage
 from nlp.ollama import OllamaUnavailable, VacancyAnalysisError
 from observability import bind_context, emit_event, operation
-from storage.models import VacancyModel
+from storage.models import InferenceGate, VacancyModel
 from storage.repositories import VacancyRepository
 from storage.repositories.job_repository import JobRepository
 
@@ -85,7 +86,32 @@ class AnalysisWorker:
         self.allow_resumes = allow_resumes
 
     async def run_once(self, *, job_id=None):
-        # Deterministic repair needs no model slot and works with LLM disabled.
+        if self.allow_resumes and self.resume_analyzer is None:
+            # Disabling LLM must allow rules-only resumes even while an old remote
+            # generation is quarantined. This work never acquires model weights.
+            async with self.sessions.begin() as session:
+                rules_job = await JobRepository(session).claim(
+                    self.owner,
+                    lease_seconds=60,
+                    kinds=["resume_analysis"],
+                    job_id=job_id,
+                    model_work=False,
+                )
+            if rules_job is not None:
+                with (
+                    operation("job_attempt"),
+                    bind_context(
+                        job_id=rules_job.id,
+                        job_kind=rules_job.kind,
+                        pipeline=rules_job.pipeline,
+                        model="rules",
+                    ),
+                ):
+                    return await self._run_claimed(rules_job)
+        outcome = await self._run_inference_once(job_id=job_id)
+        if outcome is not None:
+            return outcome
+        # Repair also progresses while inference is quarantined or owned elsewhere.
         async with self.sessions.begin() as session:
             projection = await JobRepository(session).claim(
                 self.owner, lease_seconds=60, kinds=["vacancy_projection"], job_id=job_id
@@ -94,19 +120,72 @@ class AnalysisWorker:
             from jobs.vacancy_projection import process_projection
 
             return await process_projection(self.sessions, projection)
+        return None
+
+    async def _recover_runtime(self):
+        async with self.sessions() as session:
+            gate = await session.get(InferenceGate, "global")
+        if gate is None or gate.token is None or not gate.runtime:
+            return True
+        until = gate.until.replace(tzinfo=UTC) if gate.until.tzinfo is None else gate.until
+        if until > datetime.now(UTC):
+            return False
+        import httpx
+
+        from jobs.settings import Settings
+        from nlp.ollama_runtime import OllamaRuntime
+
+        # Drain exactly the service/model of the interrupted request, even if config changed.
+        url = Settings.local_ollama_only(gate.runtime["url"])
+        try:
+            async with httpx.AsyncClient(base_url=url, timeout=10, trust_env=False) as client:
+                await OllamaRuntime(client, model=gate.runtime["model"]).drain()
+        except (httpx.HTTPError, ValueError, TimeoutError):
+            return False
+        async with self.sessions.begin() as session:
+            await JobRepository(session).clear_gate(gate.token)
+        return True
+
+    async def _run_inference_once(self, *, job_id=None):
         async with inference_lease(self.engine) as acquired:
             if not acquired:
+                return None
+            if not await self._recover_runtime():
                 return None
             kinds = ["resume_analysis"] if self.allow_resumes else []
             if self.vacancy_analyzer is not None:
                 kinds.append("vacancy_analysis")
+            kinds.append("vacancy_projection")
+            runtime = next(
+                (
+                    a.runtime
+                    for a in (self.resume_analyzer, self.vacancy_analyzer)
+                    if getattr(a, "runtime", None)
+                ),
+                None,
+            )
             with operation("job_attempt"):
                 async with self.sessions.begin() as session:
                     job = await JobRepository(session).claim(
-                        self.owner, lease_seconds=self.lease_seconds, kinds=kinds, job_id=job_id
+                        self.owner,
+                        lease_seconds=self.lease_seconds,
+                        kinds=kinds,
+                        job_id=job_id,
+                        runtime=runtime.identity if runtime else None,
                     )
                 if job is None:
+                    if runtime:
+                        await runtime.maintain()
                     return None
+                if job.kind == "vacancy_projection":
+                    from jobs.vacancy_projection import process_projection
+
+                    return await process_projection(self.sessions, job)
+                created = (
+                    job.created_at.replace(tzinfo=UTC)
+                    if job.created_at.tzinfo is None
+                    else job.created_at
+                )
                 analyzer = (
                     self.vacancy_analyzer
                     if job.kind == "vacancy_analysis"
@@ -118,6 +197,9 @@ class AnalysisWorker:
                     pipeline=job.pipeline,
                     model=analyzer.model if analyzer else "rules",
                 ):
+                    record(
+                        "queue_wait", max(0, (datetime.now(UTC) - created).total_seconds() * 1000)
+                    )
                     return await self._run_claimed(job)
 
     async def _run_claimed(self, job):
@@ -185,9 +267,19 @@ class AnalysisWorker:
             await self._error(job, "worker_error", retry=True)
             return "retry"
         finally:
-            if returned:
+            analyzer = (
+                self.vacancy_analyzer if job.kind == "vacancy_analysis" else self.resume_analyzer
+            )
+            runtime = getattr(analyzer, "runtime", None)
+            # Readiness/admission failures sent no generation. They can follow the
+            # normal retry schedule even if the service is currently unreachable.
+            # Any uncertain HTTP outcome keeps the durable marker and full lease.
+            remote_settled = runtime is not None and not runtime.marker.exists()
+            if returned or remote_settled:
                 async with self.sessions.begin() as session:
-                    await JobRepository(session).release(job)
+                    if runtime is None or not runtime.marker.exists():
+                        await JobRepository(session).clear_gate(job.lease_token)
+                    await JobRepository(session).release(job, remote_settled=remote_settled)
 
     async def _error(self, job, code, *, retry):
         async with self.sessions.begin() as session:
@@ -231,6 +323,7 @@ class AnalysisWorker:
                     await UserRepository(session).get(job.user_id, lock=True)
                     row = await session.get(ResumeModel, job.user_id)
                     repo = JobRepository(session)
+                    await repo.gate()  # Entity → gate → job, also during pipeline migration.
                     owned = await repo.owned(job)
                     if owned and row and row.processing_job_id == job.id:
                         updated = await JobRepository(session).enqueue(
@@ -252,6 +345,7 @@ class AnalysisWorker:
                 async with self.sessions.begin() as session:
                     await session.get(VacancyModel, job.vacancy_id, with_for_update=True)
                     repo = JobRepository(session)
+                    await repo.gate()
                     owned = await repo.owned(job)
                     if owned is None:
                         self._discarded(job)
@@ -282,59 +376,67 @@ class AnalysisWorker:
             emit_event(
                 logger, "model.cache_hit", source_vacancy_id=vacancy.source_id, result="ready"
             )
-        analysis = (
-            analyzer.refine_cached(vacancy.analysis, vacancy)
-            if cached
-            else (await analyzer.analyze(vacancy))
-        )
-        if not cached and analysis.processing_status == "complete":
+        if cached:
+            analysis = analyzer.refine_cached(vacancy.analysis, vacancy)
+        else:
+            from jobs.extraction_cache import ValidatedCache
+            from nlp.ollama import OllamaVacancyAnalyzer
+
+            analysis = (
+                await analyzer.analyze(vacancy, cache=ValidatedCache(self.sessions, job=job))
+                if isinstance(analyzer, OllamaVacancyAnalyzer)
+                else await analyzer.analyze(vacancy)
+            )
+        if not cached:
             await analyzer.ready()
             if analyzer.model_digest != analysis.model_digest:
                 await self._error(job, "model_changed", retry=True)
                 return "retry"
-        async with self.sessions.begin() as session:
-            # Same order as collection: vacancy first, then job, to avoid deadlocks.
-            await session.get(VacancyModel, job.vacancy_id, with_for_update=True)
-            repo = JobRepository(session)
-            owned = await repo.owned(job)
-            if owned is None:
-                self._discarded(job)
-                return "changed"
-            current = await VacancyRepository(session).get_by_id(job.vacancy_id)
-            if (
-                current is None
-                or analysis_input_hash(current) != job.revision
-                or not is_fresh(current, now=datetime.now(UTC))
-            ):
-                await repo.finish(owned, state="superseded", code="input_changed")
-                return "changed"
-            current_recipe = pipeline_hash(job.kind, analyzer.model)
-            if current_recipe != job.pipeline:
-                from jobs.analysis_queue import enqueue_vacancy
+        with stage("result_write"):
+            async with self.sessions.begin() as session:
+                # Same order as collection: vacancy first, then job, to avoid deadlocks.
+                await session.get(VacancyModel, job.vacancy_id, with_for_update=True)
+                repo = JobRepository(session)
+                await repo.gate()
+                owned = await repo.owned(job)
+                if owned is None:
+                    self._discarded(job)
+                    return "changed"
+                current = await VacancyRepository(session).get_by_id(job.vacancy_id)
+                if (
+                    current is None
+                    or analysis_input_hash(current) != job.revision
+                    or not is_fresh(current, now=datetime.now(UTC))
+                ):
+                    await repo.finish(owned, state="superseded", code="input_changed")
+                    return "changed"
+                current_recipe = pipeline_hash(job.kind, analyzer.model)
+                if current_recipe != job.pipeline:
+                    from jobs.analysis_queue import enqueue_vacancy
 
-                await enqueue_vacancy(session, current, pipeline=current_recipe)
-                return "changed"
-            if analysis.pipeline_hash != job.pipeline:
-                await repo.finish(owned, state="failed", code="invalid_analysis_identity")
-                return "failed"
-            saved = await VacancyRepository(session).set_analysis(
-                job.vacancy_id,
-                analysis,
-                expected_facts_revision=vacancy.professional_facts.revision,
-            )
-            await repo.finish(
-                owned,
-                state="succeeded" if saved else "superseded",
-                result={
-                    "model": analysis.model,
-                    "model_digest": analysis.model_digest,
-                    "pipeline": analysis.pipeline_hash,
-                    "cache_hit": cached,
-                    "processing_status": analysis.processing_status,
-                    "completed_chunks": analysis.completed_chunks,
-                    "total_chunks": analysis.total_chunks,
-                },
-            )
+                    await enqueue_vacancy(session, current, pipeline=current_recipe)
+                    return "changed"
+                if analysis.pipeline_hash != job.pipeline:
+                    await repo.finish(owned, state="failed", code="invalid_analysis_identity")
+                    return "failed"
+                saved = await VacancyRepository(session).set_analysis(
+                    job.vacancy_id,
+                    analysis,
+                    expected_facts_revision=vacancy.professional_facts.revision,
+                )
+                await repo.finish(
+                    owned,
+                    state="succeeded" if saved else "superseded",
+                    result={
+                        "model": analysis.model,
+                        "model_digest": analysis.model_digest,
+                        "pipeline": analysis.pipeline_hash,
+                        "cache_hit": cached,
+                        "processing_status": analysis.processing_status,
+                        "completed_chunks": analysis.completed_chunks,
+                        "total_chunks": analysis.total_chunks,
+                    },
+                )
         return "cached" if cached else "analyzed"
 
     async def _resume(self, job, *, rules_fallback=False):
@@ -402,9 +504,15 @@ async def _worker_loop(worker, stop, *, interval=5, startup=None):
                 result="deferred",
             )
     emit_event(logger, "component.ready", component_kind="analysis", result="ready")
+    reconciled_at = time.monotonic()
     while not stop.is_set():
         try:
-            await worker.run_once()
+            if startup and time.monotonic() - reconciled_at >= 60:
+                await startup()
+                reconciled_at = time.monotonic()
+            outcome = await worker.run_once()
+            if outcome in {"resume", "analyzed", "cached", "projected", "changed"}:
+                continue  # Drain a burst immediately; idle polling still sleeps.
         except Exception as exc:
             emit_event(
                 logger, "analysis.unavailable", level=logging.WARNING, error=exc, result="deferred"
@@ -437,8 +545,13 @@ async def background_analysis(settings, engine, *, enabled=None):
         from jobs.analysis_queue import enqueue_catalog
 
         async def reconcile():
+            from jobs.extraction_cache import prune_cache
+
+            await prune_cache(worker.sessions)
             if settings.vacancy_llm_enabled:
-                await enqueue_catalog(worker.sessions, model=settings.ollama_model, limit=20)
+                await enqueue_catalog(
+                    worker.sessions, model=settings.ollama_model, limit=20, missing_only=True
+                )
 
         task = asyncio.create_task(
             worker_loop(worker, stop, interval=settings.analysis_poll_interval, startup=reconcile)

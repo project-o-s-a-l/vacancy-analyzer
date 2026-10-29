@@ -75,6 +75,9 @@ async def model_slot():
     try:
         async with _model_slot():
             acquired = True
+            from nlp.inference_metrics import record
+
+            record("slot_wait", (time.monotonic() - started) * 1000)
             emit_event(
                 logger,
                 "model.slot_acquired",

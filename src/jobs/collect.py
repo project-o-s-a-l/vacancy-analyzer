@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from collectors.base import SearchQuery, VacancySource
 from domain.vacancy_analysis import is_fresh
-from jobs.analysis_queue import enqueue_vacancy
+from jobs.analysis_queue import schedule_collected
 from nlp.analysis_identity import pipeline_hash
 from nlp.ollama import OllamaVacancyAnalyzer
 from observability import emit_event
@@ -64,14 +64,14 @@ async def collect_vacancies(
             if recipe is None and analyzer is not None:
                 recipe = pipeline_hash("vacancy_analysis", analyzer.model)
             if recipe is not None:
-                task = await enqueue_vacancy(
+                task = await schedule_collected(
                     session,
                     vacancy.model_copy(update={"id": vacancy_id}),
                     pipeline=recipe,
                 )
         count += 1
         changes[repository.last_save["change_kind"]] += 1
-        if analyzer is not None:
+        if analyzer is not None and task is not None:
             # Explicit one-shot callers use the same durable worker. Application
             # collection passes only a recipe and never waits for inference.
             from jobs.analysis_worker import AnalysisWorker

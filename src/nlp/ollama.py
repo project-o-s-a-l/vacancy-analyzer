@@ -18,6 +18,7 @@ from domain.vacancy_analysis import (
 )
 from nlp.analysis_identity import pipeline_hash
 from nlp.experience import experience_from_quote
+from nlp.inference_metrics import cache_key, record, server_timings, stage
 from nlp.ollama_evidence import (
     ReferencedExtraction,
     UnconfirmedAlternative,
@@ -27,7 +28,8 @@ from nlp.ollama_evidence import (
     validate_alternatives,
 )
 from nlp.ollama_input import InputTooLarge, prepare_input
-from nlp.ollama_slot import model_slot
+from nlp.ollama_runtime import request_slot
+from observability import emit_event
 
 MAX_INPUT_CHARS = 6_000
 MAX_RESPONSE_BYTES = 128_000
@@ -80,10 +82,11 @@ experience_evidence — идентификатор фрагмента descriptio
 class OllamaVacancyAnalyzer:
     total_seconds = 300
 
-    def __init__(self, client: httpx.AsyncClient, *, model: str) -> None:
+    def __init__(self, client: httpx.AsyncClient, *, model: str, runtime=None) -> None:
         self.client = client
         self.model = model
         self.model_digest: str | None = None
+        self.runtime = runtime
 
     async def ready(self) -> None:
         try:
@@ -127,16 +130,17 @@ class OllamaVacancyAnalyzer:
         )
         return analysis.model_copy(update={"extraction": extraction, "warnings": warnings})
 
-    async def analyze(self, vacancy: Vacancy) -> VacancyAnalysis:
+    async def analyze(self, vacancy: Vacancy, *, cache=None) -> VacancyAnalysis:
         from nlp.vacancy_document import inference_documents
 
-        document = vacancy_document(vacancy)
-        # Keep the one-request fast path. Large descriptions are covered by sections,
-        # never reduced to the first fitting subset of requirements.
-        document.pop("source_experience")
-        if len(json.dumps(document, ensure_ascii=False)) <= 4500:
-            return await self._analyze_document(vacancy, document)
-        documents = inference_documents(vacancy, max_chars=3500)
+        with stage("document_prepare"):
+            document = vacancy_document(vacancy)
+            # Keep the one-request fast path; long inputs get complete sections.
+            document.pop("source_experience")
+            short = len(json.dumps(document, ensure_ascii=False)) <= 4500
+            documents = [] if short else inference_documents(vacancy, max_chars=3500)
+        if short:
+            return await self._analyze_document(vacancy, document, cache=cache)
         outputs, failures = [], []
         started = time.monotonic()
         for index, block in enumerate(documents):
@@ -147,7 +151,7 @@ class OllamaVacancyAnalyzer:
             block.pop("source_experience", None)
             try:
                 async with asyncio.timeout(remaining):
-                    output = await self._analyze_document(vacancy, block)
+                    output = await self._analyze_document(vacancy, block, cache=cache)
                     outputs.append(output)
                     if output.input_scope != "full":
                         failures.append("chunk_input_partial")
@@ -196,7 +200,10 @@ class OllamaVacancyAnalyzer:
             }
         )
 
-    async def _analyze_document(self, vacancy: Vacancy, document: dict) -> VacancyAnalysis:
+    async def _analyze_document(
+        self, vacancy: Vacancy, document: dict, *, cache=None
+    ) -> VacancyAnalysis:
+        prepared_at = time.perf_counter()
         # HH's broad range remains in the catalog for fallback matching, not in the LLM input.
         document.pop("source_experience", None)
         try:
@@ -211,7 +218,7 @@ class OllamaVacancyAnalyzer:
             "model": self.model,
             "stream": False,
             "think": False,
-            "keep_alive": 0,
+            "keep_alive": self.runtime.keep_alive if self.runtime else 30,
             "format": schema,
             "options": {
                 "temperature": 0,
@@ -229,15 +236,27 @@ class OllamaVacancyAnalyzer:
                 {"role": "user", "content": prepared.content},
             ],
         }
+        record("input_prepare", (time.perf_counter() - prepared_at) * 1000)
+        key = cache_key("vacancy_analysis", self.model, self.model_digest, body)
+        if cache and (saved := await cache.get(key)) is not None:
+            emit_event(logger, "model.cache_hit", result="ready")
+            return VacancyAnalysis.model_validate(saved).model_copy(
+                update={"input_hash": analysis_input_hash(vacancy)}
+            )
         try:
-            async with model_slot(), self.client.stream("POST", "/api/chat", json=body) as response:
+            async with (
+                request_slot(self.runtime, body),
+                self.client.stream("POST", "/api/chat", json=body) as response,
+            ):
                 response.raise_for_status()
                 chunks = bytearray()
                 async for chunk in response.aiter_bytes():
                     chunks.extend(chunk)
                     if len(chunks) > MAX_RESPONSE_BYTES:
                         raise VacancyAnalysisError("Ответ Ollama превышает лимит")
+            validation_at = time.perf_counter()
             payload = json.loads(chunks)
+            server_timings(payload)
             if payload.get("done") is not True or payload.get("done_reason") != "stop":
                 raise VacancyAnalysisError("Ollama не завершила разбор полностью")
             referenced = ReferencedExtraction.model_validate_json(payload["message"]["content"])
@@ -280,7 +299,7 @@ class OllamaVacancyAnalyzer:
                 vacancy.source_id,
                 "; ".join(warnings),
             )
-        return VacancyAnalysis(
+        result = VacancyAnalysis(
             model=self.model,
             model_digest=self.model_digest,
             pipeline_hash=pipeline_hash("vacancy_analysis", self.model),
@@ -291,6 +310,13 @@ class OllamaVacancyAnalyzer:
             requirements_source=requirements_source,
             omitted_description_fragments=prepared.omitted_fragments,
         )
+        record("validation", (time.perf_counter() - validation_at) * 1000)
+        if cache:
+            await self.ready()
+            if self.model_digest != result.model_digest:
+                raise OllamaUnavailable("Веса модели изменились во время разбора")
+            await cache.put(key, result.model_dump(mode="json"))
+        return result
 
     @staticmethod
     def _validate_quotes(extraction: VacancyExtraction, document: dict) -> None:

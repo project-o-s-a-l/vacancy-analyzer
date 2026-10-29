@@ -48,6 +48,7 @@ def facts_contract():
                 (
                     "nlp/professional_facts.py",
                     "nlp/requirements.py",
+                    "nlp/alternatives.py",
                     "nlp/vacancy_requirements.py",
                     "nlp/vacancy_document.py",
                     "nlp/vacancy_facts.py",
@@ -77,6 +78,8 @@ def feature_dependencies():
                 "scoring/baseline.py",
                 "scoring/skill_score.py",
                 "scoring/eligibility.py",
+                "scoring/comparison.py",
+                "domain/comparison.py",
                 "scoring/linear_ranker.py",
                 "scoring/retrieval.py",
                 "scoring/fact_projection.py",

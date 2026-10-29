@@ -12,7 +12,7 @@ services:
       OLLAMA_NUM_PARALLEL: "1"
       OLLAMA_MAX_QUEUE: "1"
       OLLAMA_CONTEXT_LENGTH: "8192"
-      OLLAMA_KEEP_ALIVE: "0"
+      OLLAMA_KEEP_ALIVE: "30s"
     cpus: 2.0
     mem_limit: 4g
     memswap_limit: 4g

@@ -344,6 +344,7 @@ async def test_resume_changed_during_inference_cannot_be_applied(queue_sessions,
                 await users.resumes.cancel(1, processing_id=old_status["id"])
         else:
             await users.resumes.delete(1)
+    pipeline_hash.cache_clear()
     analyzer.release.set()
     assert await task == "changed"
     assert await users.resumes.pending(1) is None
@@ -363,8 +364,11 @@ def test_pipeline_identity_changes_with_prompt_and_preserves_kind(monkeypatch):
 
     old = pipeline_hash("vacancy_analysis", "test-model")
     monkeypatch.setattr(ollama, "SYSTEM_PROMPT", ollama.SYSTEM_PROMPT + " Changed instruction.")
+    assert old == pipeline_hash("vacancy_analysis", "test-model")  # Immutable loaded process.
+    pipeline_hash.cache_clear()  # Simulate a new process/version.
     assert old != pipeline_hash("vacancy_analysis", "test-model")
     assert old != pipeline_hash("resume_analysis", "test-model")
+    pipeline_hash.cache_clear()
 
 
 async def test_source_aba_reopens_old_revision_without_reusing_old_claim(queue_sessions, vacancy):
@@ -668,6 +672,7 @@ async def test_recipe_changed_during_inference_requeues_instead_of_applying(
     async with asyncio.timeout(3):
         await analyzer.started.wait()
         monkeypatch.setattr(target, field, getattr(target, field) + " Updated recipe.")
+        pipeline_hash.cache_clear()  # Simulate observing a replacement process version.
         analyzer.release.set()
         assert await task == "changed"
     assert (await row(queue_sessions, job.id)).state == "superseded"
@@ -719,4 +724,6 @@ async def test_matching_does_not_reuse_outdated_pipeline(queue_sessions, vacancy
         saved = await VacancyRepository(session).get_by_id(v.id)
     assert current_vacancy_analysis(saved) is not None
     monkeypatch.setattr(ollama, "SYSTEM_PROMPT", ollama.SYSTEM_PROMPT + " Changed prompt.")
+    pipeline_hash.cache_clear()
     assert current_vacancy_analysis(saved) is None
+    pipeline_hash.cache_clear()

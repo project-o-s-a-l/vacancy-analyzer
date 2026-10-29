@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
-from storage.models import SavedSelectionModel
+from storage.models import SavedSelectionModel, ServingRevisionModel
 from storage.repositories.vacancy_repository import _aware
 
 MAX_POOL = 128
@@ -18,11 +18,16 @@ class SelectionRepository:
         self.session = session
 
     async def load(self, owner_id, revision, now):
-        row = await self.session.scalar(
-            select(SavedSelectionModel)
-            .where(SavedSelectionModel.owner_id == owner_id)
-            .execution_options(populate_existing=True)
-        )
+        row = (
+            await self.session.execute(
+                select(
+                    SavedSelectionModel.request_revision,
+                    SavedSelectionModel.expires_at,
+                    SavedSelectionModel.updated_at,
+                    SavedSelectionModel.entries,
+                ).where(SavedSelectionModel.owner_id == owner_id)
+            )
+        ).one_or_none()
         if (
             row is None
             or row.request_revision != revision
@@ -34,9 +39,27 @@ class SelectionRepository:
             return []
         return row.entries
 
-    async def save(self, owner_id, revision, now, expires, context, entries):
+    async def owner_epoch(self, owner_id, *, lock=False):
+        scope = f"profile:{owner_id}"
+        if lock:
+            insert = (
+                pg_insert if self.session.get_bind().dialect.name == "postgresql" else sqlite_insert
+            )
+            await self.session.execute(
+                insert(ServingRevisionModel)
+                .values(scope=scope, revision=0)
+                .on_conflict_do_nothing(index_elements=["scope"])
+            )
+        statement = select(ServingRevisionModel.revision).where(ServingRevisionModel.scope == scope)
+        if lock:
+            statement = statement.with_for_update()
+        return (await self.session.scalar(statement)) or 0
+
+    async def save(self, owner_id, revision, now, expires, context, entries, *, owner_epoch=None):
         if owner_id < 1:
             raise ValueError("Invalid selection owner")
+        if owner_epoch is not None and await self.owner_epoch(owner_id, lock=True) != owner_epoch:
+            return  # Deletion/profile mutation won; never recreate its private cache.
         # Never persist resume text, full vacancies or an unbounded candidate catalogue.
         bounded, size = [], 0
         for item in entries[:MAX_POOL]:

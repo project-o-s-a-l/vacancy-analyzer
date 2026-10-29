@@ -34,7 +34,16 @@ async def seed(sessions, vacancy, profile, *, users=(42,), context=None):
             await repo.save(RegisteredUser(identifier, profile, None, user.revision))
             notifications = NotificationRepository(session)
             token = await notifications.claim(identifier, vacancy.id, exposure_context=context)
-            await notifications.finish(identifier, vacancy.id, token, "sent", message_id=10)
+            message_id = (
+                10
+                + await session.scalar(
+                    select(func.count())
+                    .select_from(NotificationModel)
+                    .where(NotificationModel.chat_id == identifier)
+                )
+                - 1
+            )
+            await notifications.finish(identifier, vacancy.id, token, "sent", message_id=message_id)
 
 
 @pytest.fixture
@@ -233,7 +242,14 @@ async def test_pagination_is_private_and_preserves_archived_bookmarks(sessions, 
 def update(data, event_key="callback", user_id=42):
     result = callback_update(data, user_id=user_id)
     return result.model_copy(
-        update={"callback_query": result.callback_query.model_copy(update={"id": event_key})}
+        update={
+            "callback_query": result.callback_query.model_copy(
+                update={
+                    "id": event_key,
+                    "message": result.callback_query.message.model_copy(update={"message_id": 10}),
+                }
+            )
+        }
     )
 
 

@@ -242,8 +242,8 @@ def compare_qualifications(
                 value.text = value.text.replace(token, cleaned[original.start : original.end])
                 if value.section:
                     value.section = value.section.replace(token, original.name)
-            # Qualification alternatives are deliberately unresolved, not skill groups.
-            value.alternative_id = None
+            # Keep source OR membership for the shared fact comparison; this legacy
+            # presentation adapter still reports alternatives as uncertain.
         key = qualification_key(mention.name)
         result = QualificationMatch(
             name=mention.name,

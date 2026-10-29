@@ -32,7 +32,11 @@ class MemoryCandidateSource:
 
     def __init__(self, vacancies):
         from nlp.professional_facts import vacancy_facts
-        from scoring.fact_projection import fact_projection, projection_contract
+        from scoring.fact_projection import (
+            fact_projection,
+            projection_contract,
+            projection_revision,
+        )
 
         self.rows = []
         for vacancy in vacancies:
@@ -51,45 +55,57 @@ class MemoryCandidateSource:
                     "source_payload_hash": payload_hash(vacancy.raw_payload),
                     "duplicate_group": vacancy_duplicate_key(vacancy),
                     "lexical_contract": projection_contract(),
+                    "facts_revision": vacancy.professional_facts.revision,
+                    "projection_facts_revision": vacancy.professional_facts.revision,
+                    "projection_revision": projection_revision(vacancy, vacancy.professional_facts),
                 }
             )
         self.rows.sort(key=lambda r: (-r["published_at"].timestamp(), r["source_id"], str(r["id"])))
 
-    async def batches(self, profile, query, **options):
-        if options["positive"] is None:
-            return  # Frozen documents are always current; no repair lane.
-        batch = []
+    async def stale_ids(self, profile, *, limit, **options):
+        from jobs.candidates import ready
+
+        return [
+            dict(id=r["id"])
+            for r in sorted(self.rows, key=lambda r: str(r["id"]))
+            if compact_available(r, profile, options) and not ready(r, "lexical-v1")
+        ][:limit]
+
+    async def shortlist(self, profile, query, parameters, *, limit, positive, **options):
+        from jobs.candidates import ready
+        from scoring.retrieval import lexical_evidence
+        from storage.repositories.candidate_repository import compact_order
+
+        groups = {}
         for row in self.rows:
-            # Same boundary as SQL: rich facts/analysis are loaded only for retained IDs.
-            projection = {
-                key: value
-                for key, value in row.items()
-                if key not in {"professional_facts", "analysis"}
-            }
-            vacancy = self.vacancy(projection)
-            if not is_fresh(vacancy, now=options["now"]):
-                continue
-            if options["since"] and vacancy.published_at < options["since"]:
-                continue
-            if options["category"] and (
-                not row.get("analysis")
-                or row["analysis"]["extraction"]["category"] != options["category"].value
-            ):
-                continue
-            if (
-                vacancy.id in options["excluded_ids"]
-                or row["duplicate_group"] in options["excluded_keys"]
-            ):
+            if not ready(row, parameters.version) or not compact_available(row, profile, options):
                 continue
             overlap = bool(query.terms.intersection(document_terms(row["lexical_document"])))
-            if overlap != options["positive"]:
+            if overlap != positive:
                 continue
-            batch.append(projection)
-            if len(batch) == options["batch_size"]:
-                yield batch
-                batch = []
-        if batch:
-            yield batch
+            pick = {
+                key: row[key]
+                for key in (
+                    "id",
+                    "source_id",
+                    "published_at",
+                    "duplicate_group",
+                    "source_revision",
+                    "facts_revision",
+                    "projection_revision",
+                )
+            }
+            pick["lexical_score"] = lexical_evidence(
+                row["lexical_document"], query, parameters
+            ).lexical_score
+            group = pick["duplicate_group"] or pick["id"]
+            old = groups.get(group)
+            pick["copy_count"] = (old["copy_count"] if old else 0) + 1
+            if old is None or compact_order(pick) < compact_order(old):
+                groups[group] = pick
+            else:
+                old["copy_count"] = pick["copy_count"]
+        return sorted(groups.values(), key=compact_order)[:limit]
 
     async def load_selected(self, ids):
         return [r for r in self.rows if r["id"] in ids]
@@ -98,6 +114,47 @@ class MemoryCandidateSource:
         # Memory adapter has no SQL diagnostics. Selection counters are supplied
         # by the shared selector; do not confuse these with production DB cost.
         return {}
+
+
+def compact_available(row, profile, options):
+    if (
+        row["archived"]
+        or row["published_at"] > options["now"]
+        or (row["valid_until"] and row["valid_until"] <= options["now"])
+    ):
+        return False
+    if options["since"] and row["published_at"] < options["since"]:
+        return False
+    if row["id"] in options["excluded_ids"] or row["duplicate_group"] in options["excluded_keys"]:
+        return False
+    if options["category"] and (
+        not row.get("analysis")
+        or row["analysis"]["extraction"]["category"] != options["category"].value
+    ):
+        return False
+    if options["include_ineligible"]:
+        return True
+    prefs = profile.preferences
+    if prefs.remote in {"required", "office"} and row["remote"] is not (prefs.remote == "required"):
+        return False
+    if prefs.locations_required and prefs.locations and row["remote"] is not True:
+        from scoring.eligibility import location_key
+
+        if not row["location"] or location_key(row["location"]) not in {
+            location_key(v) for v in prefs.locations
+        }:
+            return False
+    if prefs.salary_required and prefs.salary_min and prefs.salary_min > 0:
+        currency = (row["currency"] or "").upper().replace("RUR", "RUB")
+        if (
+            currency != prefs.currency
+            or row["salary_period"] != "MONTH"
+            or row["salary_gross"] != prefs.salary_gross
+        ):
+            return False
+        if max(row["salary_from"] or 0, row["salary_to"] or 0) < prefs.salary_min:
+            return False
+    return True
 
 
 def _recall(expected, actual):

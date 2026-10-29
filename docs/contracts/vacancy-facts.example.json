@@ -7,7 +7,7 @@
   "input_sha256": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
   "extractor": "vacancy-runtime",
   "extractor_version": "vacancy-facts-v2",
-  "extractor_contract": "d68941b4c6f1eee33091022ed5173819ac24e9e9b3c8087b382fa438acc699ac",
+  "extractor_contract": "4266e63f524d48202861754ed8fec9331b1f6c78304db971b78f46b3e82cfe7b",
   "model_id": null,
   "model_digest": null,
   "analysis_pipeline": null,
@@ -559,8 +559,8 @@
       "scope": "vacancy",
       "scope_id": null,
       "importance": {
-        "status": "unknown",
-        "value": null,
+        "status": "present",
+        "value": "required",
         "origin": "source",
         "evidence": [
           {
@@ -641,6 +641,27 @@
         "req:or:7c73d2ee6a473f3a:skill:4108efe180aebd33738f9ed8",
         "req:or:7c73d2ee6a473f3a:skill:2d0edc2f0650c5218a2cbe60"
       ]
+    }
+  ],
+  "lexical_observations": [
+    {
+      "tokens": [
+        "python",
+        "или",
+        "java"
+      ],
+      "importance": "required",
+      "ambiguous": true,
+      "evidence": {
+        "source_id": "vacancy:synthetic:f02-example",
+        "source_revision": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
+        "field": "description",
+        "start": 12,
+        "end": 27,
+        "quote": "Python или Java",
+        "section": null,
+        "interpretation": null
+      }
     }
   ],
   "overlap_policy": "unaggregated"
