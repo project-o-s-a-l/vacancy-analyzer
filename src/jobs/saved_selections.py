@@ -51,6 +51,7 @@ def refresh_time(match, vacancy, now):
     )
     match.retrieval = None
     match.ranking = None
+    match.admission = None
     return match
 
 
@@ -136,7 +137,9 @@ def _score_entries(entries, selection, profile, now, include_ineligible):
             {
                 "id": str(vacancy.id),
                 "revision": content,
-                "match": match.model_dump(mode="json", exclude={"retrieval", "ranking"}),
+                "match": match.model_dump(
+                    mode="json", exclude={"retrieval", "ranking", "admission"}
+                ),
             }
         )
         if match.eligible or include_ineligible:

@@ -201,20 +201,29 @@ def resolve_experience(result):
 
 
 def extract_document(text, *, reference_time=None):
+    from nlp.resume_preferences import HEADING, extract_preferences
+
     result = extract_resume(text)
+    result.preferences, preference_notes = extract_preferences(text)
+    result.notes.extend(preference_notes)
     result.reference_time = reference_time or datetime.now(UTC)
     result.stated_experience_years = []
     context = "unspecified"
     in_skills = False
     next_position = False
     task_section = False
-    known_ranges = []
+    known_ranges = [(p.start, p.end) for p in result.preferences]
     last_period = None
     for match in re.finditer(r"[^\n]+", text):
         line = match[0].strip().lstrip("•●▪*–- ")
         start = match.start() + match[0].find(line)
         end = start + len(line)
         if not line:
+            continue
+        if HEADING.fullmatch(line) or any(
+            start <= p.start and p.end <= end for p in result.preferences
+        ):
+            in_skills = next_position = task_section = False
             continue
         section = SECTION.fullmatch(line)
         if section:

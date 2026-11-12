@@ -7,9 +7,10 @@ from uuid import uuid4
 import pytest
 
 from domain import CandidateProfile
+from domain.contracts import normalization_contract
 from domain.ranker import LinearRankerModel
 from domain.retrieval import RetrievalParameters
-from domain.serving_ranker import RankerPolicy, ServingRankerArtifact
+from domain.serving_ranker import ModelAdmission, RankerPolicy, ServingRankerArtifact
 from jobs.feedback import FeedbackService
 from jobs.feedback_training import feedback_observations
 from jobs.rank import rank_recent
@@ -17,8 +18,16 @@ from jobs.serving_ranker_training import dataset_for_case, train_serving_ranker
 from jobs.settings import Settings
 from jobs.users import UserService
 from scoring import rank_vacancies
+from scoring.admission_policy import PROTOCOL, policy_contract
 from scoring.linear_ranker import FEATURE_NAMES, feature_vector, ranker_scores
-from scoring.serving_features import FEATURE_SPEC, feature_contract, pair_features, profile_revision
+from scoring.serving_features import (
+    FEATURE_SPEC,
+    digest,
+    feature_contract,
+    pair_features,
+    profile_revision,
+    retrieval_contract,
+)
 from scoring.serving_ranker import activation_reasons, apply_ranker
 from storage.repositories import VacancyRepository
 from storage.repositories.user_repository import RegisteredUser, UserRepository
@@ -40,27 +49,69 @@ def artifact(**changes):
         training_comparisons=1,
         library_version="synthetic-test",
     )
-    proof = {"split_verified": True, "validation_groups": 1, "eligibility_violations": 0}
-    for name in ("all_candidates", "serving_threshold"):
-        proof[name] = {
-            "baseline_ndcg": 0.7,
-            "model_ndcg": 0.8,
-            "by_profession": {
-                "synthetic": {"baseline_ndcg": 0.7, "model_ndcg": 0.8, "positive_pairs": 1}
+    deltas = {
+        key: {"low": 0.0}
+        for key in (
+            "ndcg_at_5",
+            "precision_at_5",
+            "recall",
+            "slots",
+            "nonempty",
+            "retained_positives",
+        )
+    }
+    proof = {
+        "release_gates": {
+            "version": "model-release-gates-v1",
+            "comparison_status": "passed",
+            "comparison_sha256": "synthetic-test-only",
+            "resource": {
+                "origin": "measured",
+                "evidence_sha256": "synthetic-test-only",
+                "stand": "test-fixture-not-production",
+                "warm_latency_ratio_upper95": 1,
+                "cold_latency_ms": 1,
+                "cold_budget_ms": 2,
+                "whole_tree_rss_bytes": 1,
+                "rss_budget_bytes": 2,
+                "warm_repeats": 3,
+                "cold_repeats": 2,
+                "failures": 0,
             },
-        }
+        },
+        "protocol_hash": digest(PROTOCOL),
+        "development": {"rank_delta": {"low": 0.1}},
+        "calibration": {
+            "owners": 16,
+            "violations": 0,
+            "precision_micro": {"low": 0.9},
+            "precision_cluster": {"low": 0.9},
+            "deltas": deltas,
+            "by_profession": {"synthetic": {"owners": 2, "deltas": deltas}},
+            "by_experience": {"unknown": {"owners": 2, "deltas": deltas}},
+        },
+    }
     values = {
         "created_at": datetime.now(UTC),
         "model": model,
         "feature_contract": feature_contract(),
         "retrieval_parameters": RetrievalParameters(),
         "validation": proof,
+        "normalization_contract": normalization_contract(),
+        "policy_contract": policy_contract(),
+        "retrieval_contract": retrieval_contract(),
+        "admission": ModelAdmission(threshold=-100.0, evidence_floor=0),
         "provenance": {
             "label_origins": ["human"],
-            "professions": ["synthetic"],
-            "validation_groups": ["holdout"],
-            "validation_profile_ids": ["holdout-profile"],
-            "validation_query_ids": ["holdout-query"],
+            "label_imports": ["synthetic-test-proof"],
+            "test_used": False,
+            "splits": {
+                split: {
+                    key: [split + "-a", split + "-b"]
+                    for key in ("owners", "profiles", "vacancy_groups")
+                }
+                for split in ("train", "development", "calibration")
+            },
         },
     }
     return ServingRankerArtifact.seal(**(values | changes))
@@ -117,16 +168,15 @@ def test_activation_gate_is_fail_closed(tmp_path, vacancy, profile, reason):
     if reason == "draft":
         provenance["label_origins"] = ["assistant_draft"]
     if reason == "profile_leak":
-        provenance["validation_profile_ids"] = ["train-profile"]
-    for name in ("all_candidates", "serving_threshold"):
-        if reason == "no_gain":
-            proof[name]["model_ndcg"] = 0.7
-        if reason == "regression":
-            proof[name]["by_profession"]["synthetic"]["model_ndcg"] = 0.6
-        if reason == "no_positives":
-            proof[name]["by_profession"]["synthetic"]["model_ndcg"] = None
-        if reason == "nan":
-            proof[name]["model_ndcg"] = float("nan")
+        provenance["splits"]["development"]["owners"] = ["train-a"]
+    if reason == "no_gain":
+        proof["development"]["rank_delta"]["low"] = 0
+    if reason == "regression":
+        proof["calibration"]["deltas"]["slots"]["low"] = -0.1
+    if reason == "no_positives":
+        proof["calibration"]["precision_cluster"]["low"] = None
+    if reason == "nan":
+        proof["calibration"]["precision_cluster"]["low"] = float("nan")
     model = artifact(provenance=provenance, validation=proof)
     assert activation_reasons(model)
     baseline = rank_vacancies(cards(vacancy), profile)
@@ -141,7 +191,18 @@ def test_activation_gate_is_fail_closed(tmp_path, vacancy, profile, reason):
 
 
 @pytest.mark.parametrize(
-    "failure", ["missing", "json", "tampered", "oversize", "contract", "parameters"]
+    "failure",
+    [
+        "missing",
+        "json",
+        "tampered",
+        "oversize",
+        "contract",
+        "parameters",
+        "normalization",
+        "retrieval",
+        "policy",
+    ],
 )
 def test_artifact_failure_returns_rules(tmp_path, vacancy, profile, failure):
     path = tmp_path / "model.json"
@@ -158,6 +219,8 @@ def test_artifact_failure_returns_rules(tmp_path, vacancy, profile, failure):
         path.write_text(json.dumps(data))
     if failure == "contract":
         save(tmp_path, artifact(feature_contract="0" * 64))
+    if failure in {"normalization", "retrieval", "policy"}:
+        save(tmp_path, artifact(**{failure + "_contract": "0" * 64}))
     params = RetrievalParameters(k=1) if failure == "parameters" else RetrievalParameters()
     baseline = rank_vacancies(cards(vacancy), profile)
     ids = [v.id for v, _ in baseline]
@@ -185,16 +248,7 @@ def test_unknown_feature_values_are_not_zero(vacancy, profile):
     assert feature_vector(unknown) != feature_vector(mismatch)
 
 
-async def test_unchecked_labels_require_explicit_experiment_flag(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
-    from jobs import serving_ranker_training
-
-    monkeypatch.setattr(
-        serving_ranker_training,
-        "load_bundle",
-        lambda _: (None, None, [SimpleNamespace(origin="assistant_draft", relevance=2)], {}),
-    )
+async def test_unchecked_labels_require_explicit_experiment_flag(tmp_path):
     with pytest.raises(ValueError, match="проверенная разметка"):
         await train_serving_ranker(tmp_path)
 
@@ -311,5 +365,5 @@ def test_active_render_explains_rule_percentage(tmp_path, vacancy, profile):
         RankerPolicy(mode="model", model_path=save(tmp_path, artifact())),
         RetrievalParameters(),
     )
-    assert "порядок уточнён моделью" in render_card(*result[0])
+    assert "Порядок и допуск определены моделью" in render_card(*result[0])
     assert "Не вероятность найма" in render_card(*result[0])

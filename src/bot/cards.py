@@ -2,6 +2,7 @@ from domain import CandidateProfile, Vacancy
 from domain.matching import MatchResult
 from domain.vacancy_analysis import CATEGORY_LABELS
 from nlp.analysis_identity import current_vacancy_analysis as current_analysis
+from scoring.presentation import evidence_label, score_label
 
 EXPERIENCE_LABELS = {
     "no_experience": "Без опыта",
@@ -106,14 +107,14 @@ def render_card(vacancy: Vacancy, match: MatchResult) -> str:
             else "дата проверки неизвестна"
         ),
         "Опубликовано: " + vacancy.published_at.strftime("%d.%m.%Y"),
-        f"Соответствие: {match.score:.1f}%",
+        score_label(match),
         _short(vacancy.title, 200),
         _short(vacancy.company, 150),
         _short(_salary(vacancy), 180),
         f"{remote} · {_short(vacancy.location or 'Город не указан', 100)}",
         f"Опыт: {experience}",
-        f"Полнота сравнения: {match.evidence_coverage:.0%}",
-        "Оценка по правилам; порядок уточнён моделью. Не вероятность найма."
+        evidence_label(match),
+        "Порядок и допуск определены моделью и полнотой сведений. Не вероятность найма."
         if match.ranking and match.ranking.applied
         else "Оценка по правилам, не вероятность найма.",
         "",
@@ -163,10 +164,13 @@ def render_card(vacancy: Vacancy, match: MatchResult) -> str:
         )
     if len(documents) > 3:
         lines.append(f"Других документов/допусков для уточнения: {len(documents) - 3}.")
-    if documents:
+    if documents and not (match.ranking and match.ranking.applied):
         lines.append("Документы не включены в балл; сведения не проверены.")
+    elif documents:
+        lines.append("Документы участвуют в проверке условий; сведения не проверены.")
     if match.reasons:
-        lines += ["", "Причины:"] + ["• " + _short(reason, 180) for reason in match.reasons[:3]]
+        heading = "Факты сравнения:" if match.ranking and match.ranking.applied else "Причины:"
+        lines += ["", heading] + ["• " + _short(reason, 180) for reason in match.reasons[:3]]
     if not match.eligible:
         lines.insert(0, "Не соответствует обязательным условиям профиля.\n")
     if match.warnings:
@@ -177,6 +181,8 @@ def render_card(vacancy: Vacancy, match: MatchResult) -> str:
 
 
 def render_profile(profile: CandidateProfile) -> str:
+    from scoring.comparison import candidate_skill_names
+
     prefs = profile.preferences
     experience = profile.experience_years if profile.experience_years is not None else "не указан"
     documents = []
@@ -190,7 +196,8 @@ def render_profile(profile: CandidateProfile) -> str:
     return "\n".join(
         [
             "Текущий профиль",
-            "Навыки: " + _short(", ".join(sorted(profile.skills)) or "не указаны", 1500),
+            "Навыки: "
+            + _short(", ".join(sorted(candidate_skill_names(profile))) or "не указаны", 1500),
             f"Общий опыт: {experience}",
             "Позиции: " + _short(", ".join(prefs.positions) or "не указаны", 700),
             "Формат: " + REMOTE_LABELS[prefs.remote],

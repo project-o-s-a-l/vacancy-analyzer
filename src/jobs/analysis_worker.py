@@ -368,6 +368,48 @@ class AnalysisWorker:
         ):
             await self._settle(job, "superseded", "input_changed")
             return "changed"
+        if (
+            not (job.payload or {}).get("force")
+            and vacancy.analysis
+            and vacancy.analysis.provider != "ollama"
+            and vacancy.analysis.input_hash == job.revision
+            and vacancy.analysis.processing_status == "complete"
+        ):
+            # A source-reviewed import is already finished. Preserve its authored
+            # facts as well as analysis; a normal local-model job must not replace it.
+            async with self.sessions.begin() as session:
+                await session.get(VacancyModel, job.vacancy_id, with_for_update=True)
+                repo = JobRepository(session)
+                await repo.gate()
+                owned = await repo.owned(job)
+                if owned is None:
+                    self._discarded(job)
+                    return "changed"
+                current = await VacancyRepository(session).get_by_id(job.vacancy_id)
+                if (
+                    current is None
+                    or analysis_input_hash(current) != job.revision
+                    or not is_fresh(current, now=datetime.now(UTC))
+                ):
+                    await repo.finish(owned, state="superseded", code="input_changed")
+                    return "changed"
+                if (
+                    current.analysis
+                    and current.analysis.provider != "ollama"
+                    and current.analysis.processing_status == "complete"
+                ):
+                    await repo.finish(
+                        owned,
+                        state="succeeded",
+                        result={
+                            "provider": current.analysis.provider,
+                            "model": current.analysis.model,
+                            "pipeline": current.analysis.pipeline_hash,
+                            "cache_hit": True,
+                        },
+                    )
+                    return "cached"
+                vacancy = current
         await analyzer.ready()  # Refresh actual weights; this does not load a model.
         cached = not (job.payload or {}).get("force") and analyzer.reusable(
             vacancy.analysis, vacancy

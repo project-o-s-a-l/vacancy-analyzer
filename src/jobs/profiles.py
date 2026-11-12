@@ -11,7 +11,7 @@ from nlp.resume import invalid_resume_skill, looks_like_resume
 
 FIELDS = ("skills", "experience", "positions", "remote", "salary", "locations")
 EDIT_FIELDS = (*FIELDS, "qualifications", "constraints")
-_SKIP = {"пропустить", "нет", "-"}
+_SKIP = {"пропустить", "нет", "-", "?", "не знаю", "очистить"}
 
 
 def _list(text: str, *, maximum: int, item_length: int) -> list[str]:
@@ -30,7 +30,8 @@ def update_field(profile: CandidateProfile, field: str, text: str) -> CandidateP
     skip = text.casefold() in _SKIP
     if field == "skills":
         if skip:
-            raise ValueError("Для рекомендаций нужен хотя бы один навык.")
+            data["skills"] = {}
+            return CandidateProfile.model_validate(data)
         if looks_like_resume(text):
             raise ValueError(
                 "Это похоже на описание резюме. Отправьте его через /resume, "
@@ -70,7 +71,7 @@ def update_field(profile: CandidateProfile, field: str, text: str) -> CandidateP
             "очно": "office",
             "office": "office",
         }
-        value = values.get(text.casefold())
+        value = "any" if skip else values.get(text.casefold())
         if value is None:
             raise ValueError(
                 "Укажите формат: любой, предпочтительно удалённо, "

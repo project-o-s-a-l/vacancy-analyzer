@@ -195,7 +195,17 @@ def extract_resume(text: str) -> ResumeExtraction:
             next_position = False
             in_skills = True
             skills.extend(re.split(r"[,;|•]", skill_heading[1] or ""))
-        elif STOP.match(line) or line.endswith(":"):
+        elif (
+            STOP.match(line)
+            or line.endswith(":")
+            or re.match(
+                r"^(?:обязательн(?:ые|ое) услови(?:я|е)|пожелания|условия работы|желаемые условия|"
+                r"город работы|желаемые? города?|локация|зарплата|желаемая зарплата|"
+                r"preferences|requirements|location|salary)\s*:",
+                line,
+                re.I,
+            )
+        ):
             in_skills = False
             next_position = False
         elif next_position:

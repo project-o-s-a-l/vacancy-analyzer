@@ -353,14 +353,17 @@ async def test_postgres_persists_constraints_and_excludes_ineligible_jobs(
 
 
 async def test_telegram_constraint_choice_is_persisted_and_user_isolated(sessions):
+    from test_users import click_button
+
     users = UserService(sessions)
     await store_profile(sessions, 42, candidate(salary_min=150000, locations=["Москва"]))
     await store_profile(sessions, 99, candidate())
     transport = RecordingSession()
     bot = Bot(TEST_TOKEN, session=transport)
     dispatcher = build_dispatcher(users)
-    await dispatcher.feed_update(bot, callback_update("profile:constraints"))
-    await dispatcher.feed_update(bot, callback_update("answer:constraints:both"))
+    await dispatcher.feed_update(bot, callback_update("details:constraints"))
+    await click_button(dispatcher, bot, transport, "Зарплата и города")
+    await click_button(dispatcher, bot, transport, "Сохранить правки")
     saved = await UserService(sessions).get(42)
     assert (
         saved.profile.preferences.salary_required and saved.profile.preferences.locations_required

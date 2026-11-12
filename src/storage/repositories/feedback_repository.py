@@ -88,6 +88,8 @@ class FeedbackRepository:
                 reason,
             ):
                 raise ValueError("Повтор действия содержит другие данные")
+            if (previous.action_context or {}).get("snapshot_id") != str(snapshot.id):
+                raise ValueError("Повтор действия содержит другие данные показа")
             after_commit(
                 self.session,
                 "feedback.reused",
@@ -100,6 +102,32 @@ class FeedbackRepository:
             row is None or row.interest != "dislike" or row.version != expected_version
         ):
             raise ValueError("Оценка уже изменилась. Нажмите «Не подходит» заново.")
+        if action == "reason":
+            parent = await self.session.scalar(
+                select(FeedbackEventModel)
+                .where(
+                    FeedbackEventModel.user_id == user_id,
+                    FeedbackEventModel.vacancy_id == vacancy_id,
+                    FeedbackEventModel.action.in_(["like", "dislike", "reason"]),
+                )
+                .order_by(
+                    FeedbackEventModel.action_context["state_after"]["version"]
+                    .as_integer()
+                    .desc()
+                    .nullslast(),
+                    FeedbackEventModel.created_at.desc(),
+                    FeedbackEventModel.event_key.desc(),
+                )
+                .limit(1)
+            )
+            if parent is None or (parent.action_context or {}).get("snapshot_id") != str(
+                snapshot.id
+            ):
+                raise ValueError(
+                    "Причина относится к другой карточке. Нажмите «Не подходит» заново."
+                )
+            action_context["reason_parent_event"] = parent.event_key
+        before = _state(vacancy_id, row)
         now = datetime.now(UTC)
         if row is None:
             row = FeedbackModel(
@@ -121,6 +149,24 @@ class FeedbackRepository:
             row.reason = reason
         row.version += 1
         row.updated_at = now
+        action_context["state_before"] = {
+            "interest": before.interest,
+            "saved": before.saved,
+            "applied": before.applied,
+            "reason": before.reason,
+            "version": before.version,
+        }
+        action_context["state_after"] = {
+            "interest": row.interest,
+            "saved": row.saved,
+            "applied": row.applied,
+            "reason": row.reason,
+            "version": row.version,
+        }
+        action_context["state_changed"] = any(
+            action_context["state_before"][key] != action_context["state_after"][key]
+            for key in ("interest", "saved", "applied", "reason")
+        )
         self.session.add(
             FeedbackEventModel(
                 user_id=user_id,

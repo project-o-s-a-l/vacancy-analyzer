@@ -16,6 +16,18 @@ from scoring.serving_ranker import apply_ranker
 from storage.repositories import VacancyRepository
 
 
+def default_retrieval_parameters():
+    from jobs.settings import Settings
+
+    settings = Settings()
+    return RetrievalParameters(
+        k=settings.retrieval_k,
+        pool_factor=settings.retrieval_pool_factor,
+        normalization=settings.retrieval_normalization,
+        backend=settings.retrieval_backend,
+    )
+
+
 @observed("matching")
 @bounded_recommendations
 @prepared_profile_request
@@ -47,6 +59,9 @@ async def _rank_recent(
     excluded_ids=(),
     excluded_keys=(),
     ranker_policy=None,
+    experimental_ranker: bool = False,
+    pair_reranker=None,
+    pair_owner=None,
     cache_owner: int | None = None,
     cache_stats: dict | None = None,
     now: datetime | None = None,
@@ -63,18 +78,16 @@ async def _rank_recent(
         raise ValueError("now must contain a timezone")
     now = now.astimezone(UTC)
     stats = diagnostics if diagnostics is not None else {}
+    if experimental_ranker and (
+        candidate_source is None or repository is not None or cache_owner is not None
+    ):
+        raise ValueError("Experimental model is restricted to frozen offline sources")
+    if pair_reranker is not None and (not experimental_ranker or pair_owner is None):
+        raise ValueError("Pair reranker requires an explicit offline experiment and owner")
     started = perf_counter()
     if retrieval_parameters is None:
-        from jobs.settings import Settings
-
-        settings = Settings()
-        retrieval_parameters = RetrievalParameters(
-            k=limit if limit is not None else settings.retrieval_k,
-            pool_factor=settings.retrieval_pool_factor,
-            normalization=settings.retrieval_normalization,
-            backend=settings.retrieval_backend,
-        )
-    elif limit is not None:
+        retrieval_parameters = default_retrieval_parameters()
+    if limit is not None:
         retrieval_parameters = retrieval_parameters.model_copy(update={"k": limit})
     options = dict(
         parameters=retrieval_parameters,
@@ -138,7 +151,16 @@ async def _rank_recent(
     for vacancy, match in ranked:
         match.retrieval = selection.evidence[vacancy.id]
     started = perf_counter()
-    result = await compute(apply_ranker, ranked, profile, ranker_policy, selection.parameters)
+    result = await compute(
+        apply_ranker,
+        ranked,
+        profile,
+        ranker_policy,
+        selection.parameters,
+        experimental=experimental_ranker,
+    )
+    if pair_reranker is not None:
+        result = await compute(pair_reranker.apply, result, profile, owner=pair_owner, trace=trace)
     if cache_values is not None:
         from jobs.candidate_cache import save
 
@@ -146,6 +168,10 @@ async def _rank_recent(
     if trace is not None:
         trace["rerank_seconds"] = perf_counter() - started
         trace["ranked"] = [f"{v.source}:{v.source_id}" for v, _ in result]
+        trace["ranking_decisions"] = {
+            f"{v.source}:{v.source_id}": m.ranking.model_dump(mode="json") if m.ranking else None
+            for v, m in result
+        }
     stats.update(scored_count=len(result), top_k=selection.parameters.k)
     emit_event(logging.getLogger(__name__), "selection.scored", result="success", **stats)
     return result

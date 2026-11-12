@@ -28,6 +28,7 @@ from storage.models import (
     BackgroundJob,
     ExtractionCache,
     FactRevisionModel,
+    ProfileEditModel,
     ResumeModel,
     ResumeSourceModel,
 )
@@ -53,12 +54,20 @@ def protected_fields(profile):
 
 
 def proposed_profile(profile: CandidateProfile, draft: ResumeDraft) -> CandidateProfile:
+    if draft.reviewed_profile is not None:
+        return draft.reviewed_profile.model_copy(deep=True)
+    if draft.apply_mode == "replace_all":
+        profile = CandidateProfile(preferences=profile.preferences.model_copy(deep=True))
+        profile.preferences.positions = []
     data = profile.model_dump(mode="json")
     extracted = draft.extraction
     protected = protected_fields(profile)
+    reviewed = (
+        set(profile.professional_facts.reviewed_sections) if profile.professional_facts else set()
+    )
     from domain.professional import digest
 
-    if extracted.skills:
+    if extracted.skills and ("skills" not in reviewed or "skills" in draft.edited_fields):
         known = {skill_key(name): skill for name, skill in profile.skills.items()}
         retained = {
             name: value
@@ -73,7 +82,7 @@ def proposed_profile(profile: CandidateProfile, draft: ResumeDraft) -> Candidate
             }
         )
         data["skills"] = retained
-    if extracted.positions:
+    if extracted.positions and ("positions" not in reviewed or "positions" in draft.edited_fields):
         old = profile.preferences.positions
         data["preferences"]["positions"] = list(
             dict.fromkeys(
@@ -92,8 +101,26 @@ def proposed_profile(profile: CandidateProfile, draft: ResumeDraft) -> Candidate
         extracted.experience_years is not None and "experience_total" not in protected
     ):
         data["experience_years"] = extracted.experience_years
+    from domain.candidate import Preferences
+
+    defaults = Preferences()
+    for item in extracted.preferences:
+        edited = item.group in draft.edited_fields
+        if not edited and any("preference:" + field in protected for field in item.fields):
+            continue
+        if (
+            not edited
+            and draft.apply_mode == "merge"
+            and any(
+                getattr(profile.preferences, field) != getattr(defaults, field)
+                for field in item.fields
+            )
+        ):
+            continue
+        for field in item.fields:
+            data["preferences"][field] = getattr(item.values, field)
     qualifications = {q["name"].casefold(): q for q in data["qualifications"]}
-    for observation in extracted.observations:
+    for observation in [] if "qualifications" in reviewed else extracted.observations:
         if observation.kind == "qualification" and len(observation.name) <= 160:
             qualifications.setdefault(observation.name.casefold(), {"name": observation.name})
     data["qualifications"] = list(qualifications.values())[:20]
@@ -111,6 +138,14 @@ def proposed_profile(profile: CandidateProfile, draft: ResumeDraft) -> Candidate
                 if value.status == "present" and not (old and old.origin == "user_confirmed"):
                     data["skills"][fact.name][field] = value.value
     return CandidateProfile.model_validate(data)
+
+
+def prepared_profile(profile, draft, owner_id):
+    """Exactly the prospective snapshot used by preview, editor and confirmation."""
+    result = proposed_profile(profile, draft)
+    if draft.reviewed_profile is None:
+        result.professional_facts = confirm_resume_facts(result, draft, owner_id)
+    return result
 
 
 class StaleResumeWork(ValueError):
@@ -478,6 +513,8 @@ class ResumeService:
             user = await repository.get(user_id, lock=True)
             row = await session.get(ResumeModel, user_id)
             draft = self._draft(row, token)
+            if await session.get(ProfileEditModel, user_id) is not None:
+                raise ValueError("Завершите или отмените открытую правку через /profile.")
             if draft.version not in {RESUME_VERSION, RESUME_VERSION + "-ollama"}:
                 raise ValueError(
                     "Обработчик резюме обновлён; загрузите резюме заново для проверки."
@@ -500,8 +537,7 @@ class ResumeService:
                     "Профиль изменился после загрузки. Отправьте резюме ещё раз "
                     "и проверьте новый результат."
                 )
-            profile = proposed_profile(user.profile, draft)
-            profile.professional_facts = confirm_resume_facts(profile, draft, user_id)
+            profile = prepared_profile(user.profile, draft, user_id)
             user = replace(
                 user, profile=profile, form_state=None if profile.skills else "edit:skills"
             )
@@ -535,10 +571,14 @@ class ResumeService:
             draft = self._draft(row, token)
             if user is None or user.revision != draft.profile_revision:
                 raise ValueError("Профиль изменился; загрузите резюме ещё раз.")
+            if await session.get(ProfileEditModel, user_id) is not None:
+                raise ValueError("Завершите или отмените открытую правку через /profile.")
+            if draft.reviewed_profile is not None:
+                raise ValueError("Продолжите правку кнопкой «Проверить и исправить» в /resume.")
             extracted = draft.extraction
             if field == "mode":
-                if value not in {"merge", "replace"}:
-                    raise ValueError("Режим: merge или replace.")
+                if value not in {"merge", "replace", "replace_all"}:
+                    raise ValueError("Режим: merge, replace или replace_all.")
                 draft.apply_mode = value
             elif field in {"skills", "positions"}:
                 from nlp.extraction import canonical_skill
@@ -563,6 +603,26 @@ class ResumeService:
                         )
                         and o.name not in items
                     )
+                ]
+            elif field in {"locations", "salary", "remote"}:
+                from domain.candidate import Preferences
+                from domain.resume import ResumePreference
+                from nlp.resume_preferences import extract_preferences
+
+                if value.strip() == "?":
+                    item = ResumePreference(group=field, values=Preferences())
+                else:
+                    items, _ = extract_preferences("Обязательные условия: " + value)
+                    items = [item for item in items if item.group == field]
+                    if len(items) != 1:
+                        raise ValueError(
+                            "Примеры: locations только Москва; "
+                            "salary зарплата от 60000 RUB в месяц до налога; "
+                            "remote только удалённая работа. ? — снять условие."
+                        )
+                    item = items[0].model_copy(update={"start": None, "end": None})
+                extracted.preferences = [p for p in extracted.preferences if p.group != field] + [
+                    item
                 ]
             elif field == "experience":
                 try:
@@ -595,7 +655,10 @@ class ResumeService:
                     extracted.positions = [s for s in extracted.positions if s != removed.name]
                 extracted.notes.append("Выбранный факт исключён пользователем из предложения.")
             else:
-                raise ValueError("Поля: skills, positions, experience; режим: mode merge/replace.")
+                raise ValueError(
+                    "Поля: skills, positions, experience, locations, salary, remote; "
+                    "режим: mode merge/replace."
+                )
             if field != "mode" and field not in draft.edited_fields:
                 draft.edited_fields.append(field)
             draft.token = uuid4().hex
@@ -647,6 +710,9 @@ class ResumeService:
                 raise ValueError("Эта загрузка уже заменена новой. Откройте /resume.")
             if token is not None:
                 self._draft(row, token)
+            edit = await session.get(ProfileEditModel, user_id)
+            if edit and edit.payload["target"] == "resume":
+                await session.delete(edit)
             if row:
                 await JobRepository(session).cancel_user(user_id)
                 if row.text is None:
@@ -660,7 +726,10 @@ class ResumeService:
 
     async def delete(self, user_id: int) -> None:
         async with self.sessions.begin() as session:
-            await UserRepository(session).get(user_id, lock=True)
+            user = await UserRepository(session).get(user_id, lock=True)
+            edit = await session.get(ProfileEditModel, user_id)
+            if edit and edit.payload["target"] == "resume":
+                await session.delete(edit)
             await JobRepository(session).cancel_user(user_id)
             await session.execute(delete(ExtractionCache).where(ExtractionCache.user_id == user_id))
             row = await session.get(ResumeModel, user_id)
@@ -675,3 +744,11 @@ class ResumeService:
                     FactRevisionModel.subject_id == str(user_id),
                 )
             )
+            if user is not None:
+                from jobs.learning_privacy import mark_revoked
+
+                await mark_revoked(session, user_id)
+        if user is not None:
+            from jobs.learning_privacy import purge_revoked
+
+            await purge_revoked(self.sessions)

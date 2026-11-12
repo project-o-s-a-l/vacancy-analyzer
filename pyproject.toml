@@ -41,6 +41,13 @@ exclude = ["collectors.*", "vacancy_source_adapters*"]
 [tool.setuptools.exclude-package-data]
 "*" = ["*.jsonl*", "**/*.jsonl*", "*.lease", "**/*.lease", ".va-log-budget.lock", "**/.va-log-budget.lock"]
 
+[tool.setuptools.data-files]
+"share/vacancy-analyzer/evaluation" = [
+    "config/evaluation/protocol.json",
+    "config/evaluation/review.html",
+    "docs/evaluation/REVIEW.md",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

@@ -7,7 +7,7 @@ from functools import lru_cache
 from math import sqrt
 
 from domain.comparison import COMPARISON_VERSION
-from domain.contracts import feature_dependencies
+from domain.contracts import feature_dependencies, source_contract
 from domain.matching_dataset import PairFeatures
 from domain.retrieval import RetrievalParameters
 from nlp.text import word_tokens
@@ -25,7 +25,6 @@ FEATURE_SPEC = {
     "fit_scope": "none",
     "eligibility": "ready_facts_before_features",
     "comparison": COMPARISON_VERSION,
-    "admission": "legacy-baseline-threshold-v1",
 }
 
 
@@ -54,6 +53,22 @@ def feature_contract():
             "dependencies": feature_dependencies(),
             "schema": PairFeatures.model_json_schema(),
         }
+    )
+
+
+@lru_cache(maxsize=1)
+def retrieval_contract():
+    return digest(
+        source_contract(
+            (
+                "jobs/candidates.py",
+                "scoring/retrieval.py",
+                "scoring/fact_projection.py",
+                "domain/retrieval.py",
+                "storage/retrieval_sql.py",
+                "storage/repositories/candidate_repository.py",
+            )
+        )
     )
 
 
@@ -103,7 +118,7 @@ def pair_features(vacancy, profile, match):
 def shown_context(vacancy, profile, match, rank):
     features = pair_features(vacancy, profile, match)
     return {
-        "version": "ranking-exposure-v2",
+        "version": "ranking-exposure-v3",
         "facts_schema": "professional-facts-v1",
         "profile_schema": "candidate-profile-v2",
         "vacancy_facts_revision": vacancy.professional_facts.revision
@@ -119,4 +134,5 @@ def shown_context(vacancy, profile, match, rank):
         "display_rank": rank,
         "comparison": match.comparison.model_dump(mode="json") if match.comparison else None,
         "decision": match.ranking.model_dump(mode="json") if match.ranking else None,
+        "admission": match.admission,
     }

@@ -290,13 +290,16 @@ async def test_edit_documents_persists_and_isolates_users_without_extending_setu
 
 
 async def test_bot_documents_button_and_delivery_context(sessions, vacancy):
+    from test_users import click_button
+
     users = UserService(sessions, min_score=0)
     await store_profile(sessions, 42, CandidateProfile(skills={"Java": {}}))
     transport = RecordingSession()
     bot = Bot(TEST_TOKEN, session=transport)
     dispatcher = build_dispatcher(users)
-    await dispatcher.feed_update(bot, callback_update("profile:qualifications"))
+    await dispatcher.feed_update(bot, callback_update("details:qualifications"))
     await dispatcher.feed_update(bot, text_update("права B"))
+    await click_button(dispatcher, bot, transport, "Сохранить правки")
     assert (await users.get(42)).profile.qualifications
     sample = job(vacancy, datetime.now(UTC), "Требования: права B\nJava")
     async with sessions.begin() as session:

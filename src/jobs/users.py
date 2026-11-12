@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from jobs.feedback import FeedbackService
 from jobs.notify import NotificationService
+from jobs.profile_editor import ProfileEditor
 from jobs.profiles import EDIT_FIELDS, FIELDS, update_field
 from jobs.resumes import ResumeService
 from jobs.skill_gap import analyze_skill_gap
@@ -18,11 +19,15 @@ from storage.models import (
     FactRevisionModel,
     FeedbackEventModel,
     FeedbackModel,
+    LearningAccess,
+    LearningArtifact,
     NotificationModel,
+    ProfileEditModel,
     ResumeModel,
     ResumeSourceModel,
     SavedSelectionModel,
     SearchPlanModel,
+    SelectionObservation,
     ServingRevisionModel,
     TelegramUserModel,
     VacancyModel,
@@ -44,6 +49,7 @@ class UserService:
         resume_model: str = "rules",
         ranker_policy=None,
         saved_selections_enabled: bool = True,
+        profile_editor_enabled: bool = True,
     ) -> None:
         self.sessions = sessions
         self.top = top
@@ -52,12 +58,18 @@ class UserService:
         self.ranker_policy = ranker_policy
         self.saved_selections_enabled = saved_selections_enabled
         self.feedback = FeedbackService(sessions)
+        self.editor = ProfileEditor(sessions, enabled=profile_editor_enabled)
         self.resumes = ResumeService(
             sessions, analyzer=resume_analyzer, queued=queued_resumes, model=resume_model
         )
 
     async def check_ready(self) -> None:
         async with self.sessions() as session:
+            await session.execute(select(ProfileEditModel.token).limit(1))
+            # telemetry is part of every registered selection, not an optional ML extra.
+            await session.execute(select(SelectionObservation.metrics).limit(1))
+            await session.execute(select(LearningAccess.allowed).limit(1))
+            await session.execute(select(LearningArtifact.manifest).limit(1))
             await session.execute(
                 select(
                     TelegramUserModel.profile_revision,
@@ -154,12 +166,15 @@ class UserService:
         text: str,
         *,
         expected_field: str | None = None,
+        expected_revision: int | None = None,
     ) -> RegisteredUser:
         async with self.sessions.begin() as session:
             repository = UserRepository(session)
             user = await repository.get(user_id, lock=True)
             if user is None or not user.form_state:
                 raise ValueError("Откройте /profile и выберите поле для изменения.")
+            if expected_revision is not None and expected_revision != user.revision:
+                raise ValueError("Кнопка устарела. Откройте /start или /profile.")
             mode, field = user.form_state.split(":", 1)
             if expected_field is not None and expected_field != field:
                 raise ValueError("Эта кнопка относится к предыдущему шагу. Откройте /profile.")

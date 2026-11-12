@@ -246,11 +246,16 @@ async def test_cli_analysis_uses_same_calculation_and_json(
 ):
     import jobs.cli as cli
 
+    async def frozen_analysis(repository, **kwargs):
+        # CLI uses wall time; keep its 30-day window aligned with the frozen source fixture.
+        return await analyze_skill_gap(repository, now=now, **kwargs)
+
     await seed(VacancyRepository(session), vacancy, now)
     await session.commit()
     monkeypatch.setattr(cli, "Settings", lambda: SimpleNamespace(database_url="unused"))
     monkeypatch.setattr(cli, "create_engine", lambda _: session.bind)
     monkeypatch.setattr(cli, "load_profile", lambda _: candidate())
+    monkeypatch.setattr(cli, "analyze_skill_gap", frozen_analysis)
     await run_command(parser().parse_args(["skill-gap", "--profile", "unused.yaml", "--json"]))
     import json
 

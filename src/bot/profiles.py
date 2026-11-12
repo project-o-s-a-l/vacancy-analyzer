@@ -36,10 +36,14 @@ def register_profiles(router: Router, service: UserService) -> None:
     @router.message(Command("cancel"))
     async def cancel(message: Message, user_id: int) -> None:
         if await registered(service, message, user_id):
+            cancelled_edit = await service.editor.cancel(user_id)
             await service.resumes.cancel(user_id)
             user = await service.cancel(user_id)
             await message.answer(
-                "Редактирование завершено. Уже введённые данные сохранены.", parse_mode=None
+                "Незавершённые правки отменены. Сохранённый профиль не изменён."
+                if cancelled_edit
+                else "Редактирование завершено. Уже введённые данные сохранены.",
+                parse_mode=None,
             )
             await message.answer(
                 render_profile(user.profile), reply_markup=profile_keyboard(), parse_mode=None
@@ -47,21 +51,15 @@ def register_profiles(router: Router, service: UserService) -> None:
 
     @router.callback_query(F.data.startswith("profile:"))
     async def edit(query: CallbackQuery, user_id: int) -> None:
-        try:
-            user = await service.begin_edit(user_id, query.data.split(":", 1)[1])
-        except ValueError as exc:
-            await query.answer(str(exc), show_alert=True)
-            return
-        await query.answer()
-        await send_form(query.message, user)
+        await query.answer("Кнопка старой анкеты. Откройте /profile.", show_alert=True)
 
     @router.callback_query(F.data.startswith("answer:"))
     async def answer_button(query: CallbackQuery, user_id: int) -> None:
         parts = query.data.split(":")
-        if len(parts) != 3:
+        if len(parts) != 4 or not parts[1].isdecimal():
             await query.answer("Некорректная кнопка", show_alert=True)
             return
-        _, field, value = parts
+        _, revision, field, value = parts
         if field not in {"remote", "constraints"} and value != "skip":
             await query.answer("Некорректная кнопка", show_alert=True)
             return
@@ -70,6 +68,7 @@ def register_profiles(router: Router, service: UserService) -> None:
                 user_id,
                 "пропустить" if value == "skip" else value,
                 expected_field=field,
+                expected_revision=int(revision),
             )
         except ValueError as exc:
             await query.answer(str(exc)[:200], show_alert=True)

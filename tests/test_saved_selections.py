@@ -215,7 +215,7 @@ async def test_current_ranker_always_applied_to_reused_baselines(sessions, vacan
     await seed(sessions, vacancy)
     calls = []
 
-    def apply(items, profile, policy, params):
+    def apply(items, profile, policy, params, **options):
         assert all(match.ranking is None for _, match in items)
         calls.append(policy.model_path)
         return items

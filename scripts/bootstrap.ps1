@@ -1,7 +1,7 @@
 param(
     [string]$EnvironmentPath = '.local-tmp/dev-env',
     [ValidateSet('base', 'ml', 'semantic', 'all')]
-    [string]$Extras = 'all',
+    [string]$Extras = 'base',
     [string]$Python = 'python'
 )
 

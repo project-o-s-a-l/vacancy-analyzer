@@ -63,7 +63,7 @@ async def send_form(message: Message, user: RegisteredUser) -> None:
         field = user.form_state.split(":", 1)[1]
         await message.answer(
             PROMPTS[field] + "\n/cancel — закончить редактирование.",
-            reply_markup=form_keyboard(field),
+            reply_markup=form_keyboard(field, user.revision),
             parse_mode=None,
         )
     else:

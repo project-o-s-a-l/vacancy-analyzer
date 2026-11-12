@@ -27,6 +27,7 @@ from jobs.settings import Settings
 from jobs.skill_gap import analyze_skill_gap
 from observability import emit_event, logging_session, operation
 from observability.settings import LoggingOptions
+from scoring.presentation import evidence_label, score_label
 from scoring.skill_gap import render_skill_gap
 from storage.database import DATABASE_ERRORS, create_engine, session_factory
 from storage.repositories import VacancyRepository
@@ -206,6 +207,8 @@ def parser() -> argparse.ArgumentParser:
     )
     serving_train.add_argument("--bundle", type=Path, required=True)
     serving_train.add_argument("--output", type=Path, required=True)
+    serving_train.add_argument("--ledger", type=Path)
+    serving_train.add_argument("--draft-labels", type=Path)
     serving_train.add_argument(
         "--allow-assistant-draft",
         action="store_true",
@@ -217,12 +220,21 @@ def parser() -> argparse.ArgumentParser:
     comparison.add_argument("--bundle", type=Path, required=True)
     comparison.add_argument("--model", type=Path, required=True)
     comparison.add_argument("--output", type=Path, required=True)
+    check = commands.add_parser("ranker-check", help="Пересчитать gates по данным без final test")
+    check.add_argument("--bundle", type=Path, required=True)
+    check.add_argument("--model", type=Path, required=True)
+    check.add_argument("--output", type=Path, required=True)
+    check.add_argument("--ledger", type=Path)
+    check.add_argument("--draft-labels", type=Path)
+    check.add_argument("--allow-assistant-draft", action="store_true")
     feedback_training = commands.add_parser(
         "feedback-training", help="Подготовить события одного пользователя для ручной проверки"
     )
     feedback_training.add_argument("--user-id", type=int, required=True)
-    feedback_training.add_argument("--output", type=Path, required=True)
     feedback_training.add_argument("--limit", type=_positive, default=500)
+    from jobs.learning_cli import add_commands as add_learning_commands
+
+    add_learning_commands(commands)
     analyze.add_argument("--limit", type=_positive, default=20)
     analyze.add_argument("--force", action="store_true", help="Повторить даже сохранённый разбор")
     gap = commands.add_parser("skill-gap", help="Требования вакансий, не отражённые в профиле")
@@ -310,10 +322,10 @@ def render(results: list[tuple[Vacancy, MatchResult]], *, as_json: bool) -> str:
     cards = []
     for vacancy, match in results:
         lines = [
-            f"{match.score:.1f}% — {vacancy.title}",
+            f"{score_label(match)} — {vacancy.title}",
             vacancy.company,
             str(vacancy.url),
-            f"Полнота сравнения: {match.evidence_coverage:.0%}",
+            evidence_label(match),
         ]
         if not match.eligible:
             lines.insert(0, "Не соответствует обязательным условиям профиля")
@@ -434,13 +446,40 @@ async def run_command(args: argparse.Namespace) -> None:
         )
         print(f"Сравнено validation-профилей: {len(report['cases'])}; выдача не изменена.")
         return
+    if args.command == "ranker-check":
+        from jobs.evaluation_data import write_new
+        from jobs.ranker_pipeline import check
+
+        if args.output.exists():
+            raise ValueError("Choose a new immutable report")
+        report = await check(
+            args.bundle,
+            args.model,
+            ledger=args.ledger,
+            draft_labels=args.draft_labels,
+            allow_assistant_draft=args.allow_assistant_draft,
+        )
+        write_new(args.output, report)
+        print(
+            json.dumps(
+                {
+                    "model_id": report["model_id"],
+                    "activation_blockers": report["activation_blockers"],
+                },
+                ensure_ascii=False,
+            )
+        )
+        return
     if args.command == "ranker-train":
         from jobs.serving_ranker_training import save_serving_ranker, train_serving_ranker
 
         if args.output.exists():
             raise ValueError("Выберите новый каталог модели")
         artifact, report = await train_serving_ranker(
-            args.bundle, allow_assistant_draft=args.allow_assistant_draft
+            args.bundle,
+            allow_assistant_draft=args.allow_assistant_draft,
+            ledger=args.ledger,
+            draft_labels=args.draft_labels,
         )
         save_serving_ranker(artifact, report, args.output)
         print(
@@ -558,6 +597,11 @@ async def run_command(args: argparse.Namespace) -> None:
     engine = create_engine(settings.database_url)
     try:
         sessions = session_factory(engine)
+        if args.command.startswith("learning-"):
+            from jobs.learning_cli import run as run_learning
+
+            await run_learning(args, sessions)
+            return
         if args.command == "inference-status":
             from jobs.inference_status import inference_status
 
@@ -605,19 +649,11 @@ async def run_command(args: argparse.Namespace) -> None:
                     break
             return
         if args.command == "feedback-training":
-            from jobs.feedback_training import feedback_observations
+            from jobs.learning_privacy import export_feedback
 
-            if args.output.exists():
-                raise ValueError("Выберите новый файл наблюдений")
-            report = await feedback_observations(sessions, args.user_id, limit=args.limit)
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(
-                json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
-            print(
-                f"Наблюдений для проверки: {len(report['observations'])}. "
-                "Автоматического обучения нет."
-            )
+            report = await export_feedback(sessions, args.user_id, limit=args.limit)
+            print(json.dumps(report, ensure_ascii=False))
+            return
         elif args.command == "worker":
             from jobs.analysis_worker import AnalysisWorker, background_analysis
             from jobs.resume_analysis import resume_analyzer

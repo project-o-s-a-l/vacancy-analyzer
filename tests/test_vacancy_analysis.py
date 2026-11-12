@@ -37,6 +37,19 @@ from storage.models import VacancyModel
 from storage.repositories import VacancyRepository
 
 
+def test_external_analysis_preserves_provider_and_source_hash(job, extraction):
+    analysis = VacancyAnalysis(
+        provider="external",
+        model="review-extractor-v1",
+        model_digest="unavailable",
+        input_hash=analysis_input_hash(job),
+        extraction=extraction,
+    )
+    restored = VacancyAnalysis.model_validate_json(analysis.model_dump_json())
+    assert restored.provider == "external"
+    assert current_analysis(job.model_copy(update={"analysis": restored})) == restored
+
+
 @pytest.fixture
 def job(vacancy):
     return vacancy.model_copy(

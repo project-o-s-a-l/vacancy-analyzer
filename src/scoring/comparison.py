@@ -182,7 +182,8 @@ def _exposure(profile, ids, today, *, projects=False):
             continue
         if episode.ongoing.value is True:
             # A snapshot is not proof of continued employment after its reference date.
-            end = min(today, facts.reference_time.astimezone(UTC).date())
+            reference = episode.reference_time or facts.reference_time
+            end = min(today, reference.astimezone(UTC).date())
         elif episode.ended.status == "present" and episode.ended_precision != "unknown":
             end = min(today, episode.ended.value)
         else:

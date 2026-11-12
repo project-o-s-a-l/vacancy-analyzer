@@ -1,12 +1,18 @@
 """Rules/shadow/model policy on the SAME eligible candidates and rule explanations."""
 
 import logging
-from math import isfinite
 from pathlib import Path
 
+from domain.contracts import normalization_contract
 from domain.serving_ranker import RankerPolicy, RankingDecision, ServingRankerArtifact
+from scoring.admission_policy import model_admission, policy_contract
 from scoring.linear_ranker import FEATURE_NAMES, feature_vector
-from scoring.serving_features import FEATURE_SPEC, feature_contract, pair_features
+from scoring.serving_features import (
+    FEATURE_SPEC,
+    feature_contract,
+    pair_features,
+    retrieval_contract,
+)
 
 logger = logging.getLogger(__name__)
 _last_failure = None
@@ -22,49 +28,14 @@ def _warn_fallback(reason):
 def activation_reasons(artifact):
     try:
         return _activation_reasons(artifact)
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError, KeyError):
         return ["validation_invalid"]
 
 
 def _activation_reasons(artifact):
-    def valid(value):
-        return type(value) in {int, float} and isfinite(value) and 0 <= value <= 1
+    from scoring.ranker_gates import gate_reasons
 
-    proof, provenance = artifact.validation, artifact.provenance
-    reasons = []
-    if provenance.get("label_origins") != ["human"]:
-        reasons.append("labels_not_human")
-    if not proof.get("split_verified") or proof.get("validation_groups", 0) < 1:
-        reasons.append("split_unverified")
-    if (
-        not provenance.get("validation_groups")
-        or not provenance.get("validation_profile_ids")
-        or set(artifact.model.training_groups) & set(provenance["validation_groups"])
-        or set(artifact.model.training_profile_ids) & set(provenance["validation_profile_ids"])
-        or set(artifact.model.training_query_ids) & set(provenance.get("validation_query_ids", []))
-    ):
-        reasons.append("split_overlap_or_missing")
-    if (
-        type(proof.get("eligibility_violations")) is not int
-        or proof.get("eligibility_violations") != 0
-    ):
-        reasons.append("eligibility_unverified")
-    for name in ("all_candidates", "serving_threshold"):
-        result = proof.get(name, {})
-        baseline, learned = result.get("baseline_ndcg"), result.get("model_ndcg")
-        if not valid(baseline) or not valid(learned) or learned - baseline < 0.01:
-            reasons.append(name + "_gain_unconfirmed")
-        groups = result.get("by_profession", {})
-        expected = provenance.get("professions", [])
-        if not expected or set(groups) != set(expected):
-            reasons.append(name + "_coverage_missing")
-        for group in groups.values():
-            b, m = group.get("baseline_ndcg"), group.get("model_ndcg")
-            if not valid(b) or not valid(m) or group.get("positive_pairs", 0) < 1:
-                reasons.append(name + "_positive_examples_missing")
-            elif m + 1e-9 < b:
-                reasons.append(name + "_group_regression")
-    return sorted(set(reasons))
+    return gate_reasons(artifact)
 
 
 def load_artifact(path, parameters):
@@ -89,17 +60,23 @@ def load_artifact(path, parameters):
         or artifact.model.text_feature_spec != FEATURE_SPEC
     ):
         return None, "feature_contract_mismatch"
+    if artifact.normalization_contract != normalization_contract():
+        return None, "normalization_contract_mismatch"
+    if artifact.policy_contract != policy_contract():
+        return None, "policy_contract_mismatch"
+    if artifact.retrieval_contract != retrieval_contract():
+        return None, "retrieval_contract_mismatch"
     if artifact.retrieval_parameters != parameters:
         return None, "retrieval_parameters_mismatch"
     return artifact, None
 
 
-def apply_ranker(ranking, profile, policy, parameters):
+def apply_ranker(ranking, profile, policy, parameters, *, experimental=False):
     policy = policy or RankerPolicy()
     if policy.mode == "rules" or not ranking:
         return ranking
     artifact, reason = load_artifact(policy.model_path, parameters)
-    if artifact and policy.mode == "model" and activation_reasons(artifact):
+    if artifact and policy.mode == "model" and not experimental and activation_reasons(artifact):
         reason = "quality_gate_not_passed"
     if reason:
         _warn_fallback(reason)
@@ -131,6 +108,17 @@ def apply_ranker(ranking, profile, policy, parameters):
                 model_score=sum(contributions.values()),
                 contributions=contributions,
             )
+            passed, reason, support = model_admission(
+                match, decision.model_score, artifact.admission
+            )
+            decision.admission_policy = artifact.admission.version
+            decision.admission_threshold = artifact.admission.threshold
+            decision.evidence_floor = artifact.admission.evidence_floor
+            decision.evidence_support = support
+            decision.admission_max_display = artifact.admission.max_display
+            decision.admission_passed = passed
+            decision.admission_reason = reason
+            decision.experimental = experimental
             predictions.append((vacancy, match, decision))
         predictions.sort(key=lambda item: (-item[2].model_score, item[2].baseline_rank))
         for index, (_, _, decision) in enumerate(predictions, 1):

@@ -15,6 +15,7 @@ from domain.delivery import DeliveryFailure, RecommendationSender
 from domain.matching import MatchResult
 from domain.serving_ranker import RankerPolicy
 from domain.vacancy_duplicates import vacancy_duplicate_key
+from jobs.feedback_context import delivery_context
 from jobs.rank import rank_recent
 from jobs.recommendations import recommend
 from jobs.saved_selections import vacancy_revision
@@ -203,6 +204,19 @@ class NotificationService:
                 else "below_threshold"
             )
         )
+        from jobs.feedback_monitoring import record_selection
+
+        await record_selection(
+            self.sessions,
+            self.chat_id,
+            self.profile,
+            revision=self.expected_profile_revision,
+            epoch=self.expected_owner_epoch,
+            ranking=ranking,
+            displayed=displayed,
+            code=code,
+            latency_ms=(time.monotonic() - started) * 1000,
+        )
         emit_event(
             logger,
             "selection.finished",
@@ -235,6 +249,12 @@ class NotificationService:
             message = (
                 "Новых рекомендаций пока нет. Доступные вакансии уже отправлены "
                 "или ожидают подтверждения доставки; повторно их не отправляю."
+            )
+        elif any(m.ranking and m.ranking.applied for _, m in unseen):
+            message = (
+                "Новых рекомендаций пока нет: недостаточно подтверждённых сведений "
+                "или профессионального соответствия для показа. "
+                "Попробуйте позже или уточните навыки, опыт и задачи в /profile."
             )
         else:
             message = (
@@ -328,7 +348,9 @@ class NotificationService:
                     duplicate_group=vacancy_duplicate_key(vacancy),
                 ),
             ):
-                outcome = await self._attempt(sender, vacancy, match, rank)
+                outcome = await self._attempt(
+                    sender, vacancy, match, report.sent + 1, selection_rank=rank
+                )
             if outcome == "sent":
                 report.sent += 1
             elif outcome in {"failed", "uncertain"}:
@@ -348,7 +370,7 @@ class NotificationService:
         )
         return report
 
-    async def _attempt(self, sender, vacancy, match, rank):
+    async def _attempt(self, sender, vacancy, match, rank, *, selection_rank=None):
         def skip(code):
             emit_event(logger, "delivery.skipped", result="skipped", code=code)
 
@@ -419,8 +441,12 @@ class NotificationService:
                     "profile": self.profile.model_dump(mode="json"),
                     "match": match.model_dump(mode="json"),
                     "rank": rank,
+                    "selection_rank": selection_rank if selection_rank is not None else rank,
                     "payload_hash": source_hash,
                     "ranker_context": ranking_context,
+                    "feedback_evidence": delivery_context(
+                        vacancy, self.profile, match, min_score=self.min_score, top=self.top
+                    ),
                 },
             )
         if token is None:

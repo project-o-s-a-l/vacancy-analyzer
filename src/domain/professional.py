@@ -131,6 +131,9 @@ class ExperienceEpisode(StrictModel):
     id: Name
     kind: Literal["employment", "project", "unspecified"]
     context: Literal["work", "academic", "personal", "unspecified"] = "unspecified"
+    title: Claim[str] = Field(default_factory=Claim)
+    parent_id: str | None = None
+    reference_time: AwareDatetime | None = None
     started_precision: Literal["day", "month", "unknown"] = "unknown"
     ended_precision: Literal["day", "month", "unknown"] = "unknown"
     organization: Claim[str] = Field(default_factory=Claim)
@@ -220,6 +223,8 @@ class ProfessionalFacts(StrictModel):
     lexical_observations: list[LexicalObservation] = Field(default_factory=list)
     # Calendar overlaps are never summed automatically into total/relevant tenure.
     overlap_policy: Literal["unaggregated", "calendar_union_v1"] = "unaggregated"
+    # Explicit manual section edits, including clears, are protected during import.
+    reviewed_sections: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def references(self) -> Self:
@@ -237,6 +242,10 @@ class ProfessionalFacts(StrictModel):
         if len(requirements) != len(self.requirements):
             raise ValueError("Duplicate requirement identity")
         for episode in self.episodes:
+            if episode.parent_id is not None:
+                parent = next((e for e in self.episodes if e.id == episode.parent_id), None)
+                if episode.kind != "project" or parent is None or parent.kind != "employment":
+                    raise ValueError("A project must reference an existing employment episode")
             for ids, kind in (
                 (episode.role_ids, "role"),
                 (episode.skill_ids, "skill"),

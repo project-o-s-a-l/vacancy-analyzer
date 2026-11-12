@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     hh_check_batch_interval: float = Field(default=3600, ge=3600, allow_inf_nan=False)
     vacancy_llm_enabled: bool = False
     resume_llm_enabled: bool = False
+    profile_editor_enabled: bool = True
     resume_total_timeout: float = Field(default=300, ge=10, le=1800, allow_inf_nan=False)
     analysis_worker_enabled: bool = True
     analysis_poll_interval: float = Field(default=5, ge=1, le=60, allow_inf_nan=False)

@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from domain import CandidateProfile, Vacancy
+from domain.evaluation_units import validate_units
 from domain.vacancy_duplicates import vacancy_duplicate_key
 from jobs.benchmark_data import near, tokens
 
@@ -81,12 +82,21 @@ class VacancyCase(Strict):
 
 
 class EvaluationData(Strict):
-    version: Literal["working-evaluation-data-v1"] = "working-evaluation-data-v1"
+    version: Literal["working-evaluation-data-v1", "working-evaluation-data-v2"] = (
+        "working-evaluation-data-v2"
+    )
     seed: int
     reference_times: dict[Split, AwareDatetime]
     time_windows: dict[Split, tuple[AwareDatetime, AwareDatetime]]
     profiles: list[ProfileCase] = Field(min_length=4)
     vacancies: list[VacancyCase] = Field(min_length=4)
+
+    @model_validator(mode="before")
+    @classmethod
+    def canonical_units(cls, data):
+        if isinstance(data, dict) and data.get("version") != "working-evaluation-data-v1":
+            validate_units(data)
+        return data
 
     @model_validator(mode="after")
     def leakage(self):

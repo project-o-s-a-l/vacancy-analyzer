@@ -1,3 +1,5 @@
+# Legacy standalone matching-train example; not a serving acceptance manifest.
+# ranker-train uses four independent splits; see docs/BENCHMARK.md.
 # Paths are relative to this file. Replace them with your completed datasets.
 # Versions of the same person's resume must use the same group alias.
 training:

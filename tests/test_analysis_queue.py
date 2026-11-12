@@ -122,6 +122,55 @@ async def expire(sessions, key):
         )
 
 
+@pytest.mark.parametrize("force", [False, True])
+async def test_external_review_is_preserved_unless_explicitly_forced(
+    queue_sessions, vacancy, force
+):
+    analyzer = Analyzer()
+    vacancy, job = await schedule(queue_sessions, vacancy, analyzer)
+    reviewed = VacancyAnalysis(
+        provider="external",
+        model="review-extractor-v1",
+        model_digest="unavailable",
+        pipeline_hash=pipeline_hash("vacancy_analysis", "review-extractor-v1"),
+        input_hash=analysis_input_hash(vacancy),
+        extraction=VacancyExtraction(
+            category="it",
+            specialization=None,
+            role_evidence=vacancy.title,
+            responsibilities=[],
+            skills=[],
+            alternatives=[],
+            experience_min_years=None,
+            experience_evidence=None,
+        ),
+    )
+    async with queue_sessions.begin() as session:
+        repo = VacancyRepository(session)
+        await repo.set_analysis(vacancy.id, reviewed)
+        current = await repo.get_by_id(vacancy.id)
+        facts = current.professional_facts.model_copy(deep=True)
+        facts.uncertainty_reasons.append("authored_review_marker")
+        assert await repo.set_facts(
+            vacancy.id, facts, expected_facts_revision=current.professional_facts.revision
+        )
+        if force:
+            queued = await session.get(BackgroundJob, job.id)
+            queued.payload = {"force": True}
+    analyzer.ready = AsyncMock()
+    outcome = await AnalysisWorker(queue_sessions, vacancy_analyzer=analyzer).run_once(
+        job_id=job.id
+    )
+    assert outcome == ("analyzed" if force else "cached")
+    assert analyzer.calls == int(force)
+    if not force:
+        analyzer.ready.assert_not_awaited()
+        async with queue_sessions() as session:
+            current = await VacancyRepository(session).get_by_id(vacancy.id)
+            assert current.analysis.provider == "external"
+            assert "authored_review_marker" in current.professional_facts.uncertainty_reasons
+
+
 async def test_worker_attempt_context_is_renewed_and_empty_poll_is_quiet(
     queue_sessions, vacancy, capsys
 ):

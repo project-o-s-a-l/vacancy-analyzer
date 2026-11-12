@@ -603,6 +603,34 @@
           "title": "Context",
           "type": "string"
         },
+        "title": {
+          "$ref": "#/$defs/Claim_str_"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Id"
+        },
+        "reference_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Time"
+        },
         "started_precision": {
           "default": "unknown",
           "enum": [
@@ -1221,6 +1249,13 @@
       ],
       "title": "Overlap Policy",
       "type": "string"
+    },
+    "reviewed_sections": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Reviewed Sections",
+      "type": "array"
     }
   },
   "required": [

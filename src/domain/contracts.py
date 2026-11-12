@@ -53,6 +53,7 @@ def facts_contract():
                     "nlp/vacancy_document.py",
                     "nlp/vacancy_facts.py",
                     "nlp/resume.py",
+                    "nlp/resume_preferences.py",
                     "nlp/resume_document.py",
                     "nlp/resume_facts.py",
                     "nlp/qualifications.py",

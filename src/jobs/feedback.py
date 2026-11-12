@@ -26,6 +26,7 @@ class FeedbackService:
 
     async def confirm_display(self, user_id, vacancy, profile, match, message_id):
         """Persist exactly the rendered history/bookmark card after send returned an ID."""
+        from jobs.feedback_context import delivery_context
         from scoring.serving_features import shown_context
 
         async with self.sessions.begin() as session:
@@ -42,6 +43,9 @@ class FeedbackService:
                     "payload_hash": payload_hash(vacancy.raw_payload),
                     "ranker_context": shown_context(vacancy, profile, match, 1),
                     "surface": "history",
+                    "feedback_evidence": delivery_context(
+                        vacancy, profile, match, min_score=None, top=1, surface="history"
+                    ),
                 },
             )
 
@@ -167,7 +171,7 @@ class FeedbackService:
                 expected_version=expected_version,
                 exposure_message_id=exposure_message_id,
                 action_context={
-                    "version": "feedback-action-v2",
+                    "version": "feedback-action-v3",
                     "profile_revision": user.revision,
                     "candidate_facts_revision": user.profile.professional_facts.revision,
                     "vacancy_facts_revision": vacancy.professional_facts.revision,

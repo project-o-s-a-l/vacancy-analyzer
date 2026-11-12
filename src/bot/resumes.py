@@ -131,7 +131,7 @@ def register_resumes(router: Router, service: UserService) -> None:
         if len(parts) != 3:
             await message.answer(
                 "Пример: /resume_edit skills Python, SQL. "
-                "Поля: skills, positions, experience, mode, remove.",
+                "Поля: skills, positions, experience, locations, salary, remote, mode, remove.",
                 parse_mode=None,
             )
             return
@@ -194,6 +194,22 @@ def register_resumes(router: Router, service: UserService) -> None:
                 await query.message.answer(RESUME_PROMPT, parse_mode=None)
             return
         match = re.fullmatch(r"resume:(confirm|cancel):([0-9a-f]{32})", query.data)
+        review = re.fullmatch(r"resume:(review|merge|replace_all):([0-9a-f]{32})", query.data)
+        if review:
+            try:
+                if review[1] == "review":
+                    from bot.profile_editor import show_editor
+
+                    edit = await service.editor.open(user_id, resume_token=review[2])
+                    await query.answer()
+                    await show_editor(query.message, edit)
+                else:
+                    draft = await service.resumes.revise(user_id, review[2], "mode", review[1])
+                    await query.answer()
+                    await show_resume(query.message, user_id, draft)
+            except ValueError as exc:
+                await query.answer(str(exc)[:200], show_alert=True)
+            return
         if not match:
             await query.answer("Некорректная кнопка", show_alert=True)
             return

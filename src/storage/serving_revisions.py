@@ -16,7 +16,10 @@ TABLES = {
 }
 
 
-def install(connection):
+SCHEDULING_COLUMNS = ("last_recommended_at", "next_check_at", "check_requested_at")
+
+
+def install(connection, *, scheduling_is_content=False):
     # Names are constants from our schema, never user input.
     from sqlalchemy import inspect
 
@@ -50,10 +53,24 @@ def install(connection):
                 )
                 level = "ROW"
             else:
+                ignored = ",".join(f"'{column}'" for column in SCHEDULING_COLUMNS)
+                guard = (
+                    ""
+                    if scheduling_is_content
+                    else f"""
+                    IF TG_OP = 'UPDATE' THEN
+                        IF (to_jsonb(NEW) - ARRAY[{ignored}]) IS NOT DISTINCT FROM
+                           (to_jsonb(OLD) - ARRAY[{ignored}]) THEN
+                            RETURN NULL;
+                        END IF;
+                    END IF;
+                """
+                )
                 connection.execute(
-                    text("""
+                    text(f"""
                     CREATE OR REPLACE FUNCTION va_catalogue_dirty() RETURNS trigger
                     LANGUAGE plpgsql AS $$ BEGIN
+                    {guard}
                     PERFORM set_config('va.catalogue_dirty', 'true', true);
                     RETURN NULL; END $$
                 """)
@@ -62,6 +79,7 @@ def install(connection):
                     text(f"""
                     CREATE OR REPLACE FUNCTION va_revision_{table}() RETURNS trigger
                     LANGUAGE plpgsql AS $$ BEGIN
+                    {guard}
                     IF current_setting('va.catalogue_bumped', true) = 'true' THEN
                         RETURN NULL;
                     END IF;
@@ -76,8 +94,8 @@ def install(connection):
                 connection.execute(text("DROP TRIGGER IF EXISTS va_catalogue_dirty ON vacancies"))
                 connection.execute(
                     text("""
-                    CREATE TRIGGER va_catalogue_dirty BEFORE INSERT OR UPDATE OR DELETE ON vacancies
-                    FOR EACH STATEMENT EXECUTE FUNCTION va_catalogue_dirty()
+                    CREATE TRIGGER va_catalogue_dirty AFTER INSERT OR UPDATE OR DELETE ON vacancies
+                    FOR EACH ROW EXECUTE FUNCTION va_catalogue_dirty()
                 """)
                 )
                 connection.execute(text(f"DROP TRIGGER IF EXISTS va_revision_{table} ON {table}"))
@@ -99,6 +117,16 @@ def install(connection):
             )
         elif connection.dialect.name == "sqlite":
             for action in ("INSERT", "UPDATE", "DELETE"):
+                condition = ""
+                if table == "vacancies" and action == "UPDATE" and not scheduling_is_content:
+                    columns = [
+                        c["name"]
+                        for c in inspect(connection).get_columns(table)
+                        if c["name"] not in SCHEDULING_COLUMNS
+                    ]
+                    condition = "WHEN " + " OR ".join(
+                        f'NEW."{c}" IS NOT OLD."{c}"' for c in columns
+                    )
                 ref = "OLD" if action == "DELETE" else "NEW"
                 key = f"'{scope}:' || {ref}.{column}" if column else "'catalogue'"
                 cleanup = (
@@ -108,10 +136,12 @@ def install(connection):
                 )
                 if table == "telegram_users" and action == "DELETE":
                     cleanup += "DELETE FROM recommendation_exposures WHERE chat_id = OLD.user_id;"
+                connection.execute(text(f"DROP TRIGGER IF EXISTS va_revision_{table}_{action}"))
                 connection.execute(
                     text(f"""
                     CREATE TRIGGER IF NOT EXISTS va_revision_{table}_{action}
                     AFTER {action} ON {table}
+                    {condition}
                     BEGIN
                     INSERT INTO serving_revisions(scope, revision) VALUES ({key}, 1)
                     ON CONFLICT(scope) DO UPDATE SET revision = revision + 1;

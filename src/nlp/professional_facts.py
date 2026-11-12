@@ -105,13 +105,15 @@ def candidate_facts(profile, owner_id, *, previous=None, confirmed_fields=(), re
             )
         )
         groups[key] = "skills"
-    if profile.experience_years is not None:
+    if profile.experience_years is not None or "experience" in confirmed_fields:
         facts.append(
             ValueFact(
                 kind="experience_total",
                 id="experience_total",
                 name="years",
-                assertion=claim(profile.experience_years, "experience"),
+                assertion=claim(profile.experience_years, "experience")
+                if profile.experience_years is not None
+                else dict(status="unknown", origin="user_confirmed"),
             )
         )
         groups["experience_total"] = "experience"
@@ -150,7 +152,7 @@ def candidate_facts(profile, owner_id, *, previous=None, confirmed_fields=(), re
             known[f.id]
             if f.id in known
             and groups[f.id] not in confirmed_fields
-            and known[f.id].assertion.value == f.assertion.value
+            and (groups[f.id] == "skills" or known[f.id].assertion.value == f.assertion.value)
             else f
             for f in facts
         ]
@@ -159,20 +161,34 @@ def candidate_facts(profile, owner_id, *, previous=None, confirmed_fields=(), re
             if isinstance(fact, SkillFact) and isinstance(old, SkillFact):
                 # Editing membership never reviews or discards the richer level/tenure facts.
                 fact.level, fact.years, fact.last_used = old.level, old.years, old.last_used
-        # Rich facts/episodes survive ordinary preference edits.
-        linked = {
-            key for e in previous.episodes for key in [*e.role_ids, *e.skill_ids, *e.task_ids]
-        }
+        # Membership is authoritative: an episode must not resurrect a deleted skill.
         facts += [
             f
             for f in previous.facts
             if f.id not in groups
-            and (
-                f.id in linked
-                or f.kind not in {"skill", "qualification", "preference", "experience_total"}
-            )
+            and f.kind not in {"skill", "qualification", "preference", "experience_total"}
+            and not (f.kind == "role" and f.context == "desired")
         ]
+        if "experience" not in confirmed_fields and profile.experience_years is None:
+            facts += [f for f in previous.facts if f.id == "experience_total"]
+        if "experience" not in confirmed_fields:
+            # Keep the provenance of an imported computed total across preference edits.
+            facts += [
+                f
+                for f in previous.facts
+                if f.kind == "experience_total" and f.id != "experience_total"
+            ]
         sources += previous.sources
+    retained = {f.id for f in facts}
+    episodes = [
+        e.model_copy(
+            update={
+                "skill_ids": [key for key in e.skill_ids if key in retained],
+                "reference_time": e.reference_time or previous.reference_time,
+            }
+        )
+        for e in (previous.episodes if previous else [])
+    ]
     now = datetime.now(UTC)
     return ProfessionalFacts(
         document_id=f"candidate:{owner_id}",
@@ -185,15 +201,23 @@ def candidate_facts(profile, owner_id, *, previous=None, confirmed_fields=(), re
         extractor_contract=facts_contract(),
         extracted_at=now,
         reference_time=reference_time or (previous.reference_time if previous else now),
-        input_scope="full" if confirmed_fields else "legacy",
+        input_scope="partial"
+        if previous and previous.input_scope == "partial"
+        else ("full" if confirmed_fields else "legacy"),
+        input_ranges=previous.input_ranges if previous else [],
         sources=list({(s.id, s.revision): s for s in sources}.values()),
         facts=facts,
-        episodes=previous.episodes if previous else [],
+        episodes=episodes,
         model_id=previous.model_id if previous else None,
         model_digest=previous.model_digest if previous else None,
         analysis_pipeline=previous.analysis_pipeline if previous else None,
         overlap_policy=previous.overlap_policy if previous else "unaggregated",
         uncertainty_reasons=previous.uncertainty_reasons if previous else [],
+        reviewed_sections=list(
+            dict.fromkeys(
+                [*(previous.reviewed_sections if previous else []), *sorted(confirmed_fields)]
+            )
+        ),
     )
 
 
@@ -277,14 +301,15 @@ def resume_facts(text, extraction, owner_id, *, version):
 
 
 def confirm_resume_facts(profile, draft, owner_id):
-    previous = profile.professional_facts
+    previous = profile.professional_facts if draft.apply_mode != "replace_all" else None
     proposed = draft.professional_facts
     if proposed is None:
         proposed = resume_facts(draft.text, draft.extraction, owner_id, version=draft.version)
     if proposed.owner_id != owner_id or proposed.input_sha256 != digest(draft.text):
         raise ValueError("Resume facts do not belong to this source/owner")
     confirmed = set()
-    if draft.extraction.skills:
+    reviewed = set(previous.reviewed_sections) if previous else set()
+    if draft.extraction.skills and ("skills" not in reviewed or "skills" in draft.edited_fields):
         confirmed.add("skills")
     if draft.extraction.positions:
         confirmed.add("positions")
@@ -297,15 +322,42 @@ def confirm_resume_facts(profile, draft, owner_id):
         confirmed_fields=confirmed,
         reference_time=proposed.reference_time,
     )
-    # New resume replaces the career snapshot. Prior tasks/episodes remain in history.
+    # Imported confirmation is not a manual section override. Clears remain protected.
+    base.reviewed_sections = list(
+        dict.fromkeys(
+            [
+                *(previous.reviewed_sections if previous else []),
+                *(field for field in draft.edited_fields if field not in {"mode", "remove"}),
+            ]
+        )
+    )
+    keep_career = "career" in base.reviewed_sections
+    merge_career = draft.apply_mode == "merge" or keep_career
     values = {
         f.id: f
         for f in base.facts
-        if f.kind not in {"role", "task"}
+        if (merge_career or f.kind not in {"role", "task"})
         and not (f.kind == "experience_total" and f.id != "experience_total")
         and not (f.kind == "skill" and f.name not in profile.skills)
     }
     for fact in proposed.facts:
+        if (
+            fact.kind == "role"
+            and fact.context == "desired"
+            and fact.name not in profile.preferences.positions
+        ):
+            continue
+        if fact.kind in {"role", "task"} and keep_career:
+            continue
+        if fact.kind == "skill" and fact.name not in profile.skills:
+            continue
+        if fact.kind == "qualification" and "qualifications" in base.reviewed_sections:
+            continue
+        if fact.kind == "preference" and (
+            not hasattr(profile.preferences, fact.name)
+            or getattr(profile.preferences, fact.name) != fact.assertion.value
+        ):
+            continue  # Only the values actually shown in the proposal can be confirmed.
         value = fact.model_dump(mode="json")
         previous_fact = values.get(fact.id)
         if (
@@ -318,6 +370,13 @@ def confirm_resume_facts(profile, draft, owner_id):
             previous_fact is not None
             and previous_fact.assertion.origin == "user_confirmed"
             and not (fact.id == "experience_total" and "experience" in draft.edited_fields)
+            and not (
+                fact.kind == "preference"
+                and any(
+                    p.group in draft.edited_fields and fact.name in p.fields
+                    for p in draft.extraction.preferences
+                )
+            )
         ):
             # Imported text never silently overwrites a reviewed value, including a
             # manually corrected total. The draft continues to show the disagreement.
@@ -339,6 +398,22 @@ def confirm_resume_facts(profile, draft, owner_id):
             value["assertion"]["origin"] = "user_confirmed"
         values[fact.id] = type(fact).model_validate(value)
     data = base.model_dump(mode="json")
+    episodes = {e.id: e for e in (base.episodes if merge_career else [])}
+    # Same document repeated is idempotent; changed snapshots are additions in merge.
+    if not keep_career:
+        for episode in proposed.episodes:
+            episodes[episode.id] = episode
+    retained = set(values)
+    episodes = [
+        e.model_copy(
+            update={
+                "role_ids": [i for i in e.role_ids if i in retained],
+                "task_ids": [i for i in e.task_ids if i in retained],
+                "skill_ids": [i for i in e.skill_ids if i in retained],
+            }
+        )
+        for e in episodes.values()
+    ]
     data.update(
         facts=[f.model_dump(mode="json") for f in values.values()],
         input_scope=proposed.input_scope,
@@ -348,7 +423,7 @@ def confirm_resume_facts(profile, draft, owner_id):
         model_id=proposed.model_id,
         model_digest=proposed.model_digest,
         analysis_pipeline=proposed.analysis_pipeline,
-        episodes=[e.model_dump(mode="json") for e in proposed.episodes],
+        episodes=[e.model_dump(mode="json") for e in episodes],
         sources=list(
             {
                 (s.id, s.revision): s.model_dump(mode="json")

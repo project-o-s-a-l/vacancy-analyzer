@@ -137,6 +137,8 @@ async def test_new_snapshot_replaces_old_tasks_and_review_can_exclude_a_fact(ses
         i for i, item in enumerate(second.extraction.observations, 1) if item.kind == "task"
     )
     second = await users.resumes.revise(42, second.token, "remove", str(index))
+    # Replacement is explicit; the default merge now retains the saved career.
+    second = await users.resumes.revise(42, second.token, "mode", "replace")
     user = await users.resumes.confirm(42, second.token)
     assert not user.profile.professional_facts.episodes
     assert not any(f.kind == "task" for f in user.profile.professional_facts.facts)

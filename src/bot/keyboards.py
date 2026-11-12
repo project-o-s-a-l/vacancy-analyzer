@@ -85,9 +85,12 @@ def history_reset_keyboard(token: str) -> InlineKeyboardMarkup:
 
 def profile_keyboard() -> InlineKeyboardMarkup:
     fields = [
-        ("skills", "Навыки"),
-        ("experience", "Опыт"),
-        ("positions", "Должности"),
+        ("episode", "Опыт и проекты"),
+        ("skill", "Навыки и их применение"),
+        ("role", "Прошлые роли"),
+        ("task", "Задачи"),
+        ("experience", "Общий стаж"),
+        ("positions", "Желаемые должности"),
         ("remote", "Формат работы"),
         ("salary", "Зарплата"),
         ("locations", "Города"),
@@ -95,11 +98,16 @@ def profile_keyboard() -> InlineKeyboardMarkup:
         ("constraints", "Обязательные условия"),
     ]
     buttons = [
-        InlineKeyboardButton(text=title, callback_data="profile:" + field)
+        InlineKeyboardButton(text=title, callback_data="details:" + field)
         for field, title in fields
     ]
     return InlineKeyboardMarkup(
         inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="Открыть / продолжить редактор", callback_data="details:home"
+                )
+            ],
             [InlineKeyboardButton(text="Загрузить резюме", callback_data="resume:upload")],
             *[buttons[index : index + 2] for index in range(0, len(buttons), 2)],
             [InlineKeyboardButton(text="История рекомендаций", callback_data="fbpage:history:0")],
@@ -107,11 +115,15 @@ def profile_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def form_keyboard(field: str) -> InlineKeyboardMarkup | None:
+def form_keyboard(field: str, revision: int = 0) -> InlineKeyboardMarkup | None:
     if field == "constraints":
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=title, callback_data="answer:constraints:" + value)]
+                [
+                    InlineKeyboardButton(
+                        text=title, callback_data=f"answer:{revision}:constraints:" + value
+                    )
+                ]
                 for value, title in [
                     ("none", "Зарплата и города — предпочтения"),
                     ("salary", "Обязательна зарплата"),
@@ -129,14 +141,22 @@ def form_keyboard(field: str) -> InlineKeyboardMarkup | None:
         ]
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=title, callback_data="answer:remote:" + value)]
+                [
+                    InlineKeyboardButton(
+                        text=title, callback_data=f"answer:{revision}:remote:" + value
+                    )
+                ]
                 for value, title in values
             ]
         )
     if field != "skills":
         return InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text="Пропустить", callback_data=f"answer:{field}:skip")]
+                [
+                    InlineKeyboardButton(
+                        text="Пропустить", callback_data=f"answer:{revision}:{field}:skip"
+                    )
+                ]
             ]
         )
     return None

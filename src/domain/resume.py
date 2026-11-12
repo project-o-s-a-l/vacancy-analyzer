@@ -2,12 +2,39 @@
 
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
+from domain.candidate import CandidateProfile, Preferences
 from domain.professional import ProfessionalFacts
 
 MAX_RESUME_TEXT = 60_000
-RESUME_VERSION = "resume-v5"
+RESUME_VERSION = "resume-v6"
+
+
+class ResumePreference(BaseModel):
+    """An atomic preference proposal; no source offsets for an explicit draft edit."""
+
+    model_config = ConfigDict(extra="forbid")
+    group: Literal["locations", "salary", "remote"]
+    values: Preferences
+    start: int | None = Field(default=None, ge=0)
+    end: int | None = Field(default=None, gt=0)
+
+    @property
+    def fields(self):
+        return {
+            "locations": ("locations", "locations_required"),
+            "salary": ("salary_min", "currency", "salary_gross", "salary_required"),
+            "remote": ("remote",),
+        }[self.group]
+
+    @model_validator(mode="after")
+    def valid_span(self):
+        if (self.start is None) != (self.end is None) or (
+            self.start is not None and self.end <= self.start
+        ):
+            raise ValueError("Preference evidence must be a complete nonempty span")
+        return self
 
 
 class ResumeObservation(BaseModel):
@@ -59,6 +86,7 @@ class ResumeExtraction(BaseModel):
 
     skills: list[str] = Field(default_factory=list, max_length=50)
     positions: list[str] = Field(default_factory=list, max_length=10)
+    preferences: list[ResumePreference] = Field(default_factory=list, max_length=3)
     experience_years: float | None = Field(default=None, ge=0, le=80)
     notes: list[str] = Field(default_factory=list)
     observations: list[ResumeObservation] = Field(default_factory=list)
@@ -82,5 +110,6 @@ class ResumeDraft(BaseModel):
     version: str = RESUME_VERSION
     professional_facts: ProfessionalFacts | None = None
     profile_revision: int | None = Field(default=None, ge=0)
-    apply_mode: Literal["merge", "replace"] = "merge"
+    apply_mode: Literal["merge", "replace", "replace_all"] = "merge"
     edited_fields: list[str] = Field(default_factory=list)
+    reviewed_profile: CandidateProfile | None = None

@@ -98,7 +98,9 @@ class VacancyExtraction(BaseModel):
 class VacancyAnalysis(BaseModel):
     model_config = ConfigDict(extra="forbid")
     version: Literal["vacancy-analysis-v1"] = ANALYSIS_VERSION
-    provider: Literal["ollama"] = "ollama"
+    provider: str = Field(
+        default="ollama", min_length=1, max_length=64, pattern=r"^[a-z][a-z0-9_-]*$"
+    )
     model: str = Field(min_length=1)
     model_digest: str = Field(min_length=1)
     input_hash: str = Field(pattern=r"^[a-f0-9]{64}$")

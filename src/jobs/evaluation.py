@@ -107,6 +107,34 @@ def fact_atoms(professional):
                 if requirement and requirement.importance.status == "conflict":
                     atom["status"] = "conflicting"
                 atoms.append(atom)
+    preferences = {
+        f.name: f.assertion.value
+        for f in professional.facts
+        if f.kind == "preference" and f.assertion.status == "present"
+    }
+    for location in preferences.get("locations", []):
+        atoms.append(
+            _fact(
+                "location",
+                location,
+                importance="required" if preferences.get("locations_required") else "preferred",
+            )
+        )
+    if preferences.get("salary_min") is not None:
+        atoms.append(
+            _fact(
+                "salary",
+                {
+                    "minimum": preferences["salary_min"],
+                    "currency": preferences["currency"],
+                    "period": "month",
+                    "gross": preferences["salary_gross"],
+                },
+                importance="required" if preferences.get("salary_required") else "preferred",
+            )
+        )
+    if preferences.get("remote") in {"required", "preferred"}:
+        atoms.append(_fact("remote", True, importance=preferences["remote"]))
     return atoms
 
 
@@ -126,13 +154,28 @@ def stand():
 
 
 def source_revision():
-    root = Path(__file__).resolve().parents[2]
+    # Editable and wheel installs must identify the same shipped code. Protocol/data
+    # have their own bundle hashes; unrelated site-packages are never part of this tree.
+    root = Path(__file__).resolve().parents[1]
+    packages = (
+        "bot",
+        "collectors",
+        "domain",
+        "jobs",
+        "nlp",
+        "observability",
+        "processing",
+        "scoring",
+        "storage",
+    )
     inventory = {
-        p.relative_to(root).as_posix(): sha256(p.read_bytes()).hexdigest()
-        for directory in (root / "src", root / "config/evaluation")
+        "src/" + p.relative_to(root).as_posix(): sha256(p.read_bytes()).hexdigest()
+        for directory in (root / package for package in packages)
         for p in sorted(directory.rglob("*"))
         if p.is_file() and p.suffix in {".py", ".json", ".yaml", ".html"}
     }
+    if "src/jobs/evaluation.py" not in inventory:
+        raise ValueError("Installed runtime source inventory is unavailable")
     return {"inventory_sha256": digest(inventory), "files": inventory}
 
 
@@ -164,8 +207,13 @@ async def evaluate(
     min_score=None,
     final_test=False,
     release_id=None,
+    ranker_policy=None,
+    experimental_ranker=False,
+    pair_reranker=None,
 ):
     data, protocol, bundle_hash = load_data(bundle)
+    if pair_reranker is not None and split == "test":
+        raise ValueError("Experimental pair policy cannot evaluate the final test")
     if split == "test" and (not final_test or not release_id):
         raise ValueError(
             "Final test requires --final-test and a frozen --release-id; no phase tuning"
@@ -210,7 +258,16 @@ async def evaluate(
         trace = {}
         started = perf_counter()
         ranking = await rank_recent(
-            None, profile, now=now, limit=selected_k, candidate_source=source, trace=trace
+            None,
+            profile,
+            now=now,
+            limit=selected_k,
+            candidate_source=source,
+            trace=trace,
+            ranker_policy=ranker_policy,
+            experimental_ranker=experimental_ranker,
+            pair_reranker=pair_reranker,
+            pair_owner=case.owner if pair_reranker is not None else None,
         )
         admission_start = perf_counter()
         _, admitted, shown = admit(ranking, min_score=threshold, top=protocol["top"])
@@ -218,6 +275,10 @@ async def evaluate(
         trace["selection_total_seconds"] = perf_counter() - started
         trace["admitted"] = [f"{v.source}:{v.source_id}" for v, _ in admitted]
         trace["shown"] = [f"{v.source}:{v.source_id}" for v, _ in shown]
+        trace["selected_order"] = trace["shown"]
+        trace["admission_decisions"] = {
+            f"{v.source}:{v.source_id}": m.admission for v, m in ranking
+        }
         trace["profile_extraction_seconds"] = (
             extraction[case.id][1] if mode == "resume_rules" else 0
         )
@@ -271,7 +332,7 @@ async def evaluate(
                     "stages": {
                         key: value
                         for key, value in r["trace"].items()
-                        if not key.endswith("seconds")
+                        if not key.endswith("seconds") and key != "pair_reranker"
                     },
                 }
                 for r in rows
@@ -404,6 +465,11 @@ async def evaluate(
         "reference_time": now.isoformat(),
         "split": split,
         "release_id": release_id,
+        "ranker_policy": ranker_policy.model_dump(mode="json")
+        if ranker_policy
+        else {"mode": "rules"},
+        "experimental_ranker": experimental_ranker,
+        "pair_policy": pair_reranker.policy.model_dump(mode="json") if pair_reranker else None,
         "bundle_hash": bundle_hash,
         "protocol_hash": digest(protocol),
         "protocol": protocol,
@@ -461,9 +527,16 @@ async def evaluate(
             "projection_seconds": projection,
             "batch_seconds": batch_seconds,
             "first_pass": "first process pass, not guaranteed OS/model cold",
-            "scope": "actual rank_recent + selector + rules + apply_ranker + admission; "
-            "memory adapter; no SQL/history/feedback/cache/delivery/network/LLM; "
-            "vacancy extraction measured separately; profile rules before selection",
+            "scope": (
+                "actual rank_recent + selector + rules + apply_ranker + admission; "
+                "memory adapter; no SQL/history/feedback/delivery/network/LLM; "
+                "vacancy extraction measured separately; profile rules before selection; "
+                + (
+                    "pair adapter/cache included; inspect per-query traces"
+                    if pair_reranker
+                    else "no pair adapter or pair inference cache"
+                )
+            ),
             "rss_bytes": _rss(),
         },
     }

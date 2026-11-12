@@ -3,7 +3,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from bot.cards import render_profile
 from domain import CandidateProfile
 from domain.resume import ResumeDraft
-from jobs.resumes import proposed_profile
+from jobs.resumes import prepared_profile
 
 RESUME_PROMPT = (
     "Отправьте резюме файлом PDF, DOCX или TXT, до 2 МБ и 20 страниц PDF. "
@@ -21,6 +21,29 @@ def resume_keyboard(draft: ResumeDraft) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [
                 InlineKeyboardButton(
+                    text="Проверить и исправить", callback_data=f"resume:review:{draft.token}"
+                )
+            ],
+            *(
+                [
+                    [
+                        InlineKeyboardButton(
+                            text="Предпросмотр дополнения",
+                            callback_data=f"resume:merge:{draft.token}",
+                        )
+                    ],
+                    [
+                        InlineKeyboardButton(
+                            text="Предпросмотр полной замены",
+                            callback_data=f"resume:replace_all:{draft.token}",
+                        )
+                    ],
+                ]
+                if draft.reviewed_profile is None
+                else []
+            ),
+            [
+                InlineKeyboardButton(
                     text="Применить к профилю", callback_data=f"resume:confirm:{draft.token}"
                 )
             ],
@@ -34,7 +57,8 @@ def resume_keyboard(draft: ResumeDraft) -> InlineKeyboardMarkup:
 
 
 def render_resume(draft: ResumeDraft, current: CandidateProfile) -> str:
-    profile = proposed_profile(current, draft)
+    owner = draft.professional_facts.owner_id if draft.professional_facts else 1
+    profile = prepared_profile(current, draft, owner)
     summary = render_profile(profile).split("Чтобы изменить профиль", 1)[0].rstrip()
     summary = summary.replace("Текущий профиль", "Профиль после применения", 1)
     extracted = draft.extraction
@@ -44,7 +68,35 @@ def render_resume(draft: ResumeDraft, current: CandidateProfile) -> str:
         )
     )
     tasks = list(dict.fromkeys(o.name for o in extracted.observations if o.kind == "task"))
+    if profile.professional_facts:
+        roles = [
+            f.name
+            for f in profile.professional_facts.facts
+            if f.kind == "role" and f.context != "desired"
+        ]
+        tasks = [f.name for f in profile.professional_facts.facts if f.kind == "task"]
     notes = list(extracted.notes)
+    if draft.apply_mode != "replace_all" and current.professional_facts:
+        labels = {
+            "career": "опыт, роли и задачи",
+            "skills": "навыки",
+            "experience": "общий стаж",
+            "qualifications": "документы",
+            "positions": "желаемые должности",
+            "salary": "зарплата",
+            "locations": "города",
+            "remote": "формат работы",
+            "constraints": "обязательные условия",
+        }
+        protected = [
+            labels[key] for key in current.professional_facts.reviewed_sections if key in labels
+        ]
+        if protected:
+            notes.append(
+                "Сохранены вручную изменённые разделы: "
+                + ", ".join(protected)
+                + ". Для замены профессиональных сведений выберите предпросмотр полной замены."
+            )
     if extracted.completeness != "complete":
         notes.insert(0, "Разбор неполный — проверьте неразобранные части в /resume_details.")
     if (
@@ -66,18 +118,28 @@ def render_resume(draft: ResumeDraft, current: CandidateProfile) -> str:
         + ("; ".join(roles[:5]) or "не определены")
         + "\nЗадачи/проекты: "
         + ("; ".join(tasks[:3]) or "не определены")
-        + f"\nПериодов работы/проектов: {len(extracted.periods)}."
+        + f"\nМест работы/проектов после применения: {len(profile.professional_facts.episodes)}."
         + "\n\n"
         + changes
         + "\nРежим: "
-        + ("дополнение" if draft.apply_mode == "merge" else "замена неподтверждённых списков")
-        + ". Подтверждённые значения сохраняются. "
+        + {
+            "merge": "дополнение с сохранением вручную изменённых разделов",
+            "replace": "замена неподтверждённых списков",
+            "replace_all": (
+                "ПОЛНАЯ ЗАМЕНА профессиональных сведений: "
+                "прежние навыки, опыт и документы будут заменены"
+            ),
+        }[draft.apply_mode]
+        + ". Проверьте результат кнопкой «Проверить и исправить». "
         "Уровень и годы навыка без свидетельств неизвестны."
         + "\n"
         + "\n".join("• " + n for n in dict.fromkeys(notes))
         + "\n\nВсе факты и неразобранные части: /resume_details. Исправить перед применением:"
         "\n/resume_edit skills Python, SQL\n/resume_edit positions Разработчик"
         "\n/resume_edit experience 3 (или ? — неизвестно)"
+        "\n/resume_edit locations только Москва"
+        "\n/resume_edit salary зарплата от 60000 RUB в месяц до налога"
+        "\n/resume_edit remote только удалённая работа (или ? — снять условие)"
         "\n/resume_edit mode merge (дополнение) или replace (замена)."
         "\nПосле применения исправления доступны через /profile; вакансии — /latest."
     )
@@ -86,6 +148,33 @@ def render_resume(draft: ResumeDraft, current: CandidateProfile) -> str:
 def render_resume_details(draft: ResumeDraft) -> str:
     extracted = draft.extraction
     lines = ["Сведения для проверки (ещё не применены):"]
+    if draft.reviewed_profile is not None:
+        lines.append(
+            "Ниже — исходные наблюдения извлечения. Вы уже исправили предложение: "
+            "точный результат откройте кнопкой «Проверить и исправить» в /resume."
+        )
+    for item in extracted.preferences:
+        pref = item.values
+        if item.group == "locations":
+            values = "Города: " + (", ".join(pref.locations) or "ограничение снято")
+            values += " (обязательно)" if pref.locations_required else " (пожелание)"
+        elif item.group == "salary":
+            values = "Зарплата: " + (
+                f"от {pref.salary_min} {pref.currency} в месяц "
+                + ("до налога" if pref.salary_gross else "на руки")
+                if pref.salary_min is not None
+                else "ограничение снято"
+            )
+            values += " (обязательно)" if pref.salary_required else " (пожелание)"
+        else:
+            values = {
+                "required": "Только удалённая работа",
+                "preferred": "Желательна удалённая работа",
+            }.get(pref.remote, "Ограничение формата работы снято")
+        source = (
+            draft.text[item.start : item.end] if item.start is not None else "Правка в черновике"
+        )
+        lines.append(f"{values}\nИсточник: {source}")
     labels = {
         "skill": "Навык",
         "role": "Роль",
@@ -101,7 +190,7 @@ def render_resume_details(draft: ResumeDraft) -> str:
             lines.append("  Самооценка навыка: " + draft.text[item.detail_start : item.detail_end])
     lines.append(
         "Убрать ошибочный факт из предложения: /resume_edit remove НОМЕР. "
-        "Для исправления периодов загрузите исправленный текст; "
+        "Для исправления периодов используйте кнопку «Проверить и исправить» в /resume; "
         "общий стаж можно задать через /resume_edit experience."
     )
     for period in extracted.periods:

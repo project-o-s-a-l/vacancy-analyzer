@@ -7,7 +7,7 @@
   "input_sha256": "070e76051b232dcc99f289945410ddc93a2c8cd7117886e8d50f742e98c42ca9",
   "extractor": "vacancy-runtime",
   "extractor_version": "vacancy-facts-v2",
-  "extractor_contract": "4266e63f524d48202861754ed8fec9331b1f6c78304db971b78f46b3e82cfe7b",
+  "extractor_contract": "274cb6b782ec8786b08308db77dc62b66cd51eaab9d8ba71782621f846a558fa",
   "model_id": null,
   "model_digest": null,
   "analysis_pipeline": null,
@@ -664,5 +664,6 @@
       }
     }
   ],
-  "overlap_policy": "unaggregated"
+  "overlap_policy": "unaggregated",
+  "reviewed_sections": []
 }

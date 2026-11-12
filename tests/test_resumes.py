@@ -18,7 +18,7 @@ from test_users import callback_update, store_profile
 from bot.delivery import TelegramSender
 from bot.handlers import build_dispatcher
 from bot.resume_cards import render_resume
-from domain.resume import ResumeExtraction
+from domain.resume import RESUME_VERSION, ResumeExtraction
 from jobs.resumes import ResumeService
 from jobs.users import UserService
 from nlp.ollama_resume import ResumeAnalysisError
@@ -59,7 +59,7 @@ async def test_plain_resume_summary_is_reviewed_before_it_changes_profile(sessio
     dispatcher = build_dispatcher(users)
     await dispatcher.feed_update(bot, command_update(SUMMARY))
     draft = await users.resumes.pending(42)
-    assert draft and draft.version == "resume-v5-ollama"
+    assert draft and draft.version == RESUME_VERSION + "-ollama"
     assert (await users.get(42)).profile == before.profile
     analyzer.analyze.assert_awaited_once_with(SUMMARY)
     assert "Предварительный профиль" in recording.requests[-1].text
@@ -395,7 +395,7 @@ async def test_draft_confirmation_is_atomic_persistent_and_preserves_preferences
     assert await restarted.pending(42) is None
     async with sessions() as session:
         row = await session.get(ResumeModel, 42)
-        assert row.text == TEXT and row.parser_version == "resume-v5"
+        assert row.text == TEXT and row.parser_version == RESUME_VERSION
     with pytest.raises(ValueError):
         await restarted.confirm(42, draft.token)
 

@@ -11,6 +11,7 @@ from domain.retrieval import RetrievalParameters
 
 class RankerPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    version: Literal["ranker-dispatch-v2"] = "ranker-dispatch-v2"
     mode: Literal["rules", "shadow", "model"] = "rules"
     model_path: Path | None = None
 
@@ -32,16 +33,39 @@ class RankingDecision(BaseModel):
     model_score: FiniteFloat | None = None
     fallback_reason: str | None = None
     contributions: dict[str, FiniteFloat] = Field(default_factory=dict)
+    admission_policy: str | None = None
+    admission_threshold: FiniteFloat | None = None
+    evidence_floor: float | None = Field(default=None, ge=0, le=1)
+    evidence_support: float | None = Field(default=None, ge=0, le=1)
+    admission_passed: bool = False
+    admission_reason: str | None = None
+    experimental: bool = False
+    admission_max_display: int = Field(default=5, ge=1, le=20)
+    reranker: dict | None = None
+
+
+class ModelAdmission(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    version: Literal["rank-evidence-admission-v1"] = "rank-evidence-admission-v1"
+    threshold: FiniteFloat
+    evidence_floor: float = Field(ge=0, le=1)
+    calibration_split: Literal["calibration"] = "calibration"
+    score_meaning: Literal["pairwise_margin_not_probability"] = "pairwise_margin_not_probability"
+    max_display: Literal[5] = 5
 
 
 class ServingRankerArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    version: Literal["serving-linear-v1"] = "serving-linear-v1"
+    version: Literal["serving-linear-v2"] = "serving-linear-v2"
     created_at: AwareDatetime
     model_id: str = Field(pattern=r"^[a-f0-9]{64}$")
     feature_contract: str = Field(pattern=r"^[a-f0-9]{64}$")
     retrieval_parameters: RetrievalParameters
     model: LinearRankerModel
+    admission: ModelAdmission
+    normalization_contract: str = Field(pattern=r"^[a-f0-9]{64}$")
+    policy_contract: str = Field(pattern=r"^[a-f0-9]{64}$")
+    retrieval_contract: str = Field(pattern=r"^[a-f0-9]{64}$")
     provenance: dict
     validation: dict
 

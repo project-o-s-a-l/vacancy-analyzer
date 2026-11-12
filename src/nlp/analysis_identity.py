@@ -22,6 +22,7 @@ def pipeline_hash(kind: str, model: str) -> str:
         else (
             "nlp/ollama_resume.py",
             "nlp/resume.py",
+            "nlp/resume_preferences.py",
             "nlp/resume_document.py",
             "nlp/resume_facts.py",
             "processing/resume.py",

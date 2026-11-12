@@ -30,3 +30,4 @@ class MatchResult(BaseModel):
     qualifications_version: str | None = None
     retrieval: RetrievalEvidence | None = None
     ranking: RankingDecision | None = None
+    admission: dict | None = None

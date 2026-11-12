@@ -28,7 +28,14 @@ def read_profile(row) -> CandidateProfile:
         # Includes writes by an older application after an operational rollback.
         timestamp = row.updated_at
         timestamp = timestamp.replace(tzinfo=UTC) if timestamp.tzinfo is None else timestamp
-        facts = candidate_facts(profile, row.user_id, reference_time=timestamp)
+        previous = (
+            ProfessionalFacts.model_validate(row.professional_facts)
+            if row.professional_facts
+            else None
+        )
+        if previous and previous.owner_id != row.user_id:
+            raise ValueError("Profile facts have an invalid owner")
+        facts = candidate_facts(profile, row.user_id, previous=previous, reference_time=timestamp)
     return profile.model_copy(update={"professional_facts": facts})
 
 
@@ -39,6 +46,7 @@ class RegisteredUser:
     form_state: str | None
     revision: int = 0
     input_revision: str | None = None
+    facts_revision: str | None = None
 
 
 class UserRepository:
@@ -79,13 +87,15 @@ class UserRepository:
         if lock:
             statement = statement.with_for_update()
         row = await self.session.scalar(statement.execution_options(populate_existing=True))
+        profile = read_profile(row) if row else None
         return (
             RegisteredUser(
                 row.user_id,
-                read_profile(row),
+                profile,
                 row.form_state,
                 row.profile_revision,
                 profile_input_revision(CandidateProfile.model_validate(row.profile)),
+                profile.professional_facts.revision,
             )
             if row
             else None
@@ -98,19 +108,28 @@ class UserRepository:
         original = read_profile(row)
         if row.profile_schema_version not in {None, PROFILE_SCHEMA}:
             raise ValueError("Unsupported profile schema; update application before writing")
-        if row.profile_revision != user.revision or (
-            user.input_revision is not None
-            and profile_input_revision(original) != user.input_revision
+        if (
+            (
+                user.facts_revision is not None
+                and original.professional_facts.revision != user.facts_revision
+            )
+            or row.profile_revision != user.revision
+            or (
+                user.input_revision is not None
+                and profile_input_revision(original) != user.input_revision
+            )
         ):
             raise StaleProfileWrite("Профиль изменился; перечитайте его перед сохранением")
         profile = CandidateProfile.model_validate(user.profile.model_dump(mode="json"))
         revision = profile_input_revision(profile)
         facts = profile.professional_facts
+        if facts is not None and (facts.subject != "candidate" or facts.owner_id != user.user_id):
+            raise ValueError("Profile facts belong to another owner")
         if facts is None or facts.input_sha256 != revision or confirmed_fields:
             facts = candidate_facts(
                 profile,
                 user.user_id,
-                previous=original.professional_facts,
+                previous=facts or original.professional_facts,
                 confirmed_fields=confirmed_fields,
                 reference_time=datetime.now(UTC) if confirmed_fields else None,
             )
@@ -122,6 +141,7 @@ class UserRepository:
                 TelegramUserModel.user_id == user.user_id,
                 TelegramUserModel.profile_revision == user.revision,
                 TelegramUserModel.profile == row.profile,
+                TelegramUserModel.professional_facts == row.professional_facts,
             )
             .values(
                 profile=profile_payload(profile),
@@ -145,6 +165,7 @@ class UserRepository:
             user.form_state,
             user.revision + 1,
             revision,
+            facts.revision,
         )
 
     async def search_profiles(self) -> list[CandidateProfile]:
@@ -170,6 +191,7 @@ class UserRepository:
                         state,
                         row.profile_revision,
                         profile_input_revision(profile),
+                        profile.professional_facts.revision,
                     )
                 )
         return profiles

@@ -4,6 +4,7 @@ from aiogram.types import Message
 from bot.common import PrivateChatsMiddleware
 from bot.concurrent import OrderedDispatcher
 from bot.help import HELP
+from bot.profile_editor import register_profile_editor
 from bot.profiles import register_profiles
 from bot.recommendations import register_recommendations
 from bot.resumes import register_resumes
@@ -14,6 +15,7 @@ def build_dispatcher(service: UserService) -> Dispatcher:
     router = Router(name="user_commands")
     router.message.outer_middleware(PrivateChatsMiddleware())
     router.callback_query.outer_middleware(PrivateChatsMiddleware())
+    register_profile_editor(router, service)
     register_profiles(router, service)
     register_resumes(router, service)
     register_recommendations(router, service)

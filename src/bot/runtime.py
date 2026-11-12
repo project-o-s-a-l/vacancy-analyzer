@@ -72,6 +72,7 @@ async def _run_bot(settings: Settings) -> None:
             top=settings.telegram_top,
             min_score=settings.telegram_min_score,
             queued_resumes=True,
+            profile_editor_enabled=getattr(settings, "profile_editor_enabled", True),
             ranker_policy=RankerPolicy.from_settings(settings),
             saved_selections_enabled=getattr(settings, "saved_selections_enabled", True),
             resume_model=settings.ollama_model if settings.resume_llm_enabled else "rules",

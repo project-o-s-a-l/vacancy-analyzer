@@ -109,7 +109,9 @@ def preferred_pairs(example: LabeledQuery) -> list[tuple[int, int]]:
     return comparisons
 
 
-def fit_pairwise_ranker(examples: list[LabeledQuery]) -> LinearRankerModel:
+def fit_pairwise_ranker(
+    examples: list[LabeledQuery], *, c=1.0, professional_only=False
+) -> LinearRankerModel:
     if len({example.group for example in examples}) < 2:
         raise ValueError("Для обучения нужны как минимум две разные группы резюме.")
     if len({example.dataset.query_id for example in examples}) != len(examples):
@@ -173,8 +175,15 @@ def fit_pairwise_ranker(examples: list[LabeledQuery]) -> LinearRankerModel:
             weights.extend([weight, weight])
     if not np.any(differences):
         raise ValueError("Признаки не различают вакансии с разными ручными оценками.")
+    if professional_only:
+        # Logistics/freshness remain eligibility/retrieval concerns, not professional relevance.
+        ignored = {"salary", "preferences", "freshness"}
+        for row in differences:
+            for index, name in enumerate(FEATURE_NAMES):
+                if name.removesuffix("_missing") in ignored:
+                    row[index] = 0.0
     estimator = LogisticRegression(
-        fit_intercept=False, solver="lbfgs", C=1.0, max_iter=1000, tol=1e-8
+        fit_intercept=False, solver="lbfgs", C=c, max_iter=1000, tol=1e-8
     )
     with warnings.catch_warnings():
         warnings.simplefilter("error", ConvergenceWarning)

@@ -52,6 +52,19 @@ async def store_profile(sessions, user_id, profile):
         await repository.save(RegisteredUser(user_id, profile, None))
 
 
+async def click_button(dispatcher, bot, transport, label, *, user_id=42):
+    message = next(
+        r for r in reversed(transport.requests) if isinstance(r, SendMessage) and r.reply_markup
+    )
+    data = next(
+        b.callback_data
+        for row in message.reply_markup.inline_keyboard
+        for b in row
+        if b.text == label
+    )
+    await dispatcher.feed_update(bot, callback_update(data, user_id=user_id))
+
+
 async def test_registration_has_independent_empty_profiles_and_is_idempotent(sessions):
     users = UserService(sessions)
     first = await users.register(42)
@@ -113,12 +126,10 @@ async def test_two_users_can_fill_profiles_interleaved(sessions):
 @pytest.mark.parametrize(
     "field,text",
     [
-        ("skills", "пропустить"),
         ("skills", "x" * 101),
         ("experience", "nan"),
         ("experience", "-1"),
         ("experience", "200"),
-        ("experience", "не знаю"),
         ("remote", "иногда"),
         ("salary", "150000"),
         ("salary", "150000 RUB"),
@@ -188,7 +199,8 @@ async def test_profile_setup_with_real_dispatcher_and_buttons(sessions):
     dispatcher = build_dispatcher(users)
     for text in ["/start", "Python, SQL", "3", "Python developer"]:
         await dispatcher.feed_update(bot, text_update(text))
-    await dispatcher.feed_update(bot, callback_update("answer:remote:required"))
+    revision = (await users.get(42)).revision
+    await dispatcher.feed_update(bot, callback_update(f"answer:{revision}:remote:required"))
     for text in ["150 000 RUB до налогов", "пропустить"]:
         await dispatcher.feed_update(bot, text_update(text))
     user = await users.get(42)

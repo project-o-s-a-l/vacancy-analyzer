@@ -42,6 +42,28 @@ def document_facts(text, extraction, owner_id, *, version):
         return dict(status="present", value=value, origin="machine_proposed", evidence=ev)
 
     facts = {}
+    for item in extraction.preferences:
+        ev = (
+            [evidence(item.start, item.end)]
+            if item.start is not None
+            else [
+                Evidence(
+                    source_id=output.id,
+                    source_revision=output.revision,
+                    field="preferences." + item.group,
+                )
+            ]
+        )
+        for field in item.fields:
+            key = "preference:" + field
+            facts[key] = ValueFact(
+                id=key,
+                kind="preference",
+                name=field,
+                assertion=claim(getattr(item.values, field), ev)
+                if getattr(item.values, field) is not None
+                else dict(status="missing", origin="machine_proposed", evidence=ev),
+            )
     observation_ids = []
     for item in extraction.observations:
         key = item.kind + ":" + digest(item.name)[:24]
@@ -141,6 +163,7 @@ def document_facts(text, extraction, owner_id, *, version):
         key = "episode:" + digest([source.revision, period.start, period.end])[:24]
         episodes[key] = ExperienceEpisode(
             id=key,
+            reference_time=extraction.reference_time,
             kind=period.kind,
             context=period.context,
             started=started,

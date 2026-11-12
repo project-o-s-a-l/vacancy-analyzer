@@ -1,6 +1,7 @@
 """Explicit synthetic preparation; never reads the working database or user resumes."""
 
 import json
+import warnings
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -8,6 +9,11 @@ from uuid import NAMESPACE_URL, uuid5
 
 from domain import CandidateProfile, Vacancy
 from domain.evaluation import SPLITS, EvaluationData, Fact, ProfileCase, VacancyCase
+from domain.evaluation_units import UNIT_CONTRACT
+
+BUNDLE_VERSION = "working-evaluation-bundle-v2"
+DATA_VERSION = "working-evaluation-data-v2"
+LEGACY_BUNDLE_VERSION = "working-evaluation-bundle-v1"
 
 ROLES = [
     (
@@ -227,7 +233,7 @@ def synthetic_data(seed):
                     salary_to=55000 if vi == 1 else 95000,
                     currency="RUB",
                     salary_gross=True,
-                    salary_period="month",
+                    salary_period="MONTH",
                     archived=vi == 4,
                     published_at=start + timedelta(days=7 + vi),
                     collected_at=end,
@@ -278,16 +284,40 @@ def synthetic_data(seed):
     )
 
 
-def prepare(output: Path, protocol_path: Path):
+def prepare(output: Path, protocol_path: Path, *, data_path: Path | None = None):
     protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
-    data = synthetic_data(protocol["seed"])
+    if data_path is None:
+        data = synthetic_data(protocol["seed"])
+    else:
+        raw = json.loads(data_path.read_text(encoding="utf-8"))
+        if raw.get("version") != DATA_VERSION:
+            raise ValueError(f"New imports require {DATA_VERSION}; legacy inputs stay immutable")
+        data = EvaluationData.model_validate(raw)
+        if data.seed != protocol["seed"]:
+            raise ValueError("Imported data seed must match the frozen protocol")
+    return freeze_bundle(
+        output,
+        data,
+        protocol,
+        purpose="synthetic_diagnostic" if data_path is None else "imported_requires_review",
+    )
+
+
+def freeze_bundle(output, data, protocol, *, purpose, parent_bundle_hash=None):
+    if data.version != DATA_VERSION:
+        raise ValueError("Only v2 data can be frozen into a new bundle")
+    # Revalidate model_copy mutations as well as normal parsed input.
+    data = EvaluationData.model_validate(data.model_dump(mode="json"))
     output.mkdir(parents=True, exist_ok=False)
     write_new(output / "data.json", data.model_dump(mode="json"))
     write_new(output / "protocol.json", protocol)
     write_new(
         output / "manifest.json",
         {
-            "version": "working-evaluation-bundle-v1",
+            "version": BUNDLE_VERSION,
+            "unit_contract": UNIT_CONTRACT,
+            "purpose": purpose,
+            "parent_bundle_hash": parent_bundle_hash,
             "seed": data.seed,
             "label_origin": "assistant_draft",
             "quality": "waiting_external",
@@ -302,21 +332,44 @@ def prepare(output: Path, protocol_path: Path):
                     sum(v.split == p.split for v in data.vacancies) for p in data.profiles
                 ),
             },
-            "final_test": "sealed temporal October holdout; explicit release ID required",
+            "final_test": (
+                "Independence and human acceptance require independent human reviews"
+                if purpose == "imported_requires_review"
+                else "Diagnostic split, not a new independent holdout; historical test stays opened"
+            ),
         },
     )
     return load_data(output)
 
 
-def load_data(directory):
+def load_data(directory, *, allow_legacy=False):
+    """Strict default for every consumer; legacy opt-in is for archival inspection only."""
     manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
-    if manifest["version"] != "working-evaluation-bundle-v1":
+    legacy = manifest["version"] == LEGACY_BUNDLE_VERSION
+    if manifest["version"] not in (BUNDLE_VERSION, LEGACY_BUNDLE_VERSION):
         raise ValueError("Unknown evaluation bundle")
+    if legacy and not allow_legacy:
+        raise ValueError(
+            "Legacy evaluation bundle v1 has an unvalidated unit contract (NEW-041). "
+            "Use evaluation-validate --allow-legacy for archival inspection; "
+            "prepare a new v2 bundle for evaluation/training/import."
+        )
+    if not legacy and manifest.get("unit_contract") != UNIT_CONTRACT:
+        raise ValueError("Missing or unsupported evaluation unit_contract")
     for name in ("data.json", "protocol.json"):
         if sha256((directory / name).read_bytes()).hexdigest() != manifest["sha256"][name]:
             raise ValueError(f"Frozen input changed: {name}")
-    data = EvaluationData.model_validate_json((directory / "data.json").read_bytes())
+    raw = json.loads((directory / "data.json").read_text(encoding="utf-8"))
+    if raw.get("version") != ("working-evaluation-data-v1" if legacy else DATA_VERSION):
+        raise ValueError("Evaluation manifest/data version mismatch")
+    data = EvaluationData.model_validate(raw)
     protocol = json.loads((directory / "protocol.json").read_text(encoding="utf-8"))
+    if legacy:
+        warnings.warn(
+            "Legacy v1 bundle: units are unvalidated; archival inspection only, not acceptance",
+            UserWarning,
+            stacklevel=2,
+        )
     return data, protocol, digest(manifest)
 
 

@@ -54,12 +54,30 @@ class Submission(Strict):
     records: list[dict]
 
 
-def export_review(bundle, output, *, split, reviewer, role="reviewer"):
+def export_review(
+    bundle,
+    output,
+    *,
+    split,
+    reviewer,
+    role="reviewer",
+    privacy_review=None,
+    managed_access=False,
+):
     data, _, bundle_hash = load_data(bundle)
     reviewer = reviewer.strip()
     if not reviewer.strip() or reviewer.casefold() in {"assistant", "llm", "auto"}:
         raise ValueError("Human reviewer identity required")
     cards = tasks(data, split)
+    if any(p.origin != "synthetic" for p in data.profiles) and not managed_access:
+        raise ValueError("Real review export requires learning-review and registered owner access")
+    from jobs.review_privacy import check_review_privacy
+
+    check_review_privacy(
+        cards,
+        real_data=any(p.origin != "synthetic" for p in data.profiles if p.split == split),
+        review=privacy_review,
+    )
     assignment = {
         "version": "evaluation-assignment-v1",
         "bundle_hash": bundle_hash,
@@ -68,6 +86,7 @@ def export_review(bundle, output, *, split, reviewer, role="reviewer"):
         "role": role,
         "tasks_hash": digest(cards),
         "task_ids": sorted(cards),
+        "privacy_review_hash": digest(privacy_review) if privacy_review else None,
     }
     output.mkdir(parents=True, exist_ok=False)
     write_new(output / "assignment.json", assignment)
@@ -85,7 +104,9 @@ def export_review(bundle, output, *, split, reviewer, role="reviewer"):
     # Frozen source cards are separate from editable labels; no algorithm scores,
     # draft labels, split-target grades or model predictions are exposed.
     write_new(output / "cards.json", cards)
-    template = Path(__file__).resolve().parents[2] / "config/evaluation/review.html"
+    from jobs.evaluation_resources import evaluation_resource
+
+    template = evaluation_resource("review.html")
     payload = json.dumps(
         {"cards": cards, "assignment": assignment, "assignment_hash": digest(assignment)},
         ensure_ascii=False,
@@ -93,7 +114,7 @@ def export_review(bundle, output, *, split, reviewer, role="reviewer"):
     payload = payload.replace("<", "\\u003c")
     with (output / "cards.html").open("x", encoding="utf-8") as stream:
         stream.write(template.read_text(encoding="utf-8").replace("__REVIEW_PACKAGE__", payload))
-    instructions = Path(__file__).resolve().parents[2] / "docs/evaluation/REVIEW.md"
+    instructions = evaluation_resource("REVIEW.md")
     with (output / "INSTRUCTIONS.md").open("x", encoding="utf-8") as stream:
         stream.write(instructions.read_text(encoding="utf-8"))
     return {"tasks": len(cards), "assignment_hash": digest(assignment)}

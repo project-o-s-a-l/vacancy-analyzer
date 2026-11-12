@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, BigInteger, DateTime, Integer, String
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -23,3 +23,15 @@ class TelegramUserModel(Base):
         JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
     )
     facts_input_revision: Mapped[str | None] = mapped_column(String(64))
+
+
+class ProfileEditModel(Base):
+    """One durable, private working copy; never used by matching before save."""
+
+    __tablename__ = "profile_edits"
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("telegram_users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    token: Mapped[str] = mapped_column(String(32))
+    base_revision: Mapped[int] = mapped_column(Integer)
+    payload: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
