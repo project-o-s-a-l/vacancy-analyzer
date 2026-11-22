@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from domain import CandidateProfile
 from domain.professional import PROFILE_SCHEMA, ProfessionalFacts
 from nlp.professional_facts import candidate_facts, profile_input_revision, profile_payload
+from nlp.profile_experience import sync_profile_experience
 from storage.models import TelegramUserModel
 from storage.repositories.fact_repository import FactRepository
 
@@ -47,6 +48,21 @@ class RegisteredUser:
     revision: int = 0
     input_revision: str | None = None
     facts_revision: str | None = None
+
+    @classmethod
+    def from_row(cls, row):
+        profile = read_profile(row)
+        # Old editor drafts and optimistic writes refer to the stored snapshot.
+        input_revision = profile_input_revision(profile)
+        facts_revision = profile.professional_facts.revision
+        return cls(
+            row.user_id,
+            sync_profile_experience(profile),
+            row.form_state,
+            row.profile_revision,
+            input_revision,
+            facts_revision,
+        )
 
 
 class UserRepository:
@@ -87,19 +103,7 @@ class UserRepository:
         if lock:
             statement = statement.with_for_update()
         row = await self.session.scalar(statement.execution_options(populate_existing=True))
-        profile = read_profile(row) if row else None
-        return (
-            RegisteredUser(
-                row.user_id,
-                profile,
-                row.form_state,
-                row.profile_revision,
-                profile_input_revision(CandidateProfile.model_validate(row.profile)),
-                profile.professional_facts.revision,
-            )
-            if row
-            else None
-        )
+        return RegisteredUser.from_row(row) if row else None
 
     async def save(self, user: RegisteredUser, *, confirmed_fields=()) -> RegisteredUser:
         row = await self.session.get(TelegramUserModel, user.user_id, populate_existing=True)
@@ -135,6 +139,9 @@ class UserRepository:
             )
         if facts.subject != "candidate" or facts.owner_id != user.user_id:
             raise ValueError("Profile facts belong to another owner")
+        profile.professional_facts = facts
+        sync_profile_experience(profile, confirmed="experience" in confirmed_fields)
+        revision = profile_input_revision(profile)
         statement = (
             update(TelegramUserModel)
             .where(
@@ -179,19 +186,9 @@ class UserRepository:
         rows = await self.session.scalars(statement.execution_options(populate_existing=True))
         profiles = []
         for row in rows:
-            user_id, state = row.user_id, row.form_state
-            if state and state.startswith("setup:"):
+            if row.form_state and row.form_state.startswith("setup:"):
                 continue
-            profile = read_profile(row)
-            if profile.skills:
-                profiles.append(
-                    RegisteredUser(
-                        user_id,
-                        profile,
-                        state,
-                        row.profile_revision,
-                        profile_input_revision(profile),
-                        profile.professional_facts.revision,
-                    )
-                )
+            user = RegisteredUser.from_row(row)
+            if user.profile.skills:
+                profiles.append(user)
         return profiles

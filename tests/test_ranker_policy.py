@@ -6,7 +6,7 @@ import pytest
 import test_ranker_training as training_fixtures
 from test_serving_ranker import artifact, save, seed
 
-from bot.cards import render_card
+from bot.cards import render_match_details
 from domain import CandidateProfile
 from domain.retrieval import RetrievalParameters
 from domain.serving_ranker import ModelAdmission, RankerPolicy
@@ -124,7 +124,7 @@ def test_model_can_show_real_baseline_under_50_and_shadow_cannot(tmp_path, vacan
             context = shown_context(vacancy, profile, match, 1)
             assert context["admission"]["threshold"] == 1
             assert context["admission"]["policy"] == "rank-evidence-admission-v1"
-            assert "Индекс релевантности" in render_card(vacancy, match)
+            assert "Индекс релевантности" in render_match_details(match)
 
 
 def test_unknown_and_mandatory_contradiction_cannot_be_bought_by_high_score(vacancy, profile):

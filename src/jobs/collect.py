@@ -22,6 +22,7 @@ async def collect_vacancies(
     *,
     analyzer: OllamaVacancyAnalyzer | None = None,
     analysis_pipeline: str | None = None,
+    new_only: bool = False,
 ) -> int:
     started = time.monotonic()
     vacancies = await source.search(query)
@@ -32,7 +33,9 @@ async def collect_vacancies(
     skipped = 0
     for vacancy in vacancies:
         if not is_fresh(vacancy, now=now, days=query.period):
-            if vacancy.archived or vacancy.valid_until is not None and vacancy.valid_until <= now:
+            if not new_only and (
+                vacancy.archived or vacancy.valid_until is not None and vacancy.valid_until <= now
+            ):
                 async with sessions.begin() as session:
                     repository = VacancyRepository(session)
                     if await repository.get_by_source(vacancy.source, vacancy.source_id):
@@ -60,7 +63,10 @@ async def collect_vacancies(
         # Commit source and task together before any model request.
         async with sessions.begin() as session:
             repository = VacancyRepository(session)
-            vacancy_id = await repository.save(vacancy)
+            vacancy_id = await repository.save(vacancy, insert_only=new_only)
+            if vacancy_id is None:
+                skipped += 1
+                continue
             if recipe is None and analyzer is not None:
                 recipe = pipeline_hash("vacancy_analysis", analyzer.model)
             if recipe is not None:

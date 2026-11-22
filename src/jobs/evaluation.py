@@ -17,11 +17,10 @@ from jobs.admission import admit
 from jobs.evaluation_data import digest, load_data, write_new
 from jobs.evaluation_labels import resolve_labels
 from jobs.rank import rank_recent
-from jobs.resumes import profile_hash, proposed_profile
+from jobs.resumes import prepared_profile, profile_hash
 from jobs.retrieval_evaluation import MemoryCandidateSource
 from nlp.professional_facts import (
     candidate_facts,
-    confirm_resume_facts,
     resume_facts,
     vacancy_facts,
 )
@@ -59,9 +58,7 @@ def extract_facts(row, *, owner_id=None, reference_time=None):
             profile_hash=profile_hash(initial),
             professional_facts=professional,
         )
-        profile = proposed_profile(initial, draft)
-        profile.professional_facts = confirm_resume_facts(profile, draft, owner_id)
-        return facts, profile
+        return facts, prepared_profile(initial, draft, owner_id)
     vacancy = row.vacancy
     return fact_atoms(vacancy.professional_facts or vacancy_facts(vacancy)), None
 

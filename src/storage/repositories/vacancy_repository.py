@@ -1,17 +1,16 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import case, literal_column, or_, select, update
+from sqlalchemy import case, func, literal_column, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domain import Vacancy
+from domain import Vacancy, vacancy_duplicates
 from domain.contracts import facts_contract
 from domain.professional import ProfessionalFacts
 from domain.retrieval import RETRIEVAL_VERSION
 from domain.vacancy_analysis import VacancyAnalysis, VacancyCategory, analysis_input_hash
-from domain.vacancy_duplicates import vacancy_duplicate_key
 from nlp.professional_facts import (
     vacancy_fact_input_revision,
     vacancy_facts,
@@ -38,6 +37,7 @@ def _to_domain(row: VacancyModel) -> Vacancy:
     if values["valid_until"] is not None:
         values["valid_until"] = _aware(values["valid_until"])
     vacancy = Vacancy.model_validate(values)
+    vacancy._catalog_group = row.duplicate_key
     if vacancy.professional_facts is None or not vacancy_facts_compatible(
         vacancy.professional_facts, vacancy
     ):
@@ -57,8 +57,13 @@ class VacancyRepository:
         self.insert = pg_insert if dialect == "postgresql" else sqlite_insert
 
     async def save(
-        self, vacancy: Vacancy, *, seen_in_search: bool = True, verified: bool = True
-    ) -> UUID:
+        self,
+        vacancy: Vacancy,
+        *,
+        seen_in_search: bool = True,
+        verified: bool = True,
+        insert_only: bool = False,
+    ) -> UUID | None:
         values = vacancy.model_dump(mode="python", exclude={"professional_facts"})
         values["url"] = str(vacancy.url)
         values["company_url"] = str(vacancy.company_url) if vacancy.company_url else None
@@ -104,7 +109,14 @@ class VacancyRepository:
         significant["text_revision"] = values["content_revision"]
         values["catalog_revision"] = payload_hash(significant)
         values["raw_payload_hash"] = payload_hash(vacancy.raw_payload)
-        values["duplicate_key"] = vacancy_duplicate_key(vacancy)
+        values["duplicate_key"] = vacancy_duplicates.duplicate_key_v1(values)
+        cross_key = values["cross_source_key"] = vacancy_duplicates.cross_source_key(values)
+        if cross_key and self.insert is pg_insert:
+            # Two different source IDs can be inserted concurrently, before either row exists.
+            await self.session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"),
+                {"key": int.from_bytes(bytes.fromhex(cross_key[:16]), signed=True)},
+            )
         previous = (
             await self.session.execute(
                 select(
@@ -116,6 +128,8 @@ class VacancyRepository:
                     VacancyModel.search_revision,
                     VacancyModel.content_revision,
                     VacancyModel.revision_number,
+                    VacancyModel.cross_source_key,
+                    VacancyModel.duplicate_key,
                 )
                 .where(
                     VacancyModel.source == vacancy.source,
@@ -124,6 +138,30 @@ class VacancyRepository:
                 .with_for_update()
             )
         ).one_or_none()
+        if insert_only and previous:
+            return None
+        if cross_key:
+            peers = list(
+                await self.session.scalars(
+                    select(VacancyModel.duplicate_key)
+                    .distinct()
+                    .where(
+                        VacancyModel.cross_source_key == cross_key,
+                        VacancyModel.source != vacancy.source,
+                        VacancyModel.duplicate_key.is_not(None),
+                    )
+                    .limit(2)
+                )
+            )
+            if len(peers) == 1:
+                values["duplicate_key"] = peers[0]
+            elif (
+                not peers
+                and previous
+                and previous.cross_source_key == cross_key
+                and previous.catalog_revision == values["catalog_revision"]
+            ):
+                values["duplicate_key"] = previous.duplicate_key
         if (
             previous
             and previous.catalog_revision == values["catalog_revision"]
@@ -151,6 +189,8 @@ class VacancyRepository:
                 metadata = {}
             if seen_in_search:
                 metadata["last_seen_at"] = observed
+            metadata["duplicate_key"] = values["duplicate_key"]
+            metadata["cross_source_key"] = cross_key
             metadata["closed_at"] = case(
                 (VacancyModel.archived.is_(True), VacancyModel.closed_at), else_=None
             )
@@ -212,13 +252,18 @@ class VacancyRepository:
                 ),
                 else_=None,
             )
-        statement = statement.on_conflict_do_update(
-            index_elements=["source", "source_id"], set_=updates
-        )
+        if insert_only:
+            statement = statement.on_conflict_do_nothing(index_elements=["source", "source_id"])
+        else:
+            statement = statement.on_conflict_do_update(
+                index_elements=["source", "source_id"], set_=updates
+            )
         columns = [VacancyModel.id, VacancyModel.revision_number]
         if self.insert is pg_insert:
             columns.append(literal_column("xmax = 0").label("inserted"))
-        saved_row = (await self.session.execute(statement.returning(*columns))).one()
+        saved_row = (await self.session.execute(statement.returning(*columns))).one_or_none()
+        if saved_row is None:
+            return None
         vacancy_id = saved_row.id
         snapshot = self.insert(VacancySnapshot).values(
             id=uuid4(),
@@ -362,6 +407,7 @@ class VacancyRepository:
             self.session,
             "catalog.saved",
             vacancy_id=key,
+            source_kind=vacancy.source,
             source_vacancy_id=vacancy.source_id,
             change_kind=change,
             snapshot_state=snapshot,
@@ -376,6 +422,33 @@ class VacancyRepository:
     async def get_by_id(self, vacancy_id: UUID) -> Vacancy | None:
         row = await self.session.get(VacancyModel, vacancy_id, populate_existing=True)
         return _to_domain(row) if row is not None else None
+
+    async def attach_source_links(self, vacancies: list[Vacancy]) -> None:
+        groups = {v._catalog_group for v in vacancies if v._catalog_group}
+        if not groups:
+            return
+        model = VacancyModel
+        now = datetime.now(UTC)
+        rows = await self.session.execute(
+            select(model.duplicate_key, model.source, func.min(model.url))
+            .where(
+                model.duplicate_key.in_(groups),
+                model.archived.is_(False),
+                model.availability == "active",
+                model.published_at <= now,
+                or_(model.valid_until.is_(None), model.valid_until > now),
+            )
+            .group_by(model.duplicate_key, model.source)
+        )
+        links = {}
+        for group, source, url in rows:
+            links.setdefault(group, {})[source] = url
+        for vacancy in vacancies:
+            vacancy._source_links = {
+                s: u
+                for s, u in links.get(vacancy._catalog_group, {}).items()
+                if s != vacancy.source
+            }
 
     async def get_by_source(self, source: str, source_id: str) -> Vacancy | None:
         row = await self.session.scalar(

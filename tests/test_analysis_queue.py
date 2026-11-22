@@ -544,7 +544,7 @@ async def test_pg_workers_use_real_global_slot_and_fenced_claims(
 
 async def test_dispatcher_shows_queue_then_preview_and_commands_stay_responsive(queue_sessions):
     from aiogram import Bot
-    from aiogram.methods import SendMessage
+    from aiogram.methods import EditMessageText, SendMessage
     from test_bot import TEST_TOKEN, RecordingSession, command_update
     from test_users import callback_update
 
@@ -567,9 +567,11 @@ async def test_dispatcher_shows_queue_then_preview_and_commands_stay_responsive(
         await dispatcher.feed_update(
             bot, command_update("/resume Свободный текст о кандидате, который программирует")
         )
-        assert any(
-            "ожидает обработки" in m.text for m in transport.requests if isinstance(m, SendMessage)
-        )
+        accepted = next(m for m in transport.requests if isinstance(m, SendMessage))
+        assert "Напишу сюда" in accepted.text and "Перед вами" not in accepted.text
+        assert [b.text for row in accepted.reply_markup.inline_keyboard for b in row] == [
+            "Отменить загрузку"
+        ]
         task = asyncio.create_task(
             AnalysisWorker(queue_sessions, resume_analyzer=analyzer).run_once()
         )
@@ -578,20 +580,113 @@ async def test_dispatcher_shows_queue_then_preview_and_commands_stay_responsive(
             await dispatcher.feed_update(bot, command_update("/profile"))
             await dispatcher.feed_update(bot, callback_update("resume:status"))
         assert any(
-            "обрабатывается" in m.text for m in transport.requests if isinstance(m, SendMessage)
+            "Обрабатываю" in m.text for m in transport.requests if isinstance(m, EditMessageText)
         )
         analyzer.release.set()
         assert await task == "resume"
-        await dispatcher.feed_update(bot, callback_update("resume:status"))
+        from bot.resume_notices import deliver_next_notice
+
+        assert await deliver_next_notice(bot, queue_sessions)
+        notice = transport.requests[-1]
+        assert isinstance(notice, SendMessage) and notice.chat_id == 42
+        assert "Резюме обработано" in notice.text
+        assert not await deliver_next_notice(bot, queue_sessions)
+        open_result = notice.reply_markup.inline_keyboard[0][0].callback_data
+        await dispatcher.feed_update(bot, callback_update(open_result))
         assert any(
-            "ещё не применён" in m.text for m in transport.requests if isinstance(m, SendMessage)
+            "ещё не применён" in m.text
+            for m in transport.requests
+            if isinstance(m, EditMessageText)
         )
         assert not (await service.get(42)).profile.skills
+        await service.resumes.cancel(42)
+        await dispatcher.feed_update(bot, callback_update(open_result))
+        assert transport.requests[-1].show_alert
     finally:
         analyzer.release.set()
         if task:
             await asyncio.gather(task, return_exceptions=True)
         await bot.session.close()
+
+
+@pytest.fixture(
+    params=["queue_sessions", pytest.param("postgres_sessions", marks=pytest.mark.postgres)]
+)
+def notice_sessions(request):
+    return request.getfixturevalue(request.param)
+
+
+async def test_resume_notice_retry_and_replacement_only_deliver_current_owner_job(notice_sessions):
+    from aiogram.exceptions import TelegramRetryAfter
+    from aiogram.methods import SendMessage
+
+    from bot.resume_notices import deliver_next_notice
+
+    sessions = notice_sessions
+    users = UserService(sessions, queued_resumes=True)
+    await users.register(42)
+    await users.editor.open(42)
+    await users.resumes.submit(42, "Навыки: Python\nОпыт работы: два года")
+    assert await users.editor.get(42) is None
+    bot = SimpleNamespace(send_message=AsyncMock())
+    assert not await deliver_next_notice(bot, sessions)
+    await users.resumes.submit(42, "Навыки: SQL\nОпыт работы: три года")
+    async with sessions.begin() as session:
+        resume = await session.get(ResumeModel, 42)
+        job = await session.get(BackgroundJob, resume.processing_job_id)
+        job.state = "failed"
+    bot.send_message.side_effect = TelegramRetryAfter(
+        method=SendMessage(chat_id=42, text=""), message="retry", retry_after=10
+    )
+    assert await deliver_next_notice(bot, sessions)
+    assert not await deliver_next_notice(bot, sessions)
+    bot.send_message.side_effect = None
+    async with sessions.begin() as session:
+        (await session.get(ResumeModel, 42)).notice_due_at = datetime.now(UTC)
+    delivered = await asyncio.gather(
+        deliver_next_notice(bot, sessions), deliver_next_notice(bot, sessions)
+    )
+    assert delivered.count(True) == 1 and bot.send_message.await_count == 2
+    assert bot.send_message.await_args.args[0] == 42
+    assert "Не удалось обработать" in bot.send_message.await_args.args[1]
+    assert not await deliver_next_notice(bot, sessions)
+    await users.resumes.submit(42, "Навыки: Git\nОпыт работы: четыре года")
+    await users.resumes.cancel(42)
+    assert not await deliver_next_notice(bot, sessions)
+
+
+@pytest.mark.postgres
+async def test_notice_migration_registers_only_outstanding_imports(postgres_sessions):
+    import importlib.util
+    from pathlib import Path
+
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    users = UserService(postgres_sessions, queued_resumes=True)
+    for owner, state in enumerate(("pending", "running", "succeeded"), start=1):
+        await users.register(owner)
+        await users.resumes.submit(owner, "Навыки: Python, PostgreSQL")
+        async with postgres_sessions.begin() as session:
+            resume = await session.get(ResumeModel, owner)
+            job = await session.get(BackgroundJob, resume.processing_job_id)
+            job.state = state
+    path = Path(__file__).parents[1] / "alembic/versions/0024_resume_notices.py"
+    spec = importlib.util.spec_from_file_location("notice_migration", path)
+    migration = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(migration)
+
+    def upgrade_populated(connection):
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.downgrade()
+            migration.upgrade()
+
+    async with postgres_sessions.kw["bind"].begin() as connection:
+        await connection.run_sync(upgrade_populated)
+    async with postgres_sessions() as session:
+        rows = list(await session.scalars(select(ResumeModel).order_by(ResumeModel.user_id)))
+        assert [row.notice_due_at is not None for row in rows] == [True, True, False]
+        assert all(row.processing_job_id for row in rows)
 
 
 async def test_graceful_shutdown_finishes_request_before_clients_close(

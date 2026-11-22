@@ -239,7 +239,7 @@ async def test_recheck_uncertainty_is_not_closed(log_sessions, current, capsys, 
     source = SimpleNamespace(get_vacancy=AsyncMock(side_effect=error))
     with logging_session(console_format="json"):
         try:
-            await check_catalog(source, log_sessions, now=datetime.now(UTC) + timedelta(days=2))
+            await check_catalog(source, log_sessions, now=current.collected_at + timedelta(days=3))
         except CollectionStopped:
             pass
     rows = logs(capsys)

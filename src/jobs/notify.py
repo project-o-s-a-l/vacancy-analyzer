@@ -12,9 +12,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domain import CandidateProfile, Vacancy
 from domain.delivery import DeliveryFailure, RecommendationSender
+from domain.exchange_rates import use_rates
 from domain.matching import MatchResult
 from domain.serving_ranker import RankerPolicy
 from domain.vacancy_duplicates import vacancy_duplicate_key
+from jobs.catalog_freshness import available_for_delivery
+from jobs.exchange_rates import rates_for
 from jobs.feedback_context import delivery_context
 from jobs.rank import rank_recent
 from jobs.recommendations import recommend
@@ -42,6 +45,18 @@ class DeliveryReport:
     empty_message: str | None = None
     selection_ms: float = 0
     delivery_ms: float = 0
+    pending_message_id: int | None = None
+
+
+class _ReviewPending(Exception):
+    def __init__(self, message_id: int | None):
+        self.message_id = message_id
+        super().__init__(
+            "Оцените эту вакансию кнопкой «👍 Интересно» или «👎 Не подходит», "
+            "чтобы получить следующую."
+            if message_id is not None
+            else "Карточка уже отправляется. Дождитесь её в чате."
+        )
 
 
 class NotificationService:
@@ -52,6 +67,7 @@ class NotificationService:
         *,
         chat_id: int,
         top: int = 5,
+        wait_for_rating: bool = False,
         min_score: float = 50,
         fresh_days: int | None = None,
         ranker_policy: RankerPolicy | None = None,
@@ -64,7 +80,8 @@ class NotificationService:
         self.sessions = sessions
         self.profile = profile
         self.chat_id = chat_id
-        self.top = top
+        self.wait_for_rating = wait_for_rating
+        self.top = 1 if wait_for_rating else top
         self.min_score = min_score
         if fresh_days is not None and fresh_days < 1:
             raise ValueError("Invalid freshness window")
@@ -76,6 +93,7 @@ class NotificationService:
 
     async def _profile_current(self, session, user):
         from nlp.professional_facts import profile_input_revision
+        from nlp.profile_experience import sync_profile_experience
         from scoring.serving_features import profile_revision
         from storage.repositories.selection_repository import SelectionRepository
         from storage.repositories.user_repository import read_profile
@@ -89,12 +107,13 @@ class NotificationService:
             != self.expected_owner_epoch
         ):
             return False
-        return user is None or (
-            profile_input_revision(read_profile(user)) == profile_input_revision(self.profile)
-            and (
-                self.profile.professional_facts is None
-                or profile_revision(read_profile(user)) == profile_revision(self.profile)
-            )
+        if user is None:
+            return not self.wait_for_rating
+        # Recommendations use the same derived experience as the profile editor.
+        current = sync_profile_experience(read_profile(user))
+        return profile_input_revision(current) == profile_input_revision(self.profile) and (
+            self.profile.professional_facts is None
+            or profile_revision(current) == profile_revision(self.profile)
         )
 
     @observed("matching")
@@ -104,7 +123,8 @@ class NotificationService:
 
     async def _selection(self) -> tuple[list[tuple[Vacancy, MatchResult]], str | None]:
         try:
-            return await self._select()
+            with use_rates(await rates_for(self.profile)):
+                return await self._select()
         except RecommendationBusy as exc:
             return [], str(exc)
 
@@ -177,21 +197,20 @@ class NotificationService:
             recommendation.displayed,
         )
         post_excluded = len(ranking) - len(unseen)
-        from jobs.catalog_freshness import require_fresh
-
         async with self.sessions.begin() as session:
             user = await session.get(TelegramUserModel, self.chat_id, populate_existing=True)
             if not await self._profile_current(session, user):
                 return [], "Профиль изменился во время подбора. Запустите /latest ещё раз."
-            fresh = await require_fresh(session, [v.id for v, _ in displayed])
-        deferred = any(v.id not in fresh for v, _ in displayed)
-        displayed = [(v, m) for v, m in displayed if v.id in fresh]
+            available = await available_for_delivery(session, [v.id for v, _ in displayed])
+            await VacancyRepository(session).attach_source_links([v for v, _ in displayed])
+        changed = any(v.id not in available for v, _ in displayed)
+        displayed = [(v, m) for v, m in displayed if v.id in available]
         incomplete = diagnostics.get("pool_budget_exhausted") or diagnostics.get(
             "projection_budget_exhausted"
         )
         code = (
-            "freshness_deferred"
-            if deferred
+            "candidate_changed"
+            if changed
             else "retrieval_budget_exhausted"
             if incomplete
             else None
@@ -230,11 +249,8 @@ class NotificationService:
         )
         if displayed:
             return displayed, None
-        if deferred:
-            return [], (
-                "Подходящие вакансии требуют проверки актуальности. Проверка поставлена "
-                "в очередь; попробуйте позже. Доступность площадки может задержать обновление."
-            )
+        if changed:
+            return [], "За время подбора вакансии стали недоступны. Запустите поиск ещё раз."
         if incomplete:
             return [], (
                 "Поиск пока не завершён: часть карточек требует обновления или дополнительных "
@@ -331,8 +347,23 @@ class NotificationService:
             )
             raise
 
+    async def _check_pending_review(self, session: AsyncSession) -> None:
+        pending = await NotificationRepository(session).pending_review(self.chat_id)
+        if pending is not None:
+            raise _ReviewPending(pending.message_id if pending.status == "sent" else None)
+
     @observed("delivery")
     async def deliver(self, sender: RecommendationSender) -> DeliveryReport:
+        try:
+            if self.wait_for_rating:
+                async with self.sessions.begin() as session:
+                    await self._check_pending_review(session)
+            with use_rates(await rates_for(self.profile)):
+                return await self._deliver(sender)
+        except _ReviewPending as exc:
+            return DeliveryReport(empty_message=str(exc), pending_message_id=exc.message_id)
+
+    async def _deliver(self, sender: RecommendationSender) -> DeliveryReport:
         started = time.monotonic()
         selected, empty_message = await self._selection()
         delivery_started = time.monotonic()
@@ -382,16 +413,17 @@ class NotificationService:
             if not await self._profile_current(session, user):
                 skip("profile_changed")
                 return "stop"
+            if self.wait_for_rating:
+                # Recheck under the owner lock: a second sender may have won during ranking.
+                await self._check_pending_review(session)
             rows = await CandidateRepository(session).load_selected([vacancy.id])
             if not rows:
                 skip("candidate_changed")
                 return "skipped"
             current = CandidateRepository.vacancy(rows[0])
             now = datetime.now(UTC)
-            from jobs.catalog_freshness import require_fresh
-
-            if current.id not in await require_fresh(session, [current.id], now=now):
-                skip("freshness_deferred")
+            if current.id not in await available_for_delivery(session, [current.id], now=now):
+                skip("candidate_changed")
                 return "skipped"
             from domain.vacancy_analysis import is_fresh
 
@@ -419,6 +451,7 @@ class NotificationService:
                 skip("feedback_blocked")
                 return "skipped"
             vacancy = current
+            await VacancyRepository(session).attach_source_links([vacancy])
             if match.retrieval:
                 match.retrieval.source_payload_hash = rows[0]["source_payload_hash"]
             ranking_context = await compute(shown_context, vacancy, self.profile, match, rank)
@@ -434,6 +467,7 @@ class NotificationService:
             token = await NotificationRepository(session).claim(
                 self.chat_id,
                 vacancy.id,
+                awaiting_rating=self.wait_for_rating,
                 exposure_context={
                     "version": "recommendation-exposure-v3",
                     "profile_write_revision": self.expected_profile_revision,

@@ -9,10 +9,11 @@ import httpx
 import requests
 from sqlalchemy import or_, select, update
 
+from collectors.base import SearchCard
 from collectors.errors import CollectionStopped, VacancyParseError
 from jobs.analysis_queue import schedule_collected
-from jobs.catalog_freshness import check_interval
 from jobs.collection_budget import BudgetDeferred
+from jobs.settings import DEFAULT_CHECK_INTERVAL
 from observability import emit_event, operation
 from observability.transactions import after_commit
 from storage.models import VacancyModel
@@ -22,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 async def check_catalog(
-    source, sessions, *, limit=2, interval=86400, analysis_pipeline=None, now=None
+    source, sessions, *, limit=2, interval=DEFAULT_CHECK_INTERVAL, analysis_pipeline=None, now=None
 ):
     with operation("catalog_check"):
         started = time.monotonic()
@@ -55,6 +56,7 @@ async def check_catalog(
 async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline, now):
     if not 1 <= limit <= 100 or interval < 3600:
         raise ValueError("Недопустимый бюджет проверки каталога")
+    source_name = getattr(source, "source_name", "hh")
     now = now or datetime.now(UTC)
     started = time.monotonic()
     emit_event(logger, "catalog.check_started", total=limit)
@@ -62,6 +64,7 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
         expired = (
             select(VacancyModel.id)
             .where(
+                VacancyModel.source == source_name,
                 VacancyModel.availability.in_(["active", "unknown"]),
                 VacancyModel.valid_until <= now,
             )
@@ -83,26 +86,24 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
             (
                 await session.execute(
                     select(
-                        VacancyModel.id, VacancyModel.source_id, VacancyModel.last_check_attempt_at
+                        VacancyModel.id,
+                        VacancyModel.source_id,
+                        VacancyModel.url,
+                        VacancyModel.last_check_attempt_at,
                     )
                     .where(
-                        VacancyModel.source == "hh",
+                        VacancyModel.source == source_name,
                         VacancyModel.availability.in_(["active", "unknown"]),
                         or_(VacancyModel.valid_until.is_(None), VacancyModel.valid_until > now),
                         or_(
-                            VacancyModel.check_requested_at.is_not(None),
                             VacancyModel.last_checked_at.is_(None),
                             VacancyModel.last_checked_at <= now - timedelta(seconds=interval),
-                            VacancyModel.next_check_at <= now,
+                            VacancyModel.check_error.is_not(None),
                         ),
                         or_(
+                            VacancyModel.check_error.is_(None),
                             VacancyModel.next_check_at.is_(None),
                             VacancyModel.next_check_at <= now,
-                            # Priority checks may accelerate a healthy card, never a failed retry.
-                            (
-                                VacancyModel.check_requested_at.is_not(None)
-                                & VacancyModel.check_error.is_(None)
-                            ),
                         ),
                     )
                     .order_by(
@@ -116,12 +117,17 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
             ).all()
         )
     checked = 0
-    for key, source_id, previous_attempt in due:
+    for key, source_id, detail_url, previous_attempt in due:
         state, error, stop = None, None, None
         status = None
         try:
-            vacancy = await source.get_vacancy(source_id)
-            if vacancy.source != "hh" or vacancy.source_id != source_id:
+            if hasattr(source, "get_observed"):
+                vacancy = await source.get_observed(
+                    SearchCard(source_id=source_id, detail_url=detail_url)
+                )
+            else:
+                vacancy = await source.get_vacancy(source_id)
+            if vacancy.source != source_name or vacancy.source_id != source_id:
                 raise VacancyParseError("Источник вернул другую вакансию")
         except BudgetDeferred:
             break
@@ -130,8 +136,8 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
             state, error = ("closed", None) if status in {404, 410} else ("unknown", "http_error")
             if status in {403, 429}:
                 stop = CollectionStopped(
-                    "HH ограничил проверку актуальности",
-                    code=f"hh_http_{status}",
+                    "Источник ограничил проверку актуальности",
+                    code=f"hh_http_{status}" if source_name == "hh" else "collection_stopped",
                     status_code=status,
                 )
         except CollectionStopped as exc:
@@ -178,7 +184,7 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
                 vacancy = vacancy.model_copy(update={"collected_at": now})
                 await VacancyRepository(session).save(vacancy, seen_in_search=False)
                 await session.refresh(row)
-                row.next_check_at = now + timedelta(seconds=check_interval(row, now, interval))
+                row.next_check_at = now + timedelta(seconds=interval)
                 if (
                     analysis_pipeline
                     and not vacancy.archived

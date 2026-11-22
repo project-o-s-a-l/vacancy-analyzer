@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domain import CandidateProfile, Skill
@@ -18,7 +18,13 @@ from nlp.extraction import skill_key
 from nlp.inference_metrics import stage
 from nlp.ollama import OllamaUnavailable
 from nlp.ollama_resume import OllamaResumeAnalyzer, ResumeAnalysisError
-from nlp.professional_facts import confirm_resume_facts, profile_payload, resume_facts
+from nlp.professional_facts import (
+    confirm_resume_facts,
+    profile_input_revision,
+    profile_payload,
+    resume_facts,
+)
+from nlp.profile_experience import sync_profile_experience
 from nlp.resume_document import extract_document, merge_extraction
 from observability import emit_event
 from observability.actions import observed
@@ -145,11 +151,48 @@ def prepared_profile(profile, draft, owner_id):
     result = proposed_profile(profile, draft)
     if draft.reviewed_profile is None:
         result.professional_facts = confirm_resume_facts(result, draft, owner_id)
-    return result
+        total = next(
+            (f for f in result.professional_facts.facts if f.id == "experience_total"), None
+        )
+        if total is not None:
+            result.experience_years = total.assertion.value
+            result.professional_facts.input_sha256 = result.professional_facts.source_revision = (
+                profile_input_revision(result)
+            )
+    return sync_profile_experience(result, confirmed=True)
 
 
 class StaleResumeWork(ValueError):
     pass
+
+
+class UnsavedProfileEdit(ValueError):
+    def __init__(self, edit, resume_token):
+        self.key = hashlib.sha256(f"{edit.token}/{resume_token}".encode()).hexdigest()[:16]
+        self.target = edit.payload["target"]
+        super().__init__("Есть несохранённые изменения. Выберите, что с ними сделать.")
+
+
+async def release_resume_editor(session, edit, resume_token, discard=None):
+    """An unused menu never blocks an import. Discard real edits only for this exact pair."""
+    if edit is not None and edit.payload.get("dirty"):
+        pending = UnsavedProfileEdit(edit, resume_token)
+        if discard is None:
+            raise pending
+        if discard != pending.key:
+            raise ValueError("Правки уже изменились. Откройте актуальное резюме.")
+    elif discard is not None:
+        raise ValueError("Это решение уже неактуально. Откройте текущее резюме.")
+    if edit is not None:
+        await session.delete(edit)
+        await session.flush()
+
+
+async def prepare_editor_for_upload(session, user_id):
+    # A new upload replaces the old preview. Keep only genuine, independent profile edits.
+    edit = await session.get(ProfileEditModel, user_id)
+    if edit and (edit.payload["target"] == "resume" or not edit.payload.get("dirty")):
+        await session.delete(edit)
 
 
 class ResumeService:
@@ -178,6 +221,7 @@ class ResumeService:
             if user is None:
                 raise ValueError("Сначала зарегистрируйтесь командой /start.")
             expected = profile_hash(user.profile)
+            await prepare_editor_for_upload(session, user_id)
             row = await session.get(ResumeModel, user_id)
             if row is None:
                 row = ResumeModel(user_id=user_id)
@@ -198,6 +242,7 @@ class ResumeService:
                 },
             )
             row.processing_job_id = job.id
+            row.notice_due_at = datetime.now(UTC)
             row.draft = None
         return None
 
@@ -210,15 +255,6 @@ class ResumeService:
             if job is None or job.user_id != user_id:
                 return None
             now = datetime.now(UTC)
-            ahead = await session.scalar(
-                select(func.count())
-                .select_from(BackgroundJob)
-                .where(
-                    BackgroundJob.kind == "resume_analysis",
-                    BackgroundJob.state == "pending",
-                    BackgroundJob.created_at < job.created_at,
-                )
-            )
             from jobs.queue_policy import queue_settings
             from storage.models import InferenceGate
 
@@ -254,7 +290,6 @@ class ResumeService:
                 "state": job.state,
                 "attempts": job.attempts,
                 "error_code": job.error_code,
-                "resume_ahead": ahead,
                 "not_before": not_before.isoformat() if not_before > now else None,
                 "active_lease_deadline": gate.until.isoformat() if gate and gate.until else None,
                 "wait_reason": "runtime_recovery"
@@ -268,9 +303,13 @@ class ResumeService:
                 + 30,
             }
 
-    async def pending(self, user_id: int) -> ResumeDraft | None:
+    async def pending(self, user_id: int, *, job_id=None) -> ResumeDraft | None:
         async with self.sessions() as session:
             row = await session.get(ResumeModel, user_id)
+            if job_id and (
+                not row or not row.processing_job_id or row.processing_job_id.hex != job_id
+            ):
+                return None
             return (
                 ResumeDraft.model_validate(row.draft)
                 if row and row.draft and "extraction" in row.draft
@@ -300,12 +339,14 @@ class ResumeService:
                 emit_event(logger, "resume.rejected", result="rejected", code="stale_resume")
                 raise StaleResumeWork("Профиль изменился; загрузите резюме ещё раз.")
             if not _job:
+                await prepare_editor_for_upload(session, user_id)
                 pending = await session.get(ResumeModel, user_id)
                 if pending is None:
                     pending = ResumeModel(user_id=user_id)
                     session.add(pending)
                 await JobRepository(session).cancel_user(user_id)
                 pending.processing_job_id = None
+                pending.notice_due_at = None
                 pending.draft = {"preparing_token": generation}
         reference_time = (
             datetime.fromisoformat(_job.payload["reference_time"])
@@ -507,14 +548,12 @@ class ResumeService:
                 return draft
 
     @observed("resume")
-    async def confirm(self, user_id: int, token: str) -> RegisteredUser:
+    async def confirm(self, user_id: int, token: str, *, discard=None) -> RegisteredUser:
         async with self.sessions.begin() as session:
             repository = UserRepository(session)
             user = await repository.get(user_id, lock=True)
             row = await session.get(ResumeModel, user_id)
             draft = self._draft(row, token)
-            if await session.get(ProfileEditModel, user_id) is not None:
-                raise ValueError("Завершите или отмените открытую правку через /profile.")
             if draft.version not in {RESUME_VERSION, RESUME_VERSION + "-ollama"}:
                 raise ValueError(
                     "Обработчик резюме обновлён; загрузите резюме заново для проверки."
@@ -537,6 +576,9 @@ class ResumeService:
                     "Профиль изменился после загрузки. Отправьте резюме ещё раз "
                     "и проверьте новый результат."
                 )
+            await release_resume_editor(
+                session, await session.get(ProfileEditModel, user_id), token, discard
+            )
             profile = prepared_profile(user.profile, draft, user_id)
             user = replace(
                 user, profile=profile, form_state=None if profile.skills else "edit:skills"
@@ -560,10 +602,13 @@ class ResumeService:
             row.confirmed_at = datetime.now(UTC)
             row.draft = None
             row.processing_job_id = None
+            row.notice_due_at = None
             after_commit(session, "resume.confirmed", result="success", job_id=job_id)
             return user
 
-    async def revise(self, user_id: int, token: str, field: str, value: str) -> ResumeDraft:
+    async def revise(
+        self, user_id: int, token: str, field: str, value: str, *, discard=None
+    ) -> ResumeDraft:
         """Edit a proposal, rotate its token, and keep the original input revision fence."""
         async with self.sessions.begin() as session:
             user = await UserRepository(session).get(user_id, lock=True)
@@ -571,8 +616,9 @@ class ResumeService:
             draft = self._draft(row, token)
             if user is None or user.revision != draft.profile_revision:
                 raise ValueError("Профиль изменился; загрузите резюме ещё раз.")
-            if await session.get(ProfileEditModel, user_id) is not None:
-                raise ValueError("Завершите или отмените открытую правку через /profile.")
+            await release_resume_editor(
+                session, await session.get(ProfileEditModel, user_id), token, discard
+            )
             if draft.reviewed_profile is not None:
                 raise ValueError("Продолжите правку кнопкой «Проверить и исправить» в /resume.")
             extracted = draft.extraction
@@ -614,6 +660,17 @@ class ResumeService:
                 else:
                     items, _ = extract_preferences("Обязательные условия: " + value)
                     items = [item for item in items if item.group == field]
+                    if field == "salary" and not items:
+                        from jobs.profiles import update_field
+
+                        previous = next(
+                            (p.values for p in extracted.preferences if p.group == "salary"),
+                            user.profile.preferences,
+                        )
+                        edited = update_field(CandidateProfile(preferences=previous), field, value)
+                        prefs = edited.preferences
+                        prefs.salary_required = prefs.salary_min is not None
+                        items = [ResumePreference(group=field, values=prefs)]
                     if len(items) != 1:
                         raise ValueError(
                             "Примеры: locations только Москва; "
@@ -631,7 +688,7 @@ class ResumeService:
                         raise ValueError
                 except ValueError:
                     raise ValueError(
-                        "Укажите стаж от 0 до 80 лет или ? для неизвестного."
+                        "Укажите стаж от 0 до 80 лет или ? для расчёта по датам."
                     ) from None
                 extracted.experience_years = years
                 extracted.stated_experience_years = [] if years is None else [years]
@@ -720,6 +777,7 @@ class ResumeService:
                 else:
                     row.draft = None
                     row.processing_job_id = None
+                    row.notice_due_at = None
             after_commit(
                 session, "resume.cancelled", result="cancelled" if row else "skipped", job_id=job_id
             )

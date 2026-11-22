@@ -19,6 +19,7 @@ class ResumeModel(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     draft: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     processing_job_id: Mapped[UUID | None] = mapped_column(Uuid)
+    notice_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class ResumeSourceModel(Base):

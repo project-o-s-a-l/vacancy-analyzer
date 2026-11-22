@@ -187,10 +187,10 @@ def test_score_and_card_explain_group_without_missing_unchosen_option(vacancy, n
     assert result.matched_skills == ["kotlin"]
     assert result.alternatives[0].satisfied
     card = render_card(sample, result)
-    assert "Один из (обязательно): java / kotlin — есть: kotlin" in card
+    assert "Нужен один из навыков: Java или Kotlin — в профиле есть Kotlin" in card
     assert not any("java" in value for value in result.warnings)
     missing = score_vacancy(sample, CandidateProfile(skills={"SQL": {}}), now=now)
-    assert "Один из (обязательно): java / kotlin — нет в профиле" in render_card(sample, missing)
+    assert "Нужен один из навыков: Java или Kotlin — стоит уточнить" in render_card(sample, missing)
     assert missing.components["skills"] == 0
     assert profile.model_dump() == original
 
@@ -231,7 +231,9 @@ async def test_telegram_choice_and_delivery_context(sessions, vacancy):
     await build_dispatcher(UserService(sessions, min_score=0)).feed_update(
         bot, command_update("/latest")
     )
-    assert any("есть: kotlin" in v.text for v in transport.requests if isinstance(v, SendMessage))
+    assert any(
+        "в профиле есть Kotlin" in v.text for v in transport.requests if isinstance(v, SendMessage)
+    )
     async with sessions() as session:
         context = (await session.get(NotificationModel, (42, sample.id))).exposure_context["match"]
         assert context["requirements_version"] == RULES_VERSION

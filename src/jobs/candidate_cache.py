@@ -12,6 +12,7 @@ from uuid import UUID
 
 from sqlalchemy import case, func, literal, select, update
 
+from domain.exchange_rates import current_rates
 from domain.retrieval import RetrievalEvidence
 from domain.vacancy_analysis import is_fresh
 from jobs.candidates import CandidateSelection, retrieve_candidates
@@ -55,6 +56,7 @@ def request_key(profile, options):
     return digest(
         dict(
             profile=profile_revision(profile),
+            salary_rates=current_rates().revision if profile.preferences.salary_min else None,
             contract=selection_contract(),
             parameters=options["parameters"].model_dump(),
             days=options["days"],

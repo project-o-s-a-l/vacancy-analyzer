@@ -55,6 +55,16 @@ def test_conflicting_preferences_require_review():
     assert any("Противоречивые" in note for note in result.notes)
 
 
+async def test_manual_salary_in_resume_draft_accepts_russian_amount(sessions):
+    users = UserService(sessions)
+    await users.register(42)
+    draft = await users.resumes.prepare(42, TEXT)
+    draft = await users.resumes.revise(42, draft.token, "salary", "от 100000 рублей")
+    assert (await users.get(42)).profile.preferences.salary_min is None
+    salary = next(p.values for p in draft.extraction.preferences if p.group == "salary")
+    assert (salary.salary_min, salary.currency, salary.salary_required) == (100000, "RUB", True)
+
+
 @pytest.mark.parametrize(
     "suffix,expected",
     [
@@ -84,7 +94,7 @@ async def test_import_review_confirmation_edit_and_owner_isolation(preference_st
     draft = await users.resumes.pending(42)
     assert draft
     assert (await users.get(42)).profile.preferences.locations == []
-    assert "60000" in render_resume(draft, (await users.get(42)).profile)
+    assert "60 000" in render_resume(draft, (await users.get(42)).profile)
     assert "зарплата от 60000" in render_resume_details(draft)
     await dispatcher.feed_update(bot, callback_update("resume:confirm:" + draft.token))
     profile = (await users.get(42)).profile
@@ -96,7 +106,7 @@ async def test_import_review_confirmation_edit_and_owner_isolation(preference_st
     draft = await users.resumes.prepare(
         42, TEXT.replace("Москва", "Казань").replace("60000", "90000")
     )
-    assert "60000" in render_resume(draft, profile)
+    assert "60 000" in render_resume(draft, profile)
     draft = await users.resumes.revise(42, draft.token, "locations", "только Казань")
     draft = await users.resumes.revise(42, draft.token, "salary", "?")
     await users.resumes.confirm(42, draft.token)

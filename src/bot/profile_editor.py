@@ -4,8 +4,14 @@ from aiogram import F, Router
 from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from bot.cards import _short, render_profile, split_message
-from bot.profile_form import PROMPTS
+from bot.cards import _short, calendar_notes, experience_label, render_profile, split_message
+from bot.keyboards import profile_keyboard
+from bot.profile_form import PROMPTS, salary_prompt
+from jobs.profile_editor import section_for
+from jobs.profiles import SALARY_CURRENCIES
+from nlp.extraction import canonical_skill
+from nlp.resume import looks_like_resume
+from scoring.comparison import candidate_skill_names
 
 LABELS = {
     "episode": "Опыт и проекты",
@@ -13,27 +19,21 @@ LABELS = {
     "role": "Прошлые роли",
     "task": "Задачи",
     "experience": "Общий стаж",
-    "positions": "Желаемые должности",
+    "positions": "Должности для поиска",
     "remote": "Формат работы",
     "salary": "Зарплата",
     "locations": "Города",
     "qualifications": "Документы и допуски",
     "constraints": "Обязательные условия",
-    "title": "Название записи / проекта",
-    "organization": "Организация",
     "started": "Начало",
     "ended": "Окончание",
     "ongoing": "Продолжается сейчас",
     "roles": "Занимаемые должности",
     "tasks": "Задачи",
-    "skills": "Навыки этого опыта",
+    "skills": "Навыки",
     "type": "Вид опыта",
-    "parent": "Связь с местом работы",
     "name": "Название",
-    "years": "Лет применения навыка",
-    "level": "Уровень навыка",
-    "last_used": "Последнее использование",
-    "presence": "Уточнить наличие",
+    "presence": "Изменить статус",
 }
 TYPES = {
     ("employment", "work"): "Коммерческая работа",
@@ -41,8 +41,8 @@ TYPES = {
     ("project", "academic"): "Учебный проект",
     ("project", "personal"): "Личный проект",
 }
-LEVELS = {"beginner": "Начальный", "intermediate": "Средний", "advanced": "Продвинутый"}
 PAGE = 6
+SKILLS_PER_PAGE = 12
 
 
 def claim_text(claim):
@@ -54,7 +54,7 @@ def claim_text(claim):
         return "неизвестно"
     if isinstance(claim.value, bool):
         return "да" if claim.value else "нет"
-    return LEVELS.get(str(claim.value), str(claim.value))
+    return str(claim.value)
 
 
 def records(profile, kind):
@@ -74,18 +74,25 @@ def records(profile, kind):
 
 def episode_name(episode, profile):
     indexed = {f.id: f for f in profile.professional_facts.facts}
-    roles = [indexed[i].name for i in episode.role_ids if i in indexed]
-    return episode.title.value or episode.organization.value or "; ".join(roles) or "Без названия"
+    work = next(
+        (indexed[i].name for i in (*episode.role_ids, *episode.task_ids) if i in indexed), None
+    )
+    label = episode.title.value or work or episode.organization.value
+    label = label or TYPES.get(
+        (episode.kind, episode.context), "Проект" if episode.kind == "project" else "Место работы"
+    )
+    return f"{label} · {str(episode.started.value)[:7]}" if episode.started.value else label
 
 
 def basic_value(profile, field):
     """Full saved values; summary truncation must not hide editable information."""
     from bot.cards import REMOTE_LABELS
-    from scoring.comparison import total_experience
 
     pref = profile.preferences
+    if field == "skills":
+        return ", ".join(sorted(candidate_skill_names(profile))) or "не указаны"
     if field == "experience":
-        return claim_text(total_experience(profile))
+        return experience_label(profile) or "неизвестно"
     if field in {"positions", "locations"}:
         return "; ".join(getattr(pref, field)) or "не указаны"
     if field == "remote":
@@ -113,6 +120,20 @@ def basic_value(profile, field):
     return "не указано"
 
 
+def can_edit_skills_as_text(profile):
+    # Long lists and explicit absences from existing profiles cannot round-trip
+    # through one comma-separated Telegram message. Keep individual editing there.
+    names = list(profile.skills)
+    return not (
+        len(names) > 50
+        or len(", ".join(names).encode("utf-16-le")) > 8000
+        or any(any(separator in name for separator in (",", ";", "\n")) for name in names)
+        or len({canonical_skill(name) for name in names}) != len(names)
+        or set(names) != set(candidate_skill_names(profile))
+        or any(f.assertion.value is not True for f in records(profile, "skill"))
+    )
+
+
 def screen(edit):
     """Return text and commands; callback indexes are resolved only for this token."""
     profile, view = edit.profile, edit.view
@@ -124,153 +145,150 @@ def screen(edit):
     def back(*path):
         button("← Назад", "view", *(path or ("home",)))
 
-    title = "Проверка импорта" if edit.target == "resume" else "Редактор профиля"
-    lines = [title + ". Изменения ещё не применены."]
+    lines = []
     if view[0] == "home":
+        title = "Проверка резюме" if edit.target == "resume" else "Редактирование профиля"
+        lines.append(render_profile(profile, title=title))
         if profile.professional_facts and profile.professional_facts.input_scope == "partial":
-            lines.append("Сохранённый разбор неполный; неизвестные сведения можно заполнить здесь.")
-        lines += [
-            render_profile(profile),
-            "Прошлая должность описывает ваш опыт; желаемая — направление поиска.",
-            "Сведения сохраняются с ваших слов, без внешней проверки.",
-        ]
-        for kind in ("episode", "skill", "role", "task"):
-            button(f"{LABELS[kind]} ({len(records(profile, kind))})", "view", "list", kind, 0)
-        button("Предпочтения, общий стаж и документы", "view", "preferences")
-    elif view[0] == "preferences":
-        for field in (
-            "experience",
-            "positions",
-            "remote",
-            "salary",
-            "locations",
-            "qualifications",
-            "constraints",
-        ):
-            lines.append(LABELS[field] + ": " + basic_value(profile, field))
+            lines.append("Часть резюме не удалось разобрать. Проверьте сведения.")
+        button("Навыки", "view", "list", "skill", 0)
+        button("Условия поиска", "view", "preferences")
+        button("Опыт работы", "view", "career")
+        button(LABELS["qualifications"], "view", "documents")
+    elif view[0] == "documents":
+        lines.extend([LABELS["qualifications"], basic_value(profile, "qualifications")])
+        button("Изменить список", "view", "input", "basic", "", "qualifications")
+        back()
+    elif view[0] in {"preferences", "career"}:
+        career = view[0] == "career"
+        lines.append("Опыт работы" if career else "Условия поиска")
+        fields = (
+            ("experience",)
+            if career
+            else ("positions", "locations", "remote", "salary", "constraints")
+        )
+        for field in fields:
+            lines.append(LABELS[field] + ": " + _short(basic_value(profile, field), 120))
             button(LABELS[field], "view", "input", "basic", "", field)
+        if career:
+            lines.extend(calendar_notes(profile))
+            for kind in ("episode", "role", "task"):
+                button(f"{LABELS[kind]} ({len(records(profile, kind))})", "view", "list", kind, 0)
         back()
     elif view[0] == "list":
         kind, page = view[1], int(view[2])
         items = records(profile, kind)
-        page = min(max(0, page), max(0, (len(items) - 1) // PAGE))
-        lines.append(f"{LABELS[kind]}: {len(items)}. Страница {page + 1}.")
-        for number, item in enumerate(items[page * PAGE : (page + 1) * PAGE], page * PAGE + 1):
+        size = SKILLS_PER_PAGE if kind == "skill" else PAGE
+        pages = max(1, (len(items) + size - 1) // size)
+        page = min(max(0, page), pages - 1)
+        lines.append(f"{LABELS[kind]} · {len(items)}")
+        if pages > 1:
+            lines.append(f"Страница {page + 1} из {pages}")
+        for number, item in enumerate(items[page * size : (page + 1) * size], page * size + 1):
             name = episode_name(item, profile) if kind == "episode" else item.name
-            lines.append(f"{number}. {name}")
-            button(f"{number}. {_short(name, 45)}", "view", "item", kind, item.id)
+            if kind == "skill":
+                button(_short(name, 40), "view", "item", kind, item.id)
+            else:
+                lines.append(f"{number}. {name}")
+                button(f"{number}. {_short(name, 45)}", "view", "item", kind, item.id)
         if page:
             button("← Предыдущие", "view", "list", kind, page - 1)
-        if (page + 1) * PAGE < len(items):
+        if page + 1 < pages:
             button("Следующие →", "view", "list", kind, page + 1)
         if kind == "episode":
             button("+ Место работы", "set", kind, "", "new", "employment")
             button("+ Проект", "set", kind, "", "new", "project")
         else:
             button("+ Добавить", "view", "input", kind, "", "new")
-        back()
+        if kind == "skill" and can_edit_skills_as_text(profile):
+            button("Изменить списком", "view", "input", "basic", "", "skills")
+        back("career" if kind != "skill" else "home")
     elif view[0] in {"item", "delete"}:
         kind, key = view[1:]
-        item = next((i for i in records(profile, kind) if i.id == key), None)
+        items = records(profile, kind)
+        index = next((n for n, item in enumerate(items) if item.id == key), None)
+        item = items[index] if index is not None else None
+        page = (index or 0) // (SKILLS_PER_PAGE if kind == "skill" else PAGE)
         if item is None:
             lines.append("Запись удалена.")
             back("list", kind, 0)
         elif view[0] == "delete":
-            lines.append(
-                "Удалить запись и её связи? Задачи и роли, связанные только с этой работой, "
-                "будут удалены. Навыки останутся в общем списке; вложенные проекты "
-                "останутся отдельными записями. История прежних ревизий сохраняется."
-            )
-            button("Да, удалить", "set", kind, key, "delete", "yes")
+            lines.append("Удалить эту запись из профиля?")
+            if kind == "episode":
+                lines.append("Роли и задачи, указанные только в этой записи, тоже будут удалены.")
+            button("Да, удалить", "set", kind, key, "delete", "yes", page)
             back("item", kind, key)
         else:
             if kind == "episode":
                 indexed = {f.id: f for f in profile.professional_facts.facts}
                 lines.append(TYPES.get((item.kind, item.context), "Вид опыта не уточнён"))
-                for field in ("title", "organization", "started", "ended", "ongoing"):
+                lines.append(episode_name(item, profile))
+                for field in ("started", "ended", "ongoing"):
                     lines.append(LABELS[field] + ": " + claim_text(getattr(item, field)))
                 for field, ids in (
                     ("roles", item.role_ids),
                     ("tasks", item.task_ids),
-                    ("skills", item.skill_ids),
                 ):
                     lines.append(
                         LABELS[field]
                         + ": "
                         + ("; ".join(indexed[i].name for i in ids) or "не указаны")
                     )
-                parent = next((e for e in records(profile, kind) if e.id == item.parent_id), None)
-                lines.append(
-                    "Связь с работой: " + (episode_name(parent, profile) if parent else "нет")
-                )
-                lines.append(
-                    "Связь с навыком не означает его использование весь период. "
-                    "Общий стаж задаётся отдельно. Пересечения периодов не складываются."
-                )
                 fields = [
-                    "title",
-                    "organization",
                     "type",
                     "roles",
                     "started",
                     "ended",
                     "ongoing",
                     "tasks",
-                    "skills",
                 ]
-                if item.kind == "project":
-                    fields.append("parent")
             else:
-                lines += [item.name, "Наличие: " + claim_text(item.assertion)]
+                lines.append(item.name)
+                if kind != "skill" or item.assertion.value is not True:
+                    lines.append("Статус: " + claim_text(item.assertion))
                 fields = ["name", "presence"]
-                if kind == "skill":
-                    fields += ["years", "level", "last_used"]
-                    for field in ("years", "level", "last_used"):
-                        lines.append(LABELS[field] + ": " + claim_text(getattr(item, field)))
                 linked = [
                     episode_name(e, profile)
                     for e in records(profile, "episode")
                     if key in getattr(e, kind + "_ids")
                 ]
-                lines.append("Связан с опытом: " + ("; ".join(linked) or "нет"))
+                if linked:
+                    lines.append("Указано в записях об опыте: " + "; ".join(linked))
             for field in fields:
                 button(LABELS[field], "view", "input", kind, key, field)
             button("Удалить…", "view", "delete", kind, key)
-            back("list", kind, 0)
+            back("list", kind, page)
     elif view[0] == "input":
         kind, key, field = view[1:]
-        lines.append("Изменить: " + LABELS.get(field, "Название новой записи"))
+        lines.append(LABELS.get(field, "Новая запись"))
         if kind == "basic":
             lines.append("Сейчас: " + basic_value(profile, field))
-            lines.append(PROMPTS[field])
-        elif field in {"roles", "tasks", "skills"}:
+            if field == "salary":
+                currency = key or profile.preferences.currency
+                lines.append(salary_prompt(profile.preferences, currency))
+                for code in SALARY_CURRENCIES:
+                    button(code, "view", "input", kind, code, field)
+            elif field == "skills":
+                lines.append("Отправьте новый список навыков через запятую целиком.")
+            else:
+                lines.append(PROMPTS[field])
+        elif field in {"roles", "tasks"}:
             lines.append(
                 "Укажите полный список через точку с запятой. Новый список заменит прежний "
                 "в этой записи. Для удаления отдельного пункта отправьте список без него."
-            )
-            if field == "skills":
-                lines.append(
-                    "Используйте названия из раздела «Навыки»; сначала добавьте новые там."
-                )
-        elif field == "last_used":
-            lines.append(
-                "Точная дата последнего применения: 15.03.2025. Если не помните — «Не знаю»."
             )
         elif field in {"started", "ended"}:
             lines.append(
                 "Введите дату: 2020-03 или 15.03.2020. Неизвестный месяц можно пропустить."
             )
-        elif field == "years":
-            lines.append("Сколько лет вы применяли именно этот навык? От 0 до 80, например 1.5.")
         elif field == "presence":
             lines.append(
                 "Вы подтверждаете этот навык, прошлую роль или выполнявшуюся задачу? "
                 "«Нет» означает явное отсутствие; «Не знаю» оставляет неопределённость."
             )
-        elif field not in {"level", "ongoing", "type", "parent"}:
-            lines.append("Введите текст. Организация и название проекта служат контекстом.")
+        elif field not in {"ongoing", "type"}:
+            lines.append("Введите название.")
         choices = {
-            "level": [(v, k) for k, v in LEVELS.items()],
             "ongoing": [("Да", "yes"), ("Нет", "no")],
             "presence": [("Да", "yes"), ("Нет", "no")],
             "type": [
@@ -293,50 +311,71 @@ def screen(edit):
                 ("Зарплата и города", "both"),
             ],
         }.get(field, [])
-        if field == "parent":
-            # Parent choices are paginated through a separate view.
-            button("Выбрать работу", "view", "parents", key, 0)
         for label, value in choices:
             button(label, "set", kind, key, field, value)
-        if field not in {"name", "new", "type"}:
-            button("Не знаю / очистить", "set", kind, key, field, "?")
-        if kind == "basic":
-            back("preferences")
+        if field not in {"name", "new", "type", "remote", "constraints"}:
+            button(
+                "Рассчитать по датам"
+                if field == "experience"
+                else "Очистить"
+                if kind == "basic"
+                else "Не знаю / очистить",
+                "set",
+                kind,
+                key,
+                field,
+                "?",
+            )
+        if kind == "basic" and field == "skills":
+            back("list", "skill", 0)
+        elif kind == "basic":
+            back(section_for(field))
         elif key:
             back("item", kind, key)
         else:
             back("list", kind, 0)
-        lines.append("«Назад» пропускает поле и сохраняет прежнее значение.")
-    elif view[0] == "parents":
-        key, page = view[1], int(view[2])
-        items = [e for e in records(profile, "episode") if e.kind == "employment"]
-        lines.append("Выберите место работы для проекта.")
-        for item in items[page * PAGE : (page + 1) * PAGE]:
-            button(
-                _short(episode_name(item, profile), 45), "set", "episode", key, "parent", item.id
-            )
-        if page:
-            button("← Предыдущие", "view", "parents", key, page - 1)
-        if (page + 1) * PAGE < len(items):
-            button("Следующие →", "view", "parents", key, page + 1)
-        back("item", "episode", key)
-    button(
-        "Сохранить правки" if edit.target == "profile" else "Вернуться к подтверждению импорта",
-        "save",
-    )
-    button("Отменить все правки", "cancel")
-    return "\n\n".join(lines), actions
+    if edit.dirty and view[0] != "input":
+        lines.append("Есть несохранённые изменения.")
+        button(
+            "Сохранить правки" if edit.target == "profile" else "Вернуться к подтверждению импорта",
+            "save",
+        )
+    if view[0] == "home":
+        button("Отменить все правки" if edit.dirty else "Закрыть", "cancel")
+    separator = "\n\n" if view[0] in {"home", "input"} else "\n"
+    return separator.join(lines), actions
 
 
-async def show_editor(message, edit):
+async def show_editor(message, edit, *, replace=False):
     text, actions = screen(edit)
-    keyboard = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=label, callback_data=f"pd:{edit.token}:{index}")]
-            for index, (label, _) in enumerate(actions)
-        ]
-    )
+    rows = []
+    previous_group = None
+    for index, (label, command) in enumerate(actions):
+        key = InlineKeyboardButton(text=label, callback_data=f"pd5:{edit.token}:{index}")
+        group, width = None, 2
+        if edit.view[:2] == ["list", "skill"] and command[:2] == ["view", "item"]:
+            group = "skills"
+        elif edit.view[0] == "list" and command[:2] == ["view", "list"]:
+            group = "pages"
+        elif edit.view[0] == "input" and edit.view[-1] == "salary" and label in SALARY_CURRENCIES:
+            group, width = "currencies", 3
+        elif (
+            edit.view[0] in {"item", "preferences", "career"}
+            and command[0] == "view"
+            and command[1] in {"input", "list"}
+            and len(label) <= 20
+        ):
+            group = "fields"
+        if group and group == previous_group and len(rows[-1]) < width:
+            rows[-1].append(key)
+        else:
+            rows.append([key])
+        previous_group = group
+    keyboard = InlineKeyboardMarkup(inline_keyboard=rows)
     chunks = split_message(text)
+    if replace and len(chunks) == 1:
+        await message.edit_text(text, parse_mode=None, reply_markup=keyboard)
+        return
     for index, chunk in enumerate(chunks):
         await message.answer(
             chunk, parse_mode=None, reply_markup=keyboard if index == len(chunks) - 1 else None
@@ -345,26 +384,31 @@ async def show_editor(message, edit):
 
 def register_profile_editor(router: Router, service):
     async def finished(message, edit, action):
-        if action[0] == "save" and edit.target == "resume":
+        if edit.target == "resume":
             from bot.resume_cards import render_resume, resume_keyboard
 
             draft = await service.resumes.pending(message.chat.id)
             user = await service.get(message.chat.id)
+            if draft is None:
+                await message.answer(
+                    render_profile(user.profile), reply_markup=profile_keyboard(), parse_mode=None
+                )
+                return
             for index, chunk in enumerate(
                 chunks := split_message(render_resume(draft, user.profile))
             ):
                 await message.answer(
                     chunk,
                     parse_mode=None,
-                    reply_markup=resume_keyboard(draft) if index == len(chunks) - 1 else None,
+                    reply_markup=resume_keyboard(draft, user.profile)
+                    if index == len(chunks) - 1
+                    else None,
                 )
         else:
-            from bot.keyboards import profile_keyboard
-
             user = await service.get(message.chat.id)
-            await message.answer(
-                ("Правки сохранены.\n\n" if action[0] == "save" else "Правки отменены.\n\n")
-                + render_profile(user.profile),
+            title = "Профиль сохранён" if action[0] == "save" else "Мой профиль"
+            await message.edit_text(
+                render_profile(user.profile, title=title),
                 reply_markup=profile_keyboard(),
                 parse_mode=None,
             )
@@ -372,17 +416,24 @@ def register_profile_editor(router: Router, service):
     @router.callback_query(F.data.startswith("details:"))
     async def begin(query: CallbackQuery, user_id: int):
         section = query.data.split(":", 1)[1]
-        view = ["list", section, 0] if section in {"episode", "skill", "role", "task"} else ["home"]
+        if section == "skills":
+            section = "skill"
+        view = ["list", section, 0] if section in {"episode", "role", "task", "skill"} else ["home"]
         if section in PROMPTS and section != "skills":
             view = ["input", "basic", "", section]
         try:
             edit = await service.editor.open(user_id, view=view)
             await query.answer()
-            await show_editor(query.message, edit)
+            await show_editor(query.message, edit, replace=True)
         except ValueError as exc:
             await query.answer(str(exc)[:200], show_alert=True)
 
-    @router.callback_query(F.data.startswith("pd:"))
+    @router.callback_query(F.data.startswith(("pd:", "pd2:", "pd3:", "pd4:")))
+    async def old_editor(query: CallbackQuery):
+        # Previous versions indexed a different set of actions on the same saved draft.
+        await query.answer("Меню обновилось. Откройте черновик через /profile.", show_alert=True)
+
+    @router.callback_query(F.data.startswith("pd5:"))
     async def action(query: CallbackQuery, user_id: int):
         try:
             _, token, number = query.data.split(":")
@@ -396,7 +447,7 @@ def register_profile_editor(router: Router, service):
             result = await service.editor.act(user_id, token, command)
             await query.answer()
             if result:
-                await show_editor(query.message, result)
+                await show_editor(query.message, result, replace=True)
             else:
                 await finished(query.message, edit, command)
         except ValueError as exc:
@@ -405,7 +456,7 @@ def register_profile_editor(router: Router, service):
     @router.message(F.text & ~F.text.startswith("/"))
     async def answer(message: Message, user_id: int):
         edit = await service.editor.get(user_id)
-        if edit is None:
+        if edit is None or edit.view[0] != "input" or looks_like_resume(message.text):
             raise SkipHandler
         try:
             result = await service.editor.act(user_id, edit.token, ["text"], text=message.text)

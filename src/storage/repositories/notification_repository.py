@@ -1,6 +1,6 @@
 import hashlib
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -14,6 +14,10 @@ from storage.models import ExposureModel, NotificationModel, VacancyModel
 
 DeliveryStatus = Literal["sent", "failed", "uncertain"]
 
+# A crashed sender can leave a claim in 'sending'. Keep the vacancy blocked,
+# but release its review slot once the Telegram request could reasonably have ended.
+REVIEW_SEND_TIMEOUT = timedelta(minutes=5)
+
 
 class NotificationRepository:
     """Caller commits claims before contacting Telegram; ambiguous attempts stay blocked."""
@@ -25,8 +29,33 @@ class NotificationRepository:
             raise ValueError(f"Unsupported database dialect: {dialect}")
         self.insert = pg_insert if dialect == "postgresql" else sqlite_insert
 
+    async def pending_review(self, chat_id: int):
+        active = (
+            NotificationModel.chat_id == chat_id,
+            NotificationModel.awaiting_rating.is_(True),
+        )
+        await self.session.execute(
+            update(NotificationModel)
+            .where(
+                *active,
+                NotificationModel.status == "sending",
+                NotificationModel.attempted_at < datetime.now(UTC) - REVIEW_SEND_TIMEOUT,
+            )
+            .values(awaiting_rating=False)
+        )
+        return (
+            await self.session.execute(
+                select(NotificationModel.status, NotificationModel.message_id).where(*active)
+            )
+        ).one_or_none()
+
     async def claim(
-        self, chat_id: int, vacancy_id: UUID, *, exposure_context: dict | None = None
+        self,
+        chat_id: int,
+        vacancy_id: UUID,
+        *,
+        exposure_context: dict | None = None,
+        awaiting_rating: bool = False,
     ) -> UUID | None:
         key = await self.session.scalar(
             select(VacancyModel.duplicate_key).where(VacancyModel.id == vacancy_id)
@@ -75,6 +104,7 @@ class NotificationRepository:
             vacancy_id=vacancy_id,
             claim_token=token,
             status="sending",
+            awaiting_rating=awaiting_rating,
             attempted_at=datetime.now(UTC),
             attempts=1,
             exposure_context=exposure_context,
@@ -85,6 +115,7 @@ class NotificationRepository:
             set_={
                 "claim_token": token,
                 "status": "sending",
+                "awaiting_rating": statement.excluded.awaiting_rating,
                 "attempted_at": statement.excluded.attempted_at,
                 "attempts": NotificationModel.attempts + 1,
                 "error_kind": None,
@@ -130,6 +161,8 @@ class NotificationRepository:
         }
         if status == "sent":
             values["history_reset_at"] = None
+        else:
+            values["awaiting_rating"] = False
         statement = (
             update(NotificationModel)
             .where(
@@ -223,7 +256,7 @@ class NotificationRepository:
         rows = await self.session.scalars(
             update(NotificationModel)
             .where(*self._resettable(chat_id, before))
-            .values(history_reset_at=datetime.now(UTC))
+            .values(history_reset_at=datetime.now(UTC), awaiting_rating=False)
             .returning(NotificationModel.vacancy_id)
         )
         return len(list(rows))

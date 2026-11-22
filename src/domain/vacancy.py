@@ -11,6 +11,7 @@ from pydantic import (
     Field,
     HttpUrl,
     JsonValue,
+    PrivateAttr,
     field_validator,
     model_validator,
 )
@@ -20,10 +21,19 @@ from domain.vacancy_analysis import VacancyAnalysis
 
 NonEmpty = Annotated[str, Field(min_length=1)]
 Salary = Annotated[int, Field(ge=0, strict=True)]
+SOURCE_NAMES = {
+    "hh": "HH",
+    "habr_career": "Хабр Карьера",
+    "trudvsem": "Работа России",
+    "superjob": "SuperJob",
+    "avito": "Авито Работа",
+}
 
 
 class Vacancy(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    _catalog_group: str | None = PrivateAttr(default=None)
+    _source_links: dict[str, str] = PrivateAttr(default_factory=dict)
 
     id: UUID = Field(default_factory=uuid4)
     source: NonEmpty
@@ -58,6 +68,12 @@ class Vacancy(BaseModel):
     raw_payload: dict[str, JsonValue]
     analysis: VacancyAnalysis | None = None
     professional_facts: ProfessionalFacts | None = None
+
+    def __eq__(self, other):
+        if type(other) is not type(self):
+            return NotImplemented
+        # Delivery grouping and alternate links are transient views of the catalog.
+        return all(getattr(self, name) == getattr(other, name) for name in type(self).model_fields)
 
     @field_validator("source", "source_id", "title", "company", mode="before")
     @classmethod

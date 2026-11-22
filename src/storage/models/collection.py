@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -13,6 +13,7 @@ class CollectionDirection(Base):
     __tablename__ = "collection_directions"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     adapter: Mapped[str] = mapped_column(String(64))
+    source: Mapped[str] = mapped_column(String(50), default="hh", server_default="hh")
     active: Mapped[bool] = mapped_column(Boolean)
     demand: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -31,6 +32,11 @@ class CollectionObservation(Base):
     source_id: Mapped[str] = mapped_column(String(255), primary_key=True)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     fingerprint: Mapped[str | None] = mapped_column(String(64))
+    detail_url: Mapped[str | None] = mapped_column(Text)
+    # Full API detail or a saved search excerpt, depending on the source adapter.
+    payload: Mapped[dict | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
+    )
     pending: Mapped[bool] = mapped_column(Boolean)
     attempts: Mapped[int] = mapped_column(Integer)
     retry_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

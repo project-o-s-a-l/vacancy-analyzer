@@ -136,6 +136,13 @@ def test_engineering_tolerances_remain_skills_and_not_work_permits(vacancy, now)
     result = score_vacancy(sample, profile, now=now)
     assert not result.qualifications and result.components["skills"] == 1
 
+    sample = job(
+        vacancy,
+        now,
+        "Требования: понимание влияния производственных допусков на характеристики тракта",
+    )
+    assert not score_vacancy(sample, profile, now=now).qualifications
+
 
 @pytest.mark.parametrize(
     "text",
@@ -248,7 +255,7 @@ def test_document_is_not_proved_by_skill_and_does_not_change_eligibility(vacancy
     declared = score_vacancy(sample, profile, now=now)
     assert declared.score == result.score and declared.eligible
     assert declared.qualifications[0].status == "declared_present"
-    assert "без проверки" in render_card(sample, declared)
+    assert "сертификат AWS — есть с ваших слов" in render_card(sample, declared)
     assert original["qualifications"] == []
 
 
@@ -306,15 +313,25 @@ async def test_bot_documents_button_and_delivery_context(sessions, vacancy):
         await VacancyRepository(session).save(sample)
     await dispatcher.feed_update(bot, command_update("/latest"))
     assert any(
-        "есть со слов пользователя" in item.text
+        "есть с ваших слов" in item.text
         for item in transport.requests
         if isinstance(item, SendMessage)
     )
     async with sessions() as session:
-        context = (await session.get(NotificationModel, (42, sample.id))).exposure_context
+        notification = await session.get(NotificationModel, (42, sample.id))
+        context = notification.exposure_context
         assert context["profile"]["qualifications"][0]["name"] == "водительские права категории B"
         assert context["match"]["qualifications_version"] == "qualifications-v1"
         assert context["match"]["qualifications"][0]["status"] == "declared_present"
+    action = callback_update("card:match:" + sample.id.hex)
+    query = action.callback_query
+    message = query.message.model_copy(update={"message_id": notification.message_id})
+    action = action.model_copy(
+        update={"callback_query": query.model_copy(update={"message": message})}
+    )
+    await dispatcher.feed_update(bot, action)
+    await click_button(dispatcher, bot, transport, "Указать документы в профиле")
+    assert "права категории B" in transport.requests[-1].text
 
 
 @pytest.mark.postgres

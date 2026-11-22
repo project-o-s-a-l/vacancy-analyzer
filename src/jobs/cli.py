@@ -20,11 +20,13 @@ from domain import CandidateProfile, Vacancy
 from domain.matching import MatchResult
 from domain.serving_ranker import RankerPolicy
 from domain.vacancy_analysis import VacancyCategory
+from jobs.collection_budget import AvitoRateLimited
 from jobs.collection_runtime import CollectionAlreadyRunning, run_collection
 from jobs.import_html import import_html_snapshots
 from jobs.recommendations import recommend
 from jobs.settings import Settings
 from jobs.skill_gap import analyze_skill_gap
+from nlp.profile_experience import sync_profile_experience
 from observability import emit_event, logging_session, operation
 from observability.settings import LoggingOptions
 from scoring.presentation import evidence_label, score_label
@@ -35,7 +37,7 @@ from storage.repositories import VacancyRepository
 
 def load_profile(path: Path) -> CandidateProfile:
     with path.open(encoding="utf-8") as stream:
-        return CandidateProfile.model_validate(yaml.safe_load(stream))
+        return sync_profile_experience(CandidateProfile.model_validate(yaml.safe_load(stream)))
 
 
 def _positive(value: str) -> int:
@@ -107,13 +109,16 @@ def parser() -> argparse.ArgumentParser:
         metavar="0..50",
         help="Ожидание нового сообщения, по умолчанию 30 с",
     )
-    collect = commands.add_parser("collect", help="Собрать HTML-вакансии HH в PostgreSQL")
+    collect = commands.add_parser("collect", help="Собрать IT-вакансии в общий каталог")
     mode = collect.add_mutually_exclusive_group()
     mode.add_argument(
         "--query", action="append", help="Ручной запрос; можно повторить несколько раз"
     )
     mode.add_argument(
-        "--from-profiles", action="store_true", help="По профилям пользователей (по умолчанию)"
+        "--from-profiles", action="store_true", help="По направлениям из профилей пользователей"
+    )
+    mode.add_argument(
+        "--it", action="store_true", help="IT-каталог по рубрикам площадок (по умолчанию)"
     )
     collect.add_argument("--area")
     collect.add_argument(
@@ -130,18 +135,30 @@ def parser() -> argparse.ArgumentParser:
     )
     collect.add_argument("--pages", type=_positive, default=1)
     collect.add_argument("--per-page", type=_positive, default=20)
-    collect.add_argument("--source", choices=["html", "api"], default=None)
+    collect.add_argument(
+        "--new-only", action="store_true", help="Сбор новых ID с отключённой актуализацией каталога"
+    )
+    collect.add_argument(
+        "--source",
+        choices=["all", "hh", "html", "api", "habr_career", "trudvsem", "superjob", "avito"],
+        default=None,
+    )
     collect.add_argument(
         "--resume-source",
         action="store_true",
         help="Снять сохранённый stop после устранения 403/captcha; бюджет не сбрасывается",
     )
-    collect.add_argument("--watch", action="store_true", help="Повторять сбор по HH_POLL_INTERVAL")
+    collect.add_argument(
+        "--watch", action="store_true", help="Продолжать обход в постоянном режиме"
+    )
     commands.add_parser(
         "catalog-status", help="JSON покрытия, давности и бюджета без запросов к HH"
     )
     importer = commands.add_parser("import-html", help="Импортировать сохранённые HTML без сети")
-    importer.add_argument("--directory", type=Path, required=True)
+    importer.add_argument("--source", choices=("hh", "avito"), default="hh")
+    pages = importer.add_mutually_exclusive_group(required=True)
+    pages.add_argument("--directory", type=Path)
+    pages.add_argument("--file", type=Path, help="Одна сохранённая страница Авито, HTML или MHTML")
     rank = commands.add_parser("rank", help="Ранжировать сохранённые вакансии")
     rank.add_argument("--profile", type=Path, required=True)
     rank.add_argument(
@@ -151,13 +168,10 @@ def parser() -> argparse.ArgumentParser:
         help="Ограничить возраст вакансий; по умолчанию без ограничения",
     )
     rank.add_argument("--category", choices=[value.value for value in VacancyCategory])
-    from domain.retrieval import RetrievalParameters
-
     rank.add_argument(
         "--limit",
         type=_positive,
-        default=RetrievalParameters().k,
-        help="Top-K кандидатов после поиска и обязательных проверок",
+        help="Число кандидатов после поиска и обязательных проверок (по умолчанию RETRIEVAL_K)",
     )
     rank.add_argument("--top", type=_positive, default=5)
     rank.add_argument("--json", action="store_true")
@@ -364,11 +378,13 @@ async def run_telegram(args: argparse.Namespace) -> None:
             ranker_policy=RankerPolicy.from_settings(settings),
             saved_selections_enabled=settings.saved_selections_enabled,
         )
-        service = await users.notifications(args.user_id)
+        service = await users.notifications(args.user_id, wait_for_rating=not args.dry_run)
         if args.dry_run:
             print(render(await service.pending(), as_json=False))
         else:
             report = await service.deliver(TelegramSender(bot))
+            if report.empty_message:
+                print(report.empty_message)
             print(
                 f"Отправлено: {report.sent}; ошибок: {report.failed}; "
                 f"без подтверждения: {report.uncertain}."
@@ -584,8 +600,12 @@ async def run_command(args: argparse.Namespace) -> None:
                 resume_text, _ = read_resume(stream.read(MAX_RESUME_BYTES + 1), args.resume.name)
     settings = Settings()
     if args.command == "collect":
+        from_profiles = args.from_profiles or (
+            not args.it and not args.query and settings.collection_mode == "profiles"
+        )
         query = SearchQuery(
-            text=args.query[0] if args.query else "profile",
+            text=args.query[0] if args.query else ("profile" if from_profiles else ""),
+            category=None if args.query or from_profiles else "it",
             area=args.area,
             search_field=args.search_field,
             period=args.days,
@@ -612,7 +632,8 @@ async def run_command(args: argparse.Namespace) -> None:
         if args.command == "catalog-status":
             from jobs.catalog_metrics import catalog_status
 
-            print(json.dumps(await catalog_status(sessions), ensure_ascii=False, indent=2))
+            status = await catalog_status(sessions, check_interval=settings.hh_check_interval)
+            print(json.dumps(status, ensure_ascii=False, indent=2))
             return
         if args.command == "resume":
             from jobs.resume_cli import run_resume_cli
@@ -680,12 +701,16 @@ async def run_command(args: argparse.Namespace) -> None:
             if args.resume_source:
                 from jobs.collection_budget import resume_source
 
-                await resume_source(sessions)
+                if args.source == "all":
+                    raise ValueError("Для --resume-source выберите одну площадку через --source")
+                name = args.source if args.source not in {None, "api", "html", "hh"} else "hh"
+                await resume_source(sessions, name)
             await run_collection(
                 settings,
                 engine,
                 query,
                 watch=args.watch,
+                new_only=args.new_only,
                 query_texts=args.query,
                 source=args.source,
             )
@@ -699,6 +724,16 @@ async def run_command(args: argparse.Namespace) -> None:
             )
             print(f"Заданий в очереди: {count}. Их обработает бот или команда worker.")
         elif args.command == "import-html":
+            if args.source == "avito":
+                from jobs.import_avito import import_avito_pages
+
+                report = await import_avito_pages(args.file or args.directory, sessions)
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                if len(report["errors"]) == report["files"]:
+                    raise SystemExit(1)
+                return
+            if args.file is not None:
+                raise ValueError("Для импорта hh укажите --directory")
             async with sessions.begin() as session:
                 count = await import_html_snapshots(
                     args.directory, VacancyRepository(session), base_url=settings.hh_base_url
@@ -779,6 +814,15 @@ def _execute(args) -> None:
         raise SystemExit(1) from None
     except CollectionAlreadyRunning as exc:
         failed("already_running", exc)
+        raise SystemExit(1) from None
+    except AvitoRateLimited as exc:
+        failed(
+            exc.code,
+            exc,
+            source_kind="avito",
+            status_code=429,
+            next_run_at=exc.retry_at,
+        )
         raise SystemExit(1) from None
     except CollectionStopped as exc:
         failed(

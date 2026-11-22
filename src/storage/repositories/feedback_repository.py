@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -45,6 +46,22 @@ class FeedbackRepository:
         await self._exposure(user_id, vacancy_id)
         return _state(vacancy_id, await self.session.get(FeedbackModel, (user_id, vacancy_id)))
 
+    async def confirmed_snapshot(
+        self, user_id: int, vacancy_id: UUID, message_id: int | None
+    ) -> ExposureModel:
+        statement = select(ExposureModel).where(
+            ExposureModel.chat_id == user_id,
+            ExposureModel.vacancy_id == vacancy_id,
+        )
+        if message_id is not None:
+            statement = statement.where(ExposureModel.message_id == message_id)
+        snapshot = await self.session.scalar(
+            statement.order_by(ExposureModel.confirmed_at.desc()).limit(1)
+        )
+        if snapshot is None:
+            raise ValueError("Показ этой карточки не подтверждён. Откройте /history заново.")
+        return snapshot
+
     async def record(
         self,
         user_id: int,
@@ -61,21 +78,10 @@ class FeedbackRepository:
             raise ValueError("Некорректное действие")
         if reason is not None and (action != "reason" or reason not in REASONS):
             raise ValueError("Некорректная причина")
-        exposure = await self._exposure(user_id, vacancy_id)
-        message_id = exposure_message_id if exposure_message_id is not None else exposure.message_id
-        statement = select(ExposureModel).where(
-            ExposureModel.chat_id == user_id,
-            ExposureModel.vacancy_id == vacancy_id,
-        )
-        if exposure_message_id is not None:
-            statement = statement.where(ExposureModel.message_id == message_id)
+        notification = await self._exposure(user_id, vacancy_id)
         # Non-UI callers explicitly act on the latest confirmed snapshot, even if a
         # later redelivery failed. UI callbacks must resolve their exact message.
-        snapshot = await self.session.scalar(
-            statement.order_by(ExposureModel.confirmed_at.desc()).limit(1)
-        )
-        if snapshot is None:
-            raise ValueError("Показ этой карточки не подтверждён. Откройте /history заново.")
+        snapshot = await self.confirmed_snapshot(user_id, vacancy_id, exposure_message_id)
         action_context = deepcopy(action_context or {})
         action_context["exposure_resolution"] = "confirmed_snapshot"
         action_context["snapshot_id"] = str(snapshot.id)
@@ -179,6 +185,19 @@ class FeedbackRepository:
                 created_at=now,
             )
         )
+        advance = False
+        if (
+            action in {"like", "dislike"}
+            and exposure_message_id is not None
+            and notification.awaiting_rating
+            and notification.status == "sent"
+        ):
+            advance = notification.claim_token == snapshot.id
+            # A copy opened after this delivery can resolve a deleted Telegram card.
+            # Browsing the library never starts the next delivery on its own.
+            in_library = (snapshot.context or {}).get("surface") == "history"
+            if advance or (in_library and snapshot.confirmed_at >= notification.delivered_at):
+                notification.awaiting_rating = False
         await self.session.flush()
         after_commit(
             self.session,
@@ -187,7 +206,7 @@ class FeedbackRepository:
             feedback_action=action,
             result="success",
         )
-        return _state(vacancy_id, row)
+        return replace(_state(vacancy_id, row), advance_feed=advance)
 
     async def suppressed_ids(self, user_id: int) -> set[UUID]:
         return set(

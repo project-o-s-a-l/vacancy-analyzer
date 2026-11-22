@@ -169,10 +169,15 @@ def candidate_facts(profile, owner_id, *, previous=None, confirmed_fields=(), re
             and f.kind not in {"skill", "qualification", "preference", "experience_total"}
             and not (f.kind == "role" and f.context == "desired")
         ]
-        if "experience" not in confirmed_fields and profile.experience_years is None:
-            facts += [f for f in previous.facts if f.id == "experience_total"]
-        if "experience" not in confirmed_fields:
-            # Keep the provenance of an imported computed total across preference edits.
+        previous_total = known.get("experience_total")
+        if (
+            "experience" not in confirmed_fields
+            and previous_total
+            and previous_total.assertion.value == profile.experience_years
+        ):
+            if profile.experience_years is None:
+                facts.append(previous_total)
+            # Preserve date/stated evidence unless a legacy writer replaced the flat total.
             facts += [
                 f
                 for f in previous.facts
@@ -403,6 +408,21 @@ def confirm_resume_facts(profile, draft, owner_id):
     if not keep_career:
         for episode in proposed.episodes:
             episodes[episode.id] = episode
+    # The merged timeline can differ from either resume. Keep the declared inputs
+    # from a protected total or from the existing profile when a merge supplies only dates.
+    previous_totals = (
+        {f.id: f for f in previous.facts if f.kind == "experience_total"} if previous else {}
+    )
+    if (
+        previous_totals
+        and "experience" not in draft.edited_fields
+        and (
+            "experience" in reviewed
+            or (merge_career and not draft.extraction.stated_experience_years)
+        )
+    ):
+        values = {key: f for key, f in values.items() if f.kind != "experience_total"}
+        values.update(previous_totals)
     retained = set(values)
     episodes = [
         e.model_copy(

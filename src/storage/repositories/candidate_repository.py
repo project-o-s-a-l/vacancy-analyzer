@@ -3,11 +3,14 @@
 from datetime import UTC
 
 from sqlalchemy import (
+    BigInteger,
     Text,
     Uuid,
     and_,
     any_,
+    case,
     cast,
+    column,
     exists,
     func,
     literal,
@@ -20,6 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 
 from domain import Vacancy
+from domain.exchange_rates import current_rates
 from scoring.fact_projection import projection_contract
 from storage.models import VacancyModel as V
 from storage.models.vacancy import SEARCH_REPAIR_PREDICATE
@@ -35,6 +39,58 @@ class CandidateRepository:
             return V.search_terms.op("?|")(literal(sorted(terms), type_=ARRAY(Text)))
         words = func.json_each(V.search_terms).table_valued("key", "value")
         return exists(select(1).select_from(words).where(words.c.value.in_(sorted(terms))))
+
+    def matching_terms(self, query):
+        original = self._overlap(query.terms)
+        guards = query.alias_requirements()
+        if not guards:
+            return original
+        title = V.search_document["title"]
+        if self.session.get_bind().dialect.name == "postgresql":
+            choices = func.jsonb_array_elements(
+                literal([sorted(guard) for guard in guards], type_=JSONB)
+            ).table_valued(column("value", JSONB))
+            matches = exists(select(1).select_from(choices).where(title.op("@>")(choices.c.value)))
+        else:
+            words = func.json_each(title).table_valued("value")
+            matches = or_(
+                *(
+                    select(func.count())
+                    .select_from(words)
+                    .where(words.c.value.in_(sorted(guard)))
+                    .correlate(V)
+                    .scalar_subquery()
+                    == len(guard)
+                    for guard in guards
+                )
+            )
+        # The combined lookup still uses the existing GIN. Verify aliases against the title.
+        return and_(
+            self._overlap(query.terms.union(*guards)),
+            or_(original, matches),
+        )
+
+    @staticmethod
+    def rank_query(query):
+        payload = literal(query.payload(), type_=JSONB)
+        if not any(form.required for form in query.forms):
+            return payload
+        forms = func.jsonb_array_elements(
+            literal(
+                [{"terms": sorted(f.terms), "required": sorted(f.required)} for f in query.forms],
+                type_=JSONB,
+            )
+        ).table_valued(column("value", JSONB))
+        # An alias contributes only if every substituted word occurs in this title.
+        # Original intents have an empty guard and always contribute ordinary partial coverage.
+        valid = (
+            select(func.jsonb_agg(forms.c.value["terms"]))
+            .select_from(forms)
+            .where(V.search_document["title"].op("@>")(forms.c.value["required"]))
+            .correlate(V)
+            .scalar_subquery()
+        )
+        return func.jsonb_set(payload, literal(["titles"], type_=ARRAY(Text)), valid)
 
     @staticmethod
     def projection(*, analysis=False):
@@ -63,6 +119,7 @@ class CandidateRepository:
             if values.get(name) is not None:
                 values[name] = _aware(values[name])
         vacancy = Vacancy.model_validate(values | {"raw_payload": {}})
+        vacancy._catalog_group = row.get("duplicate_group")
         if "professional_facts" in row:
             from nlp.professional_facts import vacancy_facts, vacancy_facts_compatible
 
@@ -76,6 +133,7 @@ class CandidateRepository:
     def _state_predicate(now, since, category):
         criteria = [
             V.archived.is_(False),
+            V.availability.in_(("active", "unknown")),
             V.published_at <= now,
             or_(V.valid_until.is_(None), V.valid_until > now),
         ]
@@ -93,15 +151,16 @@ class CandidateRepository:
             if prefs.remote in {"required", "office"}:
                 criteria.append(V.remote.is_(prefs.remote == "required"))
             if prefs.salary_required and prefs.salary_min and prefs.salary_min > 0:
-                currencies = (
-                    [prefs.currency, "RUR"] if prefs.currency == "RUB" else [prefs.currency]
+                minimums = current_rates().minimum_by_currency(prefs.salary_min, prefs.currency)
+                minimum = case(
+                    {code: literal(value, type_=BigInteger) for code, value in minimums.items()},
+                    value=func.upper(V.currency),
                 )
                 criteria.extend(
                     [
-                        func.upper(V.currency).in_(currencies),
                         V.salary_period == "MONTH",
                         V.salary_gross.is_(prefs.salary_gross),
-                        or_(V.salary_to >= prefs.salary_min, V.salary_from >= prefs.salary_min),
+                        func.coalesce(V.salary_to, V.salary_from) >= minimum,
                     ]
                 )
         return and_(*criteria)
@@ -214,7 +273,7 @@ class CandidateRepository:
         score = (
             func.va_lexical_rank_v2(
                 V.search_document,
-                literal(query.payload(), type_=JSONB),
+                self.rank_query(query),
                 literal(parameters.model_dump(), type_=JSONB),
             )
             if positive
@@ -236,7 +295,7 @@ class CandidateRepository:
         ).where(*self.predicates(profile, options), not_(self.unknown()))
         if query.terms:
             statement = statement.where(
-                self._overlap(query.terms) if positive else not_(self._overlap(query.terms))
+                self.matching_terms(query) if positive else not_(self.matching_terms(query))
             )
         elif positive:
             statement = statement.where(False)
@@ -277,7 +336,7 @@ class CandidateRepository:
         ).where(*self.predicates(profile, options), not_(self.unknown()))
         if query.terms:
             statement = statement.where(
-                self._overlap(query.terms) if positive else not_(self._overlap(query.terms))
+                self.matching_terms(query) if positive else not_(self.matching_terms(query))
             )
         elif positive:
             return []

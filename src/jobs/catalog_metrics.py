@@ -2,9 +2,10 @@
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import String, cast, func, select
 
 from jobs.collection_budget import aware
+from jobs.settings import DEFAULT_CHECK_INTERVAL
 from storage.models import (
     CollectionBudget,
     CollectionDirection,
@@ -13,17 +14,26 @@ from storage.models import (
 )
 
 
-async def catalog_status(sessions, *, now=None):
+async def catalog_status(sessions, *, now=None, check_interval=DEFAULT_CHECK_INTERVAL):
     now = now or datetime.now(UTC)
     async with sessions() as session:
-        total, active, stale, unknown, oldest, errors = (
+        total, unique, active, stale_24h, stale, unknown, oldest, errors = (
             await session.execute(
                 select(
                     func.count(),
+                    func.count(
+                        func.distinct(
+                            func.coalesce(VacancyModel.duplicate_key, cast(VacancyModel.id, String))
+                        )
+                    ),
                     func.count().filter(VacancyModel.availability == "active"),
                     func.count().filter(
                         (VacancyModel.last_checked_at.is_(None))
                         | (VacancyModel.last_checked_at < now - timedelta(days=1))
+                    ),
+                    func.count().filter(
+                        (VacancyModel.last_checked_at.is_(None))
+                        | (VacancyModel.last_checked_at <= now - timedelta(seconds=check_interval))
                     ),
                     func.count().filter(VacancyModel.last_checked_at.is_(None)),
                     func.min(VacancyModel.last_checked_at),
@@ -31,44 +41,51 @@ async def catalog_status(sessions, *, now=None):
                 )
             )
         ).one()
+        publications = dict(
+            (
+                await session.execute(
+                    select(VacancyModel.source, func.count()).group_by(VacancyModel.source)
+                )
+            ).all()
+        )
         directions = []
         for row in await session.scalars(
             select(CollectionDirection).order_by(CollectionDirection.key)
         ):
-            count, pending, oldest_pending = (
+            count, pending, pending_new, oldest_pending, available = (
                 await session.execute(
                     select(
                         func.count(),
                         func.count().filter(CollectionObservation.pending.is_(True)),
+                        func.count().filter(
+                            CollectionObservation.pending.is_(True), VacancyModel.id.is_(None)
+                        ),
                         func.min(CollectionObservation.retry_at).filter(
                             CollectionObservation.pending.is_(True)
                         ),
-                    ).where(CollectionObservation.direction == row.key)
+                        func.count().filter(VacancyModel.availability == "active"),
+                    )
+                    .select_from(CollectionObservation)
+                    .outerjoin(
+                        VacancyModel,
+                        (VacancyModel.source_id == CollectionObservation.source_id)
+                        & (VacancyModel.source == row.source),
+                    )
+                    .where(CollectionObservation.direction == row.key)
                 )
             ).one()
-            available = await session.scalar(
-                select(func.count())
-                .select_from(CollectionObservation)
-                .join(
-                    VacancyModel,
-                    (VacancyModel.source_id == CollectionObservation.source_id)
-                    & (VacancyModel.source == "hh"),
-                )
-                .where(
-                    CollectionObservation.direction == row.key,
-                    VacancyModel.availability == "active",
-                )
-            )
             refs = row.progress.get("references", 0)
             directions.append(
                 dict(
                     key=row.key,
                     adapter=row.adapter,
+                    source=row.source,
                     active=row.active,
                     demand=row.demand,
                     observed_ids=count,
                     active_cards=available,
                     pending_details=pending,
+                    pending_new_details=pending_new,
                     repeat_ratio=row.progress.get("repeat_refs", 0) / refs if refs else None,
                     new_ratio=row.progress.get("new_refs", 0) / refs if refs else None,
                     scheduler_lag_seconds=max(0, (now - aware(row.next_due_at)).total_seconds()),
@@ -86,10 +103,11 @@ async def catalog_status(sessions, *, now=None):
                     progress=row.progress,
                 )
             )
-        budget = await session.get(CollectionBudget, "hh")
-        budget_data = None
-        if budget:
-            budget_data = dict(
+        budgets = {}
+        for budget in await session.scalars(
+            select(CollectionBudget).order_by(CollectionBudget.source)
+        ):
+            budgets[budget.source] = dict(
                 window_at=aware(budget.window_at).isoformat(),
                 search_used=budget.search_used,
                 detail_used=budget.detail_used,
@@ -103,18 +121,29 @@ async def catalog_status(sessions, *, now=None):
         observed_at=now.isoformat(),
         market_complete=False,
         total=total,
+        unique_vacancies=unique,
+        publications_by_source=publications,
         active=active,
-        stale_24h=stale,
+        stale_24h=stale_24h,
+        stale_at_check_interval=stale,
         never_successfully_checked=unknown,
         check_errors=errors,
         oldest_check_age_seconds=(now - aware(oldest)).total_seconds() if oldest else None,
         directions=directions,
-        budget=budget_data,
+        budget=budgets.get("hh"),
+        budgets=budgets,
         policy=dict(
-            final_max_age_seconds=86400,
-            detail_cache_max_age_seconds=21600,
+            final_max_age_seconds=DEFAULT_CHECK_INTERVAL,
+            detail_cache_max_age_seconds=check_interval,
             source_depth_limit=2000,
-            target_active_hours=24,
+            depth_limits={
+                "hh": 2000,
+                "trudvsem": 10000,
+                "habr_career": None,
+                "superjob": None,
+                "avito": None,
+            },
+            target_active_hours=check_interval / 3600,
             guarantee="Budgeted target; backlog/source access can exceed it. See lag.",
         ),
     )

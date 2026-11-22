@@ -13,7 +13,7 @@ from jobs.notify import NotificationService
 from jobs.rank import rank_recent
 from jobs.retrieval_evaluation import MemoryCandidateSource
 from scoring import rank_vacancies
-from scoring.retrieval import document_terms, profile_query, search_document
+from scoring.retrieval import document_terms, lexical_evidence, profile_query, search_document
 from storage.models import VacancyModel
 from storage.payloads import payload_hash
 from storage.repositories import VacancyRepository
@@ -221,6 +221,132 @@ def test_aliases_and_arbitrary_professions(skill, text):
     query = profile_query(CandidateProfile(skills={skill: {}}))
     doc = search_document({"title": text})
     assert query.terms <= set(document_terms(doc))
+
+
+TITLE_EQUIVALENTS = [
+    ("Разработчик Java", "Java Developer"),
+    ("Питон-разработчик", "Python Developer"),
+    ("Аналитик данных", "Data Analyst"),
+    ("Инженер данных", "Data Engineer"),
+    ("Системный аналитик", "Systems Analyst"),
+    ("Бизнес-аналитик", "Business Analyst"),
+    ("Продуктовый аналитик", "Product Analyst"),
+    ("Старший аналитик данных", "Senior Data Analyst"),
+    ("Исследователь данных", "Data Scientist"),
+    ("Инженер машинного обучения", "ML Engineer"),
+    ("Инженер по тестированию", "QA Engineer"),
+    ("QA-инженер", "Тестировщик ПО"),
+    ("Тестировщик-автоматизатор", "QA Automation Engineer"),
+    ("AQA", "Инженер по автоматизированному тестированию"),
+    ("Инженер по ручному тестированию", "Manual Tester"),
+    ("Системный администратор", "Sysadmin"),
+    ("DevOps-инженер", "DevOps Engineer"),
+    ("Фулстек-разработчик", "Junior Full Stack Developer"),
+    ("Бэкенд-разработчик Python", "Python Backend Developer"),
+    ("Frontend разработчик", "Frontend Engineer"),
+    ("Python-разработчик", "Software Engineer (Python)"),
+    ("Менеджер продукта", "Product Manager"),
+    ("Руководитель проектов", "Project Manager"),
+    ("Преподаватель информатики", "Учитель информатики"),
+    ("Бухгалтер", "Accountant"),
+    ("Аналитик", "Senior Data Analyst"),
+    ("Инженер", "Network Engineer"),
+    ("Менеджер", "Product Manager"),
+    ("Администратор", "Database Administrator"),
+    ("Архитектор", "Cloud Architect"),
+    ("Дизайнер", "Graphic Designer"),
+    ("Рекрутер", "IT Recruiter"),
+    ("QA", "Тестировщик"),
+    ("Сварщик аргонодуговой сварки", "Сварщики аргонодуговой сварки"),
+]
+
+
+def title_evidence(position, title):
+    query = profile_query(CandidateProfile(preferences={"positions": [position]}))
+    return lexical_evidence(search_document({"title": title}), query, RetrievalParameters())
+
+
+@pytest.mark.parametrize("position,title", TITLE_EQUIVALENTS)
+def test_equivalent_title_gets_full_title_weight(position, title):
+    assert title_evidence(position, title).lexical_score == 0.60
+
+
+@pytest.mark.parametrize(
+    "position,title",
+    [
+        ("Менеджер продукта", "Project Manager"),
+        ("Системный администратор", "Системный аналитик"),
+        ("Инженер данных", "Data Analyst"),
+        ("Инженер по тестированию", "Инженер по охране труда"),
+        ("Инженер по тестированию", "QA Manager"),
+        ("Тестировщик-автоматизатор", "Manual QA Engineer"),
+        ("Инженер по ручному тестированию", "QA Automation Engineer"),
+        ("Бэкенд-разработчик Python", "Backend Developer Java"),
+        ("Фулстек-разработчик", "Middle+/Senior Fullstack QA Engineer"),
+        ("Senior Data Analyst", "Junior Data Analyst"),
+        ("Java разработчик", "JavaScript Developer"),
+        ("C++ разработчик", "C# Software Engineer"),
+        ("Преподаватель информатики", "Учитель музыки"),
+    ],
+)
+def test_related_title_does_not_get_full_title_weight(position, title):
+    assert title_evidence(position, title).lexical_score < 0.60
+
+
+def test_translated_role_needs_the_whole_phrase_and_keeps_other_qualifiers():
+    assert title_evidence("Python developer", "Network Engineer").lexical_score == 0
+    assert title_evidence("Старший аналитик данных", "Data Analyst").lexical_score == 0.4
+
+
+async def test_title_alias_hits_existing_index_and_does_not_promote_body_mentions(
+    candidate_sessions, vacancy
+):
+    now = datetime.now(UTC)
+    profile = CandidateProfile(preferences={"positions": ["Аналитик данных"]})
+    cards = [
+        job(
+            vacancy,
+            title="Data Analyst",
+            skills=[],
+            description="Визуализация",
+            published_at=now - timedelta(days=100),
+        ),
+        job(
+            vacancy,
+            title="Бизнес-аналитик",
+            skills=[],
+            description="Проектирование",
+            published_at=now - timedelta(days=2),
+        ),
+        job(
+            vacancy,
+            title="Курьер",
+            skills=[],
+            description="Доставка",
+            published_at=now - timedelta(days=1),
+        ),
+        job(
+            vacancy,
+            title="Ассистент",
+            skills=[],
+            description="В команде есть Data Analyst",
+            published_at=now - timedelta(days=10),
+        ),
+    ]
+    await bulk(candidate_sessions, cards)
+    for backend in ("sql", "compact"):
+        params = RetrievalParameters(k=3, backend=backend)
+        async with candidate_sessions() as session:
+            result = await retrieve_candidates(
+                VacancyRepository(session), profile, parameters=params
+            )
+        offline = await retrieve_candidates(
+            None, profile, parameters=params, candidate_source=MemoryCandidateSource(cards)
+        )
+        assert [v.id for v in result.items] == [v.id for v in cards[:3]]
+        assert result.evidence == offline.evidence
+        assert result.evidence[cards[0].id].lexical_score == 0.60
+        assert 0 < result.evidence[cards[1].id].lexical_score < 0.60
 
 
 async def test_description_search_and_sql_equivalence(candidate_sessions, vacancy):

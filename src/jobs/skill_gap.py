@@ -1,7 +1,9 @@
 from datetime import UTC, datetime, timedelta
 
 from domain import CandidateProfile
+from domain.exchange_rates import use_rates
 from domain.skill_gap import SampleScope, SkillGapReport
+from jobs.exchange_rates import rates_for
 from scoring.skill_gap import in_direction, skill_gap_report
 from storage.repositories import VacancyRepository
 
@@ -36,4 +38,5 @@ async def analyze_skill_gap(
         vacancies=len(selected),
         with_skills=0,
     )
-    return skill_gap_report(selected, scope, profile)
+    with use_rates(await rates_for(profile)):
+        return skill_gap_report(selected, scope, profile)

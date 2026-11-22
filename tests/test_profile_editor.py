@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 from aiogram import Bot
-from aiogram.methods import AnswerCallbackQuery, SendMessage
+from aiogram.methods import AnswerCallbackQuery, EditMessageText, SendMessage
 from sqlalchemy import select, update
 from test_bot import TEST_TOKEN, RecordingSession
 from test_comparison import job, skill_requirement
@@ -19,9 +19,9 @@ from jobs.profile_editor import ProfileEditor
 from jobs.rank import rank_recent
 from jobs.resumes import StaleResumeWork
 from jobs.users import UserService
-from nlp.professional_facts import profile_payload
+from nlp.professional_facts import profile_input_revision, profile_payload
 from scoring import score_vacancy
-from scoring.comparison import compare_facts
+from scoring.comparison import compare_facts, total_experience
 from scoring.serving_features import profile_revision
 from storage.models import (
     FactRevisionModel,
@@ -54,7 +54,7 @@ class Chat:
         message = next(
             r
             for r in reversed(self.transport.requests)
-            if isinstance(r, SendMessage) and r.reply_markup
+            if isinstance(r, (SendMessage, EditMessageText)) and r.reply_markup
         )
         buttons = [b for row in message.reply_markup.inline_keyboard for b in row]
         return next(b.callback_data for b in buttons if b.text == label)
@@ -99,40 +99,33 @@ async def test_manual_resume_through_real_bot_without_llm_and_restart(editor_ses
     chat = Chat(users)
     await chat.send("/start")
     await chat.send("/profile")
-    await chat.click("Навыки и их применение")
-    await chat.click("+ Добавить")
-    await chat.send("Python")
-    await chat.field("Лет применения навыка", "2.5")
-    await chat.click("Уровень навыка")
-    await chat.click("Средний")
-    await chat.field("Последнее использование", "15.06.2025")
-    await chat.click("← Назад")
-    await chat.click("← Назад")
+    await chat.click("Изменить профиль")
+    await chat.click("Навыки")
+    await chat.field("Изменить списком", "Python, Git")
+    await chat.click("Опыт работы")
     await chat.click("Опыт и проекты (0)")
     await chat.click("+ Место работы")
-    await chat.field("Организация", "<Работа & компания> 😀")
+    text, actions = screen(await users.editor.get(42))
+    assert not any(
+        action[-1] in {"organization", "title", "parent", "skills"} for _, action in actions
+    )
     await chat.field("Занимаемые должности", "Разработчик")
     await chat.field("Начало", "2020-01")
     await chat.field("Окончание", "2022-12")
     await chat.field("Задачи", "Разрабатывать отчёты; Автоматизировать обработку")
-    await chat.field("Навыки этого опыта", "Python")
     await chat.click("← Назад")
     await chat.click("+ Место работы")
-    await chat.field("Название записи / проекта", "Вторая работа")
+    await chat.field("Занимаемые должности", "Аналитик")
     await chat.field("Начало", "2022-01")  # overlaps intentionally
     await chat.click("Продолжается сейчас")
     await chat.click("Да")
     await chat.click("← Назад")
     await chat.click("+ Проект")
-    await chat.field("Название записи / проекта", "Учебная система")
     await chat.click("Вид опыта")
     await chat.click("Учебный проект")
     await chat.click("Начало")
     await chat.click("Не знаю / очистить")
     await chat.field("Задачи", "Обработка данных")
-    await chat.click("Связь с местом работы")
-    await chat.click("Выбрать работу")
-    await chat.click("<Работа & компания> 😀")
     # Nothing from the editor is used before its explicit save.
     assert not (await users.get(42)).profile.skills
     pending = await ProfileEditor(editor_sessions).get(42)
@@ -145,17 +138,18 @@ async def test_manual_resume_through_real_bot_without_llm_and_restart(editor_ses
     episodes = user.profile.professional_facts.episodes
     assert episodes[1].ongoing.value is True and episodes[1].ended.value is None
     assert episodes[2].context == "academic" and episodes[2].started.value is None
-    assert episodes[2].parent_id == episodes[0].id
-    skill = next(f for f in user.profile.professional_facts.facts if f.kind == "skill")
-    assert skill.years.value == 2.5 and skill.level.value == "intermediate"
-    assert skill.last_used.value.isoformat() == "2025-06-15"
-    assert skill.years.origin == "user_confirmed"
-    assert skill.years.evidence[0].quote is None
+    assert episodes[2].task_ids
+    for skill in (f for f in user.profile.professional_facts.facts if f.kind == "skill"):
+        assert skill.years.value is skill.level.value is skill.last_used.value is None
+    assert set(user.profile.skills) == {"python", "git"}
     await chat.send("/profile")
-    await chat.click("Опыт и проекты")
-    assert "<Работа & компания> 😀" in chat.transport.requests[-1].text
+    await chat.click("Изменить профиль")
+    await chat.click("Опыт работы")
+    await chat.click("Опыт и проекты (3)")
+    assert "Разработчик · 2020-01" in chat.transport.requests[-1].text
+    assert "Аналитик · 2022-01" in chat.transport.requests[-1].text
     for request in chat.transport.requests:
-        if isinstance(request, SendMessage):
+        if isinstance(request, (SendMessage, EditMessageText)):
             assert request.parse_mode is None
             assert len(request.text.encode("utf-16-le")) // 2 <= 3500
             if request.reply_markup:
@@ -197,12 +191,12 @@ async def test_delete_cascade_unknown_clears_and_cancel_are_atomic(editor_sessio
     assert not user.profile.skills
     assert not any(f.kind == "skill" for f in user.profile.professional_facts.facts)
     assert user.profile.professional_facts.episodes[0].skill_ids == []
-    assert user.profile.experience_years is None
+    assert user.profile.experience_years == 4
     assert (
         next(
             f for f in user.profile.professional_facts.facts if f.id == "experience_total"
         ).assertion.value
-        is None
+        == 4
     )
     async with editor_sessions() as session:
         assert len(list(await session.scalars(select(FactRevisionModel)))) >= 3
@@ -214,27 +208,116 @@ async def test_stale_foreign_repeated_callbacks_and_back(editor_sessions):
     await users.register(99)
     chat = Chat(users)
     await chat.send("/profile")
-    await chat.click("Навыки и их применение")
-    old = await chat.click("1. python")
+    await chat.click("Изменить профиль")
+    old = await chat.click("Навыки")
     before = await users.editor.get(42)
+    await chat.dispatcher.feed_update(chat.bot, callback_update(f"pd:{before.token}:0"))
+    assert (await users.editor.get(42)) == before
+    assert chat.transport.requests[-1].show_alert
     await chat.dispatcher.feed_update(chat.bot, callback_update(old))
     assert (await users.editor.get(42)) == before
     assert isinstance(chat.transport.requests[-1], AnswerCallbackQuery)
     assert "устарела" in chat.transport.requests[-1].text
-    current = chat.data("Лет применения навыка")
+    current = chat.data("Изменить списком")
     await chat.dispatcher.feed_update(chat.bot, callback_update(current, user_id=99))
     assert await users.editor.get(99) is None
-    await chat.click("Лет применения навыка")
     await chat.click("← Назад")
     assert (await users.editor.get(42)).profile == before.profile
-    await chat.click("Удалить…")
+    await chat.click("Навыки")
+    await chat.click("Изменить списком")
+    await chat.click("Очистить")
     assert (await users.get(42)).profile.skills
-    await chat.click("← Назад")
-    assert (await users.editor.get(42)).profile.skills
-    data = await chat.click("Сохранить правки")
+    assert not (await users.editor.get(42)).profile.skills
+    data = await chat.click("Отменить все правки")
+    assert (await users.get(42)).profile.skills
     revision = (await users.get(42)).revision
     await chat.dispatcher.feed_update(chat.bot, callback_update(data))
     assert (await users.get(42)).revision == revision
+    await chat.bot.session.close()
+
+
+async def test_bulk_skill_edit_keeps_prior_tenure_and_job_links(sessions):
+    users = UserService(sessions)
+    _, episode_id = await seed_profile(users)
+    edit = await users.editor.open(42)
+    original = next(f for f in edit.profile.professional_facts.facts if f.kind == "skill")
+    edit = await change(users.editor, 42, edit, "skill", original.id, "years", "2.5")
+    await users.editor.act(42, edit.token, ["save"])
+    chat = Chat(users)
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Навыки")
+    await chat.field("Изменить списком", "PYTHON, Git")
+    await chat.click("Сохранить правки")
+    profile = (await users.get(42)).profile
+    kept = next(f for f in profile.professional_facts.facts if f.id == original.id)
+    episode = next(e for e in profile.professional_facts.episodes if e.id == episode_id)
+    assert kept.years.value == 2.5 and kept.id in episode.skill_ids
+    assert set(profile.skills) == {"python", "git"} and profile.skills["git"].years is None
+    await chat.bot.session.close()
+
+
+async def test_skill_grid_preserves_page_and_shows_work_only_when_linked(sessions):
+    users = UserService(sessions)
+    _, episode_id = await seed_profile(users)
+    edit = await users.editor.open(42)
+    for n in range(1, 15):
+        edit = await change(users.editor, 42, edit, "skill", "", "new", f"Skill {n}")
+    await users.editor.act(42, edit.token, ["save"])
+    chat = Chat(users)
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Навыки")
+    message = chat.transport.requests[-1]
+    assert "Страница 1 из 2" in message.text and "python" not in message.text
+    rows = message.reply_markup.inline_keyboard
+    assert [len(row) for row in rows[:6]] == [2] * 6
+    await chat.click("python")
+    assert "Разработчик" in chat.transport.requests[-1].text
+    assert "Наличие" not in chat.transport.requests[-1].text
+    await chat.click("← Назад")
+    await chat.click("Следующие →")
+    await chat.click("skill 14")
+    assert "записях об опыте" not in chat.transport.requests[-1].text
+    await chat.click("Изменить статус")
+    await chat.click("Нет")
+    assert "указано отсутствие" in chat.transport.requests[-1].text
+    await chat.click("← Назад")
+    assert "Страница 2 из 2" in chat.transport.requests[-1].text
+    await chat.click("skill 14")
+    await chat.click("Удалить…")
+    await chat.click("Да, удалить")
+    assert "Страница 2 из 2" in chat.transport.requests[-1].text
+    await chat.click("Сохранить правки")
+    assert (await users.get(42)).profile.professional_facts.episodes[0].id == episode_id
+    await chat.bot.session.close()
+
+
+async def test_salary_buttons_keep_amount_and_currency_together_after_restart(sessions):
+    users = UserService(sessions)
+    await seed_profile(users)
+    chat = Chat(users)
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Условия поиска")
+    await chat.click("Зарплата")
+    rows = chat.transport.requests[-1].reply_markup.inline_keyboard
+    assert [button.text for button in rows[0]] == ["RUB", "USD", "EUR"]
+    await chat.click("USD")
+    assert not (await users.editor.get(42)).dirty
+    restarted = Chat(UserService(sessions))
+    await restarted.send("2500 на руки")
+    await restarted.click("Сохранить правки")
+    prefs = (await users.get(42)).profile.preferences
+    assert (prefs.salary_min, prefs.currency, prefs.salary_gross) == (2500, "USD", False)
+    await restarted.send("/profile")
+    await restarted.click("Изменить профиль")
+    await restarted.click("Условия поиска")
+    await restarted.field("Зарплата", "от 100000 рублей")
+    await restarted.click("Сохранить правки")
+    prefs = (await users.get(42)).profile.preferences
+    assert (prefs.salary_min, prefs.currency, prefs.salary_gross) == (100000, "RUB", False)
+    await restarted.bot.session.close()
     await chat.bot.session.close()
 
 
@@ -378,7 +461,7 @@ async def test_partial_import_scope_survives_manual_preference_edit(editor_sessi
     assert facts.input_scope == "partial" and facts.input_ranges == ranges
 
 
-async def test_calendar_total_cannot_survive_changed_dates_or_reappear_on_merge(editor_sessions):
+async def test_calendar_total_recomputed_after_date_edit_and_reimport(editor_sessions):
     users = UserService(editor_sessions)
     await users.register(42)
     text = "Навыки: Python\nОпыт работы\n01.2020 — 12.2022\nДолжность: Инженер"
@@ -390,11 +473,159 @@ async def test_calendar_total_cannot_survive_changed_dates_or_reappear_on_merge(
     edit = await change(users.editor, 42, edit, "basic", "", "remote", "required")
     edit = await change(users.editor, 42, edit, "episode", key, "ended", "2021-12")
     await users.editor.act(42, edit.token, ["save"])
-    assert (await users.get(42)).profile.experience_years is None
+    assert (await users.get(42)).profile.experience_years == 2
     draft = await users.resumes.prepare(42, text)
     user = await users.resumes.confirm(42, draft.token)
-    assert user.profile.experience_years is None
+    assert user.profile.experience_years == 2
     assert user.profile.professional_facts.episodes[0].ended.value.year == 2021
+
+
+async def test_manual_total_and_calendar_are_visible_and_used_after_switch(sessions):
+    from jobs.semantic_documents import profile_document
+
+    users = UserService(sessions)
+    await seed_profile(users)  # 5 years declared, 4 calendar years in employment.
+    chat = Chat(users)
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Опыт работы")
+    text = chat.transport.requests[-1].text
+    assert "5 лет (указан в профиле)" in text and "периодам работы — 4 г." in text
+    await chat.click("Общий стаж")
+    await chat.click("Рассчитать по датам")
+    assert "4 года (по датам работы)" in chat.transport.requests[-1].text
+    await chat.click("Опыт и проекты (1)")
+    await chat.click("+ Проект")
+    await chat.click("Вид опыта")
+    await chat.click("Коммерческий проект")
+    await chat.field("Начало", "2019-01")
+    await chat.field("Окончание", "2020-12")
+    await chat.click("Сохранить правки")
+    profile = (await users.get(42)).profile
+    assert total_experience(profile).value == profile.experience_years == 5
+    assert "all roles): 5.0 years" in profile_document(profile).text
+    await chat.bot.session.close()
+
+
+async def test_documents_are_editable_from_empty_profile_and_resume_review(sessions):
+    users = UserService(sessions)
+    chat = Chat(users)
+    await chat.send("/start")
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Документы и допуски")
+    assert "не указаны" in chat.transport.requests[-1].text
+    await chat.field("Изменить список", "права B; медкнижка до 31.12.2027")
+    assert (await users.editor.get(42)).view == ["documents"]
+    await chat.click("Сохранить правки")
+    assert len((await users.get(42)).profile.qualifications) == 2
+    await chat.send("/resume Навыки: Python, Git\nЖелаемая должность: Аналитик")
+    await chat.click("Проверить и исправить")
+    await chat.click("Документы и допуски")
+    assert "2027-12-31" in chat.transport.requests[-1].text
+    await chat.click("Изменить список")
+    await chat.click("Очистить")
+    await chat.click("Вернуться к подтверждению импорта")
+    assert len((await users.get(42)).profile.qualifications) == 2
+    await chat.click("Применить к профилю")
+    assert (await users.get(42)).profile.qualifications == []
+    await chat.bot.session.close()
+
+
+async def test_old_dated_profile_and_open_draft_use_calendar_without_losing_edits(sessions):
+    from domain.professional import digest
+    from nlp.professional_facts import candidate_facts
+
+    users = UserService(sessions)
+    profile, _ = await seed_profile(users)
+    # A profile saved by the old editor can contain complete dates and no total.
+    facts = profile.professional_facts
+    profile.experience_years = None
+    facts.facts = [f for f in facts.facts if f.kind != "experience_total"]
+    facts.input_sha256 = facts.source_revision = profile_input_revision(profile)
+    original_hash = digest([facts.input_sha256, facts.revision])
+    async with sessions.begin() as session:
+        stored = await session.get(TelegramUserModel, 42)
+        stored.profile = profile_payload(profile)
+        stored.professional_facts = facts.model_dump(mode="json")
+        stored.facts_input_revision = facts.input_sha256
+        profile.preferences.locations = ["Казань"]
+        profile.professional_facts = candidate_facts(
+            profile, 42, previous=facts, confirmed_fields={"locations"}
+        )
+        session.add(
+            ProfileEditModel(
+                user_id=42,
+                token="old-editor",
+                base_revision=stored.profile_revision,
+                payload={
+                    "profile": profile.model_dump(mode="json"),
+                    "target": "profile",
+                    "view": ["career"],
+                    "dirty": True,
+                    "base_profile_hash": original_hash,
+                },
+            )
+        )
+    old = (await users.get(42)).profile
+    assert total_experience(old).value == old.experience_years == 4
+    edit = await users.editor.open(42)
+    await users.editor.act(42, edit.token, ["save"])
+    saved = (await users.get(42)).profile
+    assert saved.experience_years == 4 and saved.preferences.locations == ["Казань"]
+
+
+async def test_latest_accepts_legacy_profile_with_experience_derived_on_read(
+    editor_sessions, vacancy
+):
+    users = UserService(editor_sessions, min_score=0)
+    profile, _ = await seed_profile(users)
+    profile.experience_years = None
+    facts = profile.professional_facts
+    facts.facts = [f for f in facts.facts if f.kind != "experience_total"]
+    facts.input_sha256 = facts.source_revision = profile_input_revision(profile)
+    stored_facts = facts.model_dump(mode="json")
+    async with editor_sessions.begin() as session:
+        row = await session.get(TelegramUserModel, 42)
+        row.profile = profile_payload(profile)
+        row.professional_facts = stored_facts
+        row.facts_input_revision = facts.input_sha256
+        write_revision = row.profile_revision
+        opening = job(vacancy, datetime.now(UTC), valid_until=None)
+        await VacancyRepository(session).save(opening)
+
+    assert (await users.get(42)).profile.experience_years == 4
+    chat = Chat(users)
+    try:
+        await chat.send("/latest")
+        messages = [r for r in chat.transport.requests if isinstance(r, SendMessage)]
+        assert len(messages) == 1 and messages[0].text.startswith(opening.title + "\n")
+    finally:
+        await chat.bot.session.close()
+
+    async with editor_sessions() as session:
+        row = await session.get(TelegramUserModel, 42)
+        assert row.profile["experience_years"] is None
+        assert row.professional_facts == stored_facts
+        assert row.profile_revision == write_revision
+
+
+async def test_import_merges_work_periods_and_explicit_zero_overrides_calendar(sessions):
+    users = UserService(sessions)
+    await users.register(42)
+    for years in ("01.2019 — 12.2020", "01.2020 — 12.2021"):
+        draft = await users.resumes.prepare(42, f"Опыт работы\n{years}\nДолжность: Аналитик")
+        saved = await users.resumes.confirm(42, draft.token)
+    assert total_experience(saved.profile).value == saved.profile.experience_years == 3
+    draft = await users.resumes.prepare(42, "Общий стаж: 7 лет\nОпыт работы\n01.2020 — 12.2021")
+    merged = await users.resumes.confirm(42, draft.token)
+    assert total_experience(merged.profile).alternatives == [3, 7]
+    assert merged.profile.experience_years is None
+    edit = await users.editor.open(42)
+    edit = await change(users.editor, 42, edit, "basic", "", "experience", "0")
+    await users.editor.act(42, edit.token, ["save"])
+    saved = (await users.get(42)).profile
+    assert total_experience(saved).value == saved.experience_years == 0
 
 
 async def test_comparison_and_real_retrieval_receive_manual_facts(editor_sessions, vacancy):
@@ -486,13 +717,17 @@ async def test_mandatory_preference_reaches_eligibility_through_bot(editor_sessi
     assert score_vacancy(v, (await users.get(42)).profile).eligible
     chat = Chat(users)
     await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Условия поиска")
     await chat.click("Формат работы")
     await chat.click("Только удалённо")
     await chat.click("Сохранить правки")
     assert not score_vacancy(v, (await users.get(42)).profile).eligible
     await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Условия поиска")
     await chat.click("Формат работы")
-    await chat.click("Не знаю / очистить")
+    await chat.click("Любой")
     await chat.click("Сохранить правки")
     assert score_vacancy(v, (await users.get(42)).profile).eligible
     await chat.bot.session.close()
@@ -596,19 +831,78 @@ async def test_resume_review_and_confirmation_buttons_use_edited_snapshot(editor
     await chat.send("/resume Навыки: Python\nОпыт работы\n01.2020 — 12.2021\nДолжность: Инженер")
     old_confirm = chat.data("Применить к профилю")
     await chat.click("Проверить и исправить")
+    await chat.click("Опыт работы")
     await chat.click("Опыт и проекты (1)")
     edit = await users.editor.get(42)
     _, actions = screen(edit)
     label = next(label for label, action in actions if action[:3] == ["view", "item", "episode"])
     await chat.click(label)
-    await chat.field("Организация", "Исправлено в Telegram")
+    await chat.field("Задачи", "Проектирование систем")
     await chat.click("Вернуться к подтверждению импорта")
     await chat.dispatcher.feed_update(chat.bot, callback_update(old_confirm))
     assert not (await users.get(42)).profile.professional_facts.episodes
     await chat.click("Применить к профилю")
-    assert (await users.get(42)).profile.professional_facts.episodes[
-        0
-    ].organization.value == "Исправлено в Telegram"
+    facts = (await users.get(42)).profile.professional_facts
+    assert any(
+        f.id in facts.episodes[0].task_ids and f.name == "Проектирование систем"
+        for f in facts.facts
+    )
+    await chat.bot.session.close()
+
+
+async def test_browsing_profile_does_not_block_pasted_resume_or_apply(editor_sessions):
+    users = UserService(editor_sessions)
+    chat = Chat(users)
+    await chat.send("/start")
+    await chat.send("Git")
+    await chat.send("2")
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Навыки")
+    await chat.send(
+        "Резюме\nЖелаемая должность: Аналитик\nНавыки: SQL, Python\nОпыт работы: 3 года"
+    )
+    assert await users.editor.get(42) is None
+    await chat.click("Проверить и исправить")
+    assert (await users.editor.get(42)).target == "resume"
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    assert (await users.editor.get(42)).target == "profile"
+    await chat.send("/resume")
+    await chat.click("Применить к профилю")
+    assert (await users.get(42)).profile.preferences.positions == ["Аналитик"]
+    assert await users.editor.get(42) is None
+    await chat.bot.session.close()
+
+
+@pytest.mark.parametrize("keep", [True, False])
+async def test_import_can_keep_or_discard_genuine_profile_edits_in_place(editor_sessions, keep):
+    users = UserService(editor_sessions)
+    chat = Chat(users)
+    await chat.send("/start")
+    await chat.send("/profile")
+    await chat.click("Изменить профиль")
+    await chat.click("Опыт работы")
+    await chat.field("Общий стаж", "7")
+    await chat.send("/resume Навыки: Python, Git\nЖелаемая должность: Разработчик")
+    await chat.click("Применить к профилю")
+    stale = chat.data("Отменить правки и применить резюме")
+    assert len(stale.encode()) <= 64
+    assert (await users.get(42)).profile.experience_years is None
+    if keep:
+        await chat.click("Сохранить правки и сверить резюме")
+        assert (await users.get(42)).profile.experience_years == 7
+        assert not (await users.get(42)).profile.skills
+        await chat.dispatcher.feed_update(chat.bot, callback_update(stale))
+        assert isinstance(chat.transport.requests[-1], AnswerCallbackQuery)
+        assert chat.transport.requests[-1].show_alert
+        await chat.click("Применить к профилю")
+    else:
+        await chat.click("Отменить правки и применить резюме")
+    user = await users.get(42)
+    assert "python" in user.profile.skills
+    assert user.profile.experience_years == (7 if keep else None)
+    assert await users.editor.get(42) is None
     await chat.bot.session.close()
 
 

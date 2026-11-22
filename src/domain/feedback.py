@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 from uuid import UUID
 
@@ -23,6 +23,8 @@ class FeedbackState:
     applied: bool = False
     reason: str | None = None
     version: int = 0
+    # Only the action that first rates the active Telegram message advances the feed.
+    advance_feed: bool = field(default=False, compare=False)
 
 
 @dataclass(frozen=True)

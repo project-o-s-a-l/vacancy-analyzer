@@ -63,6 +63,7 @@ def retrieval_contract():
             (
                 "jobs/candidates.py",
                 "scoring/retrieval.py",
+                "scoring/title_aliases.py",
                 "scoring/fact_projection.py",
                 "domain/retrieval.py",
                 "storage/retrieval_sql.py",

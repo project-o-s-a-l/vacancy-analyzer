@@ -86,7 +86,7 @@ def test_any_profession_matches_profile_terms_without_registering_dictionary(
     match = score_vacancy(vacancy, profile)
     assert match.components["skills"] == 1
     assert set(match.matched_skills) == {canonical_skill(skill) for skill in skills}
-    assert match.components["title"] == 1 and match.score >= 50
+    assert match.components["title"] is None and match.score >= 50
     assert any("полный список требований не подтверждён" in warning for warning in match.warnings)
     unrelated = vacancy.model_copy(
         update={"title": "Другая специальность", "description": "Совсем другие задачи"}

@@ -17,7 +17,7 @@ from domain.professional import (
     ValueFact,
     digest,
 )
-from nlp.resume_document import PRESENT, interval, parse_date
+from nlp.resume_document import PRESENT, counts_as_work, interval, parse_date
 
 
 def document_facts(text, extraction, owner_id, *, version):
@@ -180,7 +180,7 @@ def document_facts(text, extraction, owner_id, *, version):
                 )
             ],
         )
-        if period.kind == "employment" and valid:
+        if counts_as_work(period.kind, period.context) and valid:
             date_evidence += ev_start + ev_end
     structured = [
         Evidence(

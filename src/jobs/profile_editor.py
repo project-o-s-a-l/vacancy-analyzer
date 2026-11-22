@@ -6,7 +6,8 @@ from uuid import uuid4
 from domain import CandidateProfile
 from domain.professional import digest
 from jobs.profile_details import change
-from jobs.resumes import ResumeService, prepared_profile, profile_hash
+from jobs.resumes import ResumeService, prepared_profile, profile_hash, release_resume_editor
+from nlp.profile_experience import sync_profile_experience
 from storage.models import ProfileEditModel, ResumeModel
 from storage.repositories.user_repository import UserRepository
 
@@ -23,23 +24,39 @@ class EditSession:
     base_profile_hash: str
 
 
-def snapshot_hash(profile):
-    from nlp.professional_facts import profile_input_revision
-
-    return digest([profile_input_revision(profile), profile.professional_facts.revision])
+def snapshot_hash(user):
+    return digest([user.input_revision, user.facts_revision])
 
 
 def read_edit(row):
+    view = row.payload["view"]
+    if view[0] == "parents":
+        view = ["item", "episode", view[1]]
+    elif view[0] == "input" and (
+        (view[1] == "episode" and view[3] in {"organization", "title", "parent", "skills"})
+        or (view[1] == "skill" and view[3] in {"years", "level", "last_used"})
+    ):
+        view = ["item", view[1], view[2]]
     return EditSession(
         row.token,
         row.base_revision,
-        CandidateProfile.model_validate(row.payload["profile"]),
-        row.payload["view"],
+        sync_profile_experience(CandidateProfile.model_validate(row.payload["profile"])),
+        view,
         row.payload["target"],
         row.payload.get("resume_token"),
         row.payload.get("dirty", False),
         row.payload["base_profile_hash"],
     )
+
+
+def section_for(field):
+    if field == "skills":
+        return "home"
+    if field == "qualifications":
+        return "documents"
+    if field == "experience":
+        return "career"
+    return "preferences"
 
 
 class ProfileEditor:
@@ -56,20 +73,38 @@ class ProfileEditor:
             row = await session.get(ProfileEditModel, owner)
             return read_edit(row) if row else None
 
-    async def open(self, owner, *, view=None, resume_token=None):
+    async def open(self, owner, *, view=None, resume_token=None, discard=None):
         self._enabled()
         async with self.sessions.begin() as session:
             user = await UserRepository(session).get(owner, lock=True)
             if user is None:
                 raise ValueError("Начните с /start.")
             row = await session.get(ProfileEditModel, owner)
+            if resume_token and (row is None or row.payload.get("resume_token") != resume_token):
+                await release_resume_editor(session, row, resume_token, discard)
+                row = None
+            if row and not row.payload.get("dirty"):
+                opening_profile = view is not None and resume_token is None
+                base_changed = row.base_revision != user.revision or (
+                    row.payload["base_profile_hash"] != snapshot_hash(user)
+                )
+                if base_changed or (opening_profile and row.payload["target"] == "resume"):
+                    await session.delete(row)
+                    await session.flush()
+                    row = None
             if row:
                 edit = read_edit(row)
                 await self._current(session, user, edit)
-                if resume_token is not None and edit.resume_token != resume_token:
-                    raise ValueError(
-                        "Сначала сохраните или отмените текущую правку через /profile."
-                    )
+                if (
+                    view
+                    and view != edit.view
+                    and (not edit.dirty or view != ["home"])
+                    and not resume_token
+                    and edit.target == "profile"
+                ):
+                    row.token = uuid4().hex
+                    row.payload = {**row.payload, "view": view}
+                    return read_edit(row)
                 return edit
             profile = user.profile
             if resume_token:
@@ -86,7 +121,7 @@ class ProfileEditor:
                     target="resume" if resume_token else "profile",
                     resume_token=resume_token,
                     dirty=False,
-                    base_profile_hash=snapshot_hash(user.profile),
+                    base_profile_hash=snapshot_hash(user),
                 ),
             )
             session.add(row)
@@ -111,7 +146,7 @@ class ProfileEditor:
         if (
             user is None
             or user.revision != edit.base_revision
-            or snapshot_hash(user.profile) != edit.base_profile_hash
+            or snapshot_hash(user) != edit.base_profile_hash
         ):
             raise ValueError(
                 "Профиль изменился. /cancel отменит эту правку; затем откройте /profile."
@@ -130,6 +165,34 @@ class ProfileEditor:
                 await session.delete(row)
             return row is not None
 
+    async def save_before_resume(self, owner, resume_token, edit_key):
+        """Keep pending edits and issue a fresh preview before the user applies the import."""
+        self._enabled()
+        async with self.sessions.begin() as session:
+            repository = UserRepository(session)
+            user = await repository.get(owner, lock=True)
+            resume = await session.get(ResumeModel, owner)
+            draft = ResumeService._draft(resume, resume_token)
+            row = await session.get(ProfileEditModel, owner)
+            if row is None or user is None:
+                raise ValueError("Правки уже закрыты. Откройте текущее резюме.")
+            edit = read_edit(row)
+            self._resume_current(user, draft)
+            await self._current(session, user, edit)
+            await release_resume_editor(session, row, resume_token, edit_key)
+            if edit.target == "resume":
+                draft.reviewed_profile = edit.profile
+            else:
+                if draft.reviewed_profile is not None:
+                    raise ValueError("В этом резюме уже сохранена отдельная версия профиля.")
+                user = await repository.save(replace(user, profile=edit.profile, form_state=None))
+                draft.apply_mode = "merge"
+                draft.profile_revision = user.revision
+                draft.profile_hash = profile_hash(user.profile)
+            draft.token = uuid4().hex
+            resume.draft = draft.model_dump(mode="json")
+            return draft
+
     async def act(self, owner, token, action, *, text=None):
         """Token is consumed once per step, including navigation and confirmation."""
         self._enabled()
@@ -139,13 +202,13 @@ class ProfileEditor:
             row = await session.get(ProfileEditModel, owner)
             if row is None or row.token != token:
                 raise ValueError("Кнопка устарела. Откройте /profile или /resume.")
-            edit = read_edit(row)
-            await self._current(session, user, edit)
-            payload = dict(row.payload)
             op, *args = action
             if op == "cancel":
                 await session.delete(row)
                 return None
+            edit = read_edit(row)
+            await self._current(session, user, edit)
+            payload = dict(row.payload)
             if op == "save":
                 if edit.target == "profile":
                     await repository.save(replace(user, profile=edit.profile, form_state=None))
@@ -160,19 +223,20 @@ class ProfileEditor:
             if op == "view":
                 payload["view"] = args
             elif op == "set" or op == "text":
+                back_page = []
                 if op == "text":
                     if edit.view[0] != "input":
                         raise ValueError("Выберите поле кнопкой.")
                     kind, key, field = edit.view[1:]
                     value = text
                 else:
-                    kind, key, field, value = args
+                    kind, key, field, value, *back_page = args
                 profile, new_key = change(edit.profile, owner, kind, key, field, value)
                 payload.update(profile=profile.model_dump(mode="json"), dirty=True)
                 if field == "delete":
-                    payload["view"] = ["list", kind, 0]
+                    payload["view"] = ["list", kind, back_page[0] if back_page else 0]
                 elif kind == "basic":
-                    payload["view"] = ["preferences"]
+                    payload["view"] = [section_for(field)]
                 else:
                     payload["view"] = ["item", kind, new_key or key]
             else:

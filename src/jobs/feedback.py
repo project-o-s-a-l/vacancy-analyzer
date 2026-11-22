@@ -2,11 +2,13 @@ import logging
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from domain import CandidateProfile, Vacancy
 from domain.feedback import FeedbackAction, FeedbackState, HistoryResetRequest
+from domain.matching import MatchResult
 from observability import emit_event
 from observability.actions import observed
 from observability.transactions import after_commit
@@ -107,7 +109,21 @@ class FeedbackService:
             vacancy = await VacancyRepository(session).get_by_id(vacancy_id)
             if vacancy is None:
                 raise ValueError("Вакансия больше недоступна")
+            await VacancyRepository(session).attach_source_links([vacancy])
             return vacancy, state
+
+    async def shown_match(self, user_id: int, vacancy_id: UUID, message_id: int) -> MatchResult:
+        async with self.sessions() as session:
+            snapshot = await FeedbackRepository(session).confirmed_snapshot(
+                user_id, vacancy_id, message_id
+            )
+            data = (snapshot.context or {}).get("match")
+            try:
+                return MatchResult.model_validate(data)
+            except ValidationError:
+                raise ValueError(
+                    "Для этой карточки разбор недоступен. Откройте /history."
+                ) from None
 
     @observed("feedback")
     async def record(
@@ -187,4 +203,6 @@ class FeedbackService:
             user = await UserRepository(session).get(user_id)
             if user is None:
                 raise ValueError("Сначала зарегистрируйтесь командой /start")
-            return user.profile, await FeedbackRepository(session).page(user_id, kind, page)
+            items = await FeedbackRepository(session).page(user_id, kind, page)
+            await VacancyRepository(session).attach_source_links([v for v, _ in items])
+            return user.profile, items

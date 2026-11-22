@@ -8,11 +8,10 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import CallbackQuery, Message
 
 from bot.cards import render_profile
-from bot.keyboards import (
-    form_keyboard,
-    profile_keyboard,
-)
-from bot.profile_form import PROMPTS
+from bot.help import HELP
+from bot.keyboards import form_keyboard, main_keyboard
+from bot.profile_form import PROMPTS, salary_prompt
+from jobs.profiles import SETUP_FIELDS
 from jobs.users import UserService
 from observability import operation
 from storage.database import DATABASE_ERRORS
@@ -58,19 +57,28 @@ class PrivateChatsMiddleware(BaseMiddleware):
         return None
 
 
-async def send_form(message: Message, user: RegisteredUser) -> None:
+async def send_form(message: Message, user: RegisteredUser, *, replace: bool = False) -> None:
+    send = message.edit_text if replace else message.answer
     if user.form_state:
-        field = user.form_state.split(":", 1)[1]
-        await message.answer(
-            PROMPTS[field] + "\n/cancel — закончить редактирование.",
+        mode, field, *selection = user.form_state.split(":")
+        text = PROMPTS[field]
+        if field == "salary":
+            prefs = user.profile.preferences
+            text = salary_prompt(prefs, selection[0] if selection else prefs.currency)
+        if mode == "setup" and field in SETUP_FIELDS:
+            step = SETUP_FIELDS.index(field) + 1
+            text = f"Шаг {step} из {len(SETUP_FIELDS)}\n{text}"
+            if field == "skills":
+                text = f"{HELP}\n\n{text}\n\nМожно также прикрепить резюме."
+        await send(
+            text,
             reply_markup=form_keyboard(field, user.revision),
             parse_mode=None,
         )
     else:
-        await message.answer(
-            "Профиль сохранён. Рекомендации доступны по /latest.\n\n"
-            + render_profile(user.profile),
-            reply_markup=profile_keyboard(),
+        await send(
+            render_profile(user.profile, title="Профиль сохранён"),
+            reply_markup=main_keyboard(),
             parse_mode=None,
         )
 

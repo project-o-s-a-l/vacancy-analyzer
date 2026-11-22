@@ -652,7 +652,7 @@ def test_llm_requirements_and_experience_affect_existing_matching_contract(
     assert len(match.alternatives) == 1
     assert match.requirements_version == "vacancy-analysis-v1"
     card = render_card(job, match)
-    assert "Категория: IT и данные" in card and "конфликт" in card
+    assert "IT и данные" in card and "требования к стажу стоит уточнить" in card
     assert job.experience == "no_experience"
 
 
@@ -815,7 +815,7 @@ def test_partial_llm_coverage_does_not_hide_requirements_from_full_description(
     assert "sql" in match.missing_unspecified  # Preferred and required are an explicit conflict.
     assert match.components["skills"] == fallback.components["skills"]
     assert match.requirements_version == fallback.requirements_version == "requirements-v2"
-    assert "Категория: IT и данные" in render_card(job, match)
+    assert "IT и данные" in render_card(job, match)
 
 
 @pytest.mark.parametrize("host", ["collection", "catalog"])

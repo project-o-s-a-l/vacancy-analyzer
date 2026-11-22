@@ -177,7 +177,7 @@ async def test_direct_missing_confirms_closed_and_search_can_reopen(
 ):
     sessions = catalog_sessions
     key = await save(sessions, vacancy)
-    now = vacancy.collected_at + timedelta(days=2)
+    now = vacancy.collected_at + timedelta(days=3)
     response = requests.Response()
     response.status_code = status
     source = SimpleNamespace(
@@ -207,7 +207,7 @@ async def test_uncertainty_never_closes_or_changes_publication(
 ):
     sessions = catalog_sessions
     key = await save(sessions, vacancy)
-    now = vacancy.collected_at + timedelta(days=2)
+    now = vacancy.collected_at + timedelta(days=3)
     source = SimpleNamespace(get_vacancy=AsyncMock(side_effect=error))
     if stop:
         with pytest.raises(CollectionStopped):
@@ -234,7 +234,7 @@ async def test_recheck_preserves_typed_block_context(catalog_sessions, vacancy, 
         )
     )
     with pytest.raises(CollectionStopped) as stopped:
-        await check_catalog(source, catalog_sessions, now=vacancy.collected_at + timedelta(days=2))
+        await check_catalog(source, catalog_sessions, now=vacancy.collected_at + timedelta(days=3))
     assert stopped.value.code == f"hh_http_{status}"
     assert stopped.value.status_code == status
     assert stopped.value.stage == "catalog_check"
@@ -246,7 +246,7 @@ async def test_recheck_preserves_typed_block_context(catalog_sessions, vacancy, 
 
 async def test_rechecks_are_bounded_and_expired_excluded(catalog_sessions, vacancy):
     sessions = catalog_sessions
-    now = vacancy.collected_at + timedelta(days=2)
+    now = vacancy.collected_at + timedelta(days=3)
     for number in range(5):
         item = vacancy.model_copy(
             update={
@@ -335,7 +335,7 @@ async def test_normal_ranking_excludes_closed_and_expired_but_keeps_uncertainty(
                     "id": uuid4(),
                     "source_id": str(number),
                     "published_at": now - timedelta(days=100),
-                    "collected_at": now - timedelta(days=2),
+                    "collected_at": now - timedelta(days=3),
                     "valid_until": now - timedelta(hours=1) if number == 2 else None,
                 }
             ),
@@ -361,7 +361,7 @@ async def test_block_stops_rechecks_before_next_card(catalog_sessions, vacancy):
         await save(sessions, vacancy.model_copy(update={"id": uuid4(), "source_id": str(number)}))
     source = SimpleNamespace(get_vacancy=AsyncMock(side_effect=CollectionStopped("captcha")))
     with pytest.raises(CollectionStopped):
-        await check_catalog(source, sessions, limit=3, now=vacancy.collected_at + timedelta(days=2))
+        await check_catalog(source, sessions, limit=3, now=vacancy.collected_at + timedelta(days=3))
     assert source.get_vacancy.await_count == 1
 
 

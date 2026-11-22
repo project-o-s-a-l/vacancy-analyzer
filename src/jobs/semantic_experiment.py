@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from domain import CandidateProfile, Vacancy
+from domain.retrieval import RetrievalParameters
 from domain.vacancy_analysis import is_fresh
 from jobs.benchmark_data import load_bundle, vacancy_key
 from jobs.candidates import retrieve_candidates
@@ -162,6 +163,8 @@ async def run_semantic_experiment(
         "case_id": measured_case,
     }
     base_source = MemoryCandidateSource(catalog.vacancies)
+    # The frozen semantic comparison has its own fixed cutoff.
+    parameters = RetrievalParameters(k=64)
     labels = defaultdict(dict)
     for j in judgments:
         labels[j.case_id][j.vacancy_key] = j.relevance
@@ -174,6 +177,7 @@ async def run_semantic_experiment(
             base_index,
             vectors[case.id],
             now=catalog.reference_time,
+            parameters=parameters,
             candidate_source=base_source,
         )
         metrics.append(
@@ -197,7 +201,11 @@ async def run_semantic_experiment(
     for name in sorted({p["case_id"] for p in review["pairs"]}):
         started = time.perf_counter()
         base = await retrieve_candidates(
-            None, query_profiles[name], now=observed, candidate_source=review_source
+            None,
+            query_profiles[name],
+            parameters=parameters,
+            now=observed,
+            candidate_source=review_source,
         )
         rank_vacancies(base.items, query_profiles[name], now=observed)
         lexical_seconds = time.perf_counter() - started
@@ -208,6 +216,7 @@ async def run_semantic_experiment(
             review_index,
             vectors[name],
             now=observed,
+            parameters=parameters,
             candidate_source=review_source,
         )
         candidate_seconds = time.perf_counter() - started
@@ -303,7 +312,7 @@ async def run_semantic_experiment(
         ).hexdigest(),
         "rrf_constant": 60,
         "novelty_fraction": 0.25,
-        "k": 64,
+        "k": parameters.k,
         "min_score": 50,
         "top": 5,
         "metrics": metrics,

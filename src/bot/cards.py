@@ -1,16 +1,25 @@
+import re
+from datetime import UTC, datetime
+
+from aiogram.utils.formatting import Bold, Text, as_list
+
 from domain import CandidateProfile, Vacancy
 from domain.matching import MatchResult
+from domain.vacancy import SOURCE_NAMES
 from domain.vacancy_analysis import CATEGORY_LABELS
+from jobs.catalog_freshness import RECHECK_AFTER
 from nlp.analysis_identity import current_vacancy_analysis as current_analysis
+from nlp.extraction import canonical_skill
+from nlp.profile_experience import work_calendar
 from scoring.presentation import evidence_label, score_label
 
 EXPERIENCE_LABELS = {
-    "no_experience": "Без опыта",
+    "no_experience": "без опыта",
     "1-3": "1–3 года",
     "3-6": "3–6 лет",
-    "6+": "Более 6 лет",
+    "6+": "более 6 лет",
 }
-PERIOD_LABELS = {"MONTH": "мес.", "HOUR": "час", "YEAR": "год", "SHIFT": "смену"}
+PERIOD_LABELS = {"MONTH": "в месяц", "HOUR": "в час", "YEAR": "в год", "SHIFT": "за смену"}
 REMOTE_LABELS = {
     "any": "любой",
     "preferred": "предпочтительно удалённо",
@@ -18,13 +27,13 @@ REMOTE_LABELS = {
     "office": "на месте работы",
 }
 QUALIFICATION_LABELS = {
-    "declared_present": "есть со слов пользователя; без проверки",
-    "declared_absent": "указано, что нет",
-    "expired": "указанный срок закончился",
-    "unknown": "не указано в профиле",
-    "uncertain": "нужна ручная проверка",
+    "declared_present": "есть с ваших слов",
+    "declared_absent": "вы указали, что его нет",
+    "expired": "срок действия истёк",
+    "unknown": "не указан в профиле",
+    "uncertain": "стоит уточнить",
     "not_required": "не требуется",
-    "context": "упоминание в описании",
+    "context": "упомянут в описании",
 }
 
 
@@ -45,184 +54,314 @@ def split_message(text: str, limit: int = 3500) -> list[str]:
 
 
 def _short(value: str, limit: int) -> str:
-    # Bound UTF-16 length as well as Python's codepoint count (e.g. emoji).
     value = " ".join(value.split())
-    if len(value.encode("utf-16-le")) // 2 <= limit:
+    encoded = value.encode("utf-16-le")
+    if len(encoded) <= limit * 2:
         return value
-    return value.encode("utf-16-le")[: (limit - 1) * 2].decode("utf-16-le", errors="ignore") + "…"
+    return encoded[: (limit - 1) * 2].decode("utf-16-le", errors="ignore").rstrip() + "…"
+
+
+def _amount_range(lower, upper) -> str:
+    if lower == upper:
+        amount = f"{lower:,.0f}"
+    elif lower is None:
+        amount = f"до {upper:,.0f}"
+    elif upper is None:
+        amount = f"от {lower:,.0f}"
+    else:
+        amount = f"{lower:,.0f}–{upper:,.0f}"
+    return amount.replace(",", " ")
 
 
 def _salary(vacancy: Vacancy) -> str:
-    lower, upper = vacancy.salary_from, vacancy.salary_to
-    if lower is None and upper is None:
-        return "Зарплата не указана"
-    amount = (
-        f"{lower:,}–{upper:,}"
-        if lower is not None and upper is not None
-        else (f"от {lower:,}" if lower is not None else f"до {upper:,}")
+    if vacancy.salary_from is None and vacancy.salary_to is None:
+        return _short(vacancy.salary_raw or "Зарплата не указана", 150)
+    amount = _amount_range(vacancy.salary_from, vacancy.salary_to)
+    currency = {"RUB": "₽", "RUR": "₽"}.get(vacancy.currency, vacancy.currency)
+    period = PERIOD_LABELS.get(vacancy.salary_period, "· период не указан")
+    tax = {True: "до налогов", False: "на руки", None: "налоги не указаны"}[vacancy.salary_gross]
+    return f"{amount} {currency or '(валюта не указана)'} {period} · {tax}"
+
+
+def _minimum_years(years: float) -> str:
+    if years == 0:
+        return "без опыта"
+    unit = "года" if years % 1 or (years % 10 == 1 and years % 100 != 11) else "лет"
+    return f"от {years:g} {unit}".replace(".", ",")
+
+
+def _experience(vacancy: Vacancy, match: MatchResult) -> str | None:
+    # The aggregate eligibility minimum can belong to a single skill. Only role or
+    # total tenure belongs on the general experience line.
+    if match.comparison is not None:
+        roles = [
+            item
+            for item in match.comparison.items
+            if item.kind in {"role", "experience_total"} and item.id.startswith("req:experience:")
+        ]
+        if any(item.state == "conflict" and item.years_required is None for item in roles):
+            return "требования к стажу стоит уточнить"
+        for item in roles:
+            if item.importance == "required":
+                return (
+                    _minimum_years(item.years_required)
+                    if item.years_required is not None
+                    else "требуется, минимум лет не указан"
+                )
+    elif match.eligibility:
+        requirement = match.eligibility.experience
+        if requirement.conflict:
+            return "требования к стажу стоит уточнить"
+        if requirement.minimum_years is not None:
+            return _minimum_years(requirement.minimum_years)
+        if requirement.required:
+            return "требуется, минимум лет не указан"
+    return EXPERIENCE_LABELS.get(vacancy.experience)
+
+
+def _source_spelling(name, evidence):
+    pattern = re.compile(re.escape(name), re.IGNORECASE)
+    for item in evidence:
+        original = pattern.search(item.text)
+        if original:
+            return original[0]
+    return name
+
+
+def _match_summary(vacancy: Vacancy, match: MatchResult) -> list[str]:
+    labels = {canonical_skill(name): name for name in vacancy.skills}
+    for requirement in match.requirements:
+        if requirement.skill not in labels:
+            labels[requirement.skill] = _source_spelling(requirement.skill, requirement.evidence)
+
+    def skill_list(values):
+        names = [labels.get(name, name) for name in values[:5]]
+        more = f" и ещё {len(values) - 5}" if len(values) > 5 else ""
+        return _short(", ".join(names), 150) + more
+
+    group = next(
+        (g for g in match.alternatives if g.importance not in {"not_required", "context"}), None
     )
-    tax = {True: "до налогов", False: "на руки", None: "налоги не уточнены"}[vacancy.salary_gross]
-    period = PERIOD_LABELS.get(vacancy.salary_period or "", "период не указан")
-    return f"{amount.replace(',', ' ')} {vacancy.currency or ''} / {period}, {tax}"
+    group_matches = group.matched_options if group and group.satisfied else []
+    standalone = [name for name in match.matched_skills if name not in group_matches]
+    lines = []
+    if standalone:
+        lines.append("Навыки из вашего профиля: " + skill_list(standalone))
+    if match.missing_required:
+        lines.append("Нужны, но не указаны в профиле: " + skill_list(match.missing_required))
+
+    if group:
+        options = " или ".join(labels.get(name, name) for name in group.options)
+        prefix = {
+            "required": "Нужен один из навыков",
+            "preferred": "Будет плюсом один из навыков",
+            "unspecified": "Упомянут один из навыков",
+        }[group.importance]
+        if group.satisfied and group.matched_options:
+            result = "в профиле есть " + skill_list(group.matched_options)
+        elif group.satisfied:
+            result = "условие выполнено"
+        else:
+            result = "стоит уточнить"
+        lines.append(f"{prefix}: {_short(options, 100)} — {result}.")
+
+    if match.comparison:
+        for item in match.comparison.items:
+            if (
+                item.kind == "skill"
+                and item.importance == "required"
+                and item.years_required
+                and item.state != "match"
+            ):
+                name = _short(labels.get(item.name, item.name), 80)
+                lines.append(f"Требуемый опыт с {name}: {_minimum_years(item.years_required)}.")
+                break
+
+    for doc in match.qualifications:
+        if doc.importance in {"not_required", "context"}:
+            continue
+        label = {
+            "required": "Нужен документ",
+            "preferred": "Желательный документ",
+            "unspecified": "В вакансии упомянут документ",
+        }[doc.importance]
+        name = _short(_source_spelling(doc.name, doc.evidence), 100)
+        lines.append(f"{label}: {name} — {QUALIFICATION_LABELS[doc.status]}.")
+        break
+
+    if match.eligibility:
+        issues = [*match.eligibility.exclusions, *match.eligibility.uncertainties]
+        for issue in issues:
+            if issue.field not in {"salary", "remote", "location"}:
+                continue
+            if (
+                issue.code == "salary_incomparable"
+                and vacancy.salary_from is None
+                and vacancy.salary_to is None
+            ):
+                continue  # Salary is already marked as undisclosed above.
+            labels_by_code = {
+                "salary_incomparable": "Уточните, как эта сумма соотносится с вашим минимумом.",
+                "salary_not_guaranteed": "Уточните, предложат ли вам желаемую зарплату.",
+                "remote_preferred": "Вы предпочитаете удалённую работу. Уточните формат.",
+            }
+            lines.append(labels_by_code.get(issue.code, _short(issue.message, 150) + "."))
+            break
+    if match.missing_preferred:
+        lines.append("Будут плюсом: " + skill_list(match.missing_preferred))
+    unclassified = match.missing_unspecified
+    if not (match.missing_required or match.missing_preferred or unclassified):
+        unclassified = match.missing_skills
+    if unclassified:
+        lines.append("Также упомянуты в вакансии: " + skill_list(unclassified))
+    if not lines:
+        lines.append(
+            "В вакансии мало сведений для сравнения навыков."
+            if match.components.get("skills") is None
+            else "Совпадений по навыкам пока нет."
+        )
+    return lines[:4]
+
+
+def format_card(vacancy: Vacancy, match: MatchResult) -> Text:
+    """Native Telegram entities keep employer-supplied text literal."""
+    heading = as_list(Bold(_short(vacancy.title, 180)), _short(vacancy.company, 120))
+    conditions = [_short(_salary(vacancy), 180)]
+    if converted := match.salary_conversion:
+        amount = _amount_range(converted.lower, converted.upper)
+        conditions.append(
+            f"≈ {amount} {converted.currency} по курсу ЦБ на {converted.as_of:%d.%m.%Y}"
+        )
+    work_format = vacancy.work_format or {True: "Удалённо", False: "Без полной удалёнки"}.get(
+        vacancy.remote
+    )
+    place = " · ".join(_short(s, 100) for s in (vacancy.location, work_format) if s)
+    if place:
+        conditions.append(place)
+    experience = _experience(vacancy, match)
+    if experience:
+        conditions.append("Опыт: " + experience)
+
+    sections = [heading]
+    exclusions = match.eligibility.exclusions if match.eligibility else []
+    if vacancy.archived or any(i.code in {"archived", "expired"} for i in exclusions):
+        sections.append("Вакансия в архиве или срок её действия истёк.")
+    elif not match.eligible:
+        sections.append("Не соответствует обязательным условиям вашего профиля.")
+    sections.append(as_list(*conditions))
+    analysis = current_analysis(vacancy)
+    if analysis and analysis.extraction.responsibilities:
+        sections.append("Задачи: " + _short(analysis.extraction.responsibilities[0], 160))
+    sections.append(as_list(*_match_summary(vacancy, match)))
+    footer = f"Опубликована {vacancy.published_at:%d.%m.%Y}"
+    if analysis and analysis.extraction.category != "other":
+        footer += " · " + CATEGORY_LABELS[analysis.extraction.category]
+    if not vacancy.archived:
+        source = SOURCE_NAMES.get(vacancy.source, vacancy.source)
+        if vacancy.last_checked_at is None:
+            footer += f"\nДоступность вакансии на {source} ещё не проверена."
+        elif vacancy.last_checked_at <= datetime.now(UTC) - RECHECK_AFTER:
+            footer += f"\nПоследняя проверка на {source} — {vacancy.last_checked_at:%d.%m.%Y}."
+    return as_list(*sections, footer, sep="\n\n")
 
 
 def render_card(vacancy: Vacancy, match: MatchResult) -> str:
-    """Plain text prevents source-controlled text from becoming Telegram markup."""
-    remote = {True: "Удалённо", False: "Без удалёнки", None: "Формат не указан"}[vacancy.remote]
-    no_matches = "не определено" if match.components.get("skills") is None else "нет совпадений"
-    analysis = current_analysis(vacancy)
-    experience = EXPERIENCE_LABELS.get(vacancy.experience or "", "не указан")
-    if match.eligibility is not None:
-        requirement = match.eligibility.experience
-        if requirement.minimum_years is not None:
-            minimum = requirement.minimum_years
-            source = "по описанию" if requirement.minimum_source == "description" else "HH"
-            experience = "Без опыта" if minimum == 0 else f"от {minimum:g} лет ({source})"
-            if requirement.conflict:
-                experience += "; сведения источников расходятся"
-        elif requirement.required:
-            experience = "требуется, минимум лет не указан в описании"
-        else:
-            experience = "не определён"
-    elif analysis and analysis.extraction.experience_min_years is not None:
-        minimum = analysis.extraction.experience_min_years
-        experience = "Без опыта" if minimum == 0 else f"от {minimum:g} лет (по описанию)"
-    elif analysis and analysis.extraction.experience_evidence is not None:
-        experience = "требуется, минимум лет не указан в описании"
-    if match.comparison is not None:
-        scopes = [
-            f"{item.name}: от {item.years_required:g} лет"
-            for item in match.comparison.items
-            if item.years_required is not None
-        ]
-        experience = (
-            "; ".join(dict.fromkeys(scopes)) or "минимум лет не указан; смотрите неопределённость"
-        )
-        experience = _short(experience, 250)
-    lines = [
-        "Проверено: "
-        + (
-            vacancy.last_checked_at.strftime("%d.%m.%Y %H:%M UTC")
-            if vacancy.last_checked_at
-            else "дата проверки неизвестна"
-        ),
-        "Опубликовано: " + vacancy.published_at.strftime("%d.%m.%Y"),
-        score_label(match),
-        _short(vacancy.title, 200),
-        _short(vacancy.company, 150),
-        _short(_salary(vacancy), 180),
-        f"{remote} · {_short(vacancy.location or 'Город не указан', 100)}",
-        f"Опыт: {experience}",
-        evidence_label(match),
-        "Порядок и допуск определены моделью и полнотой сведений. Не вероятность найма."
-        if match.ranking and match.ranking.applied
-        else "Оценка по правилам, не вероятность найма.",
-        "",
-        "Совпало: " + _short(", ".join(match.matched_skills) or no_matches, 350),
-    ]
-    if analysis:
-        lines.insert(3, "Категория: " + CATEGORY_LABELS[analysis.extraction.category])
-    groups = (
-        ("Обязательно, нет в профиле", match.missing_required),
-        ("Желательно, нет в профиле", match.missing_preferred),
-        ("Важность не указана, нет в профиле", match.missing_unspecified),
-    )
-    if any(values for _, values in groups):
-        lines += [
-            label + ": " + _short(", ".join(values), 200) for label, values in groups if values
-        ]
-    elif not match.alternatives or match.missing_skills:
-        lines.append(
-            "Не найдено в профиле: " + _short(", ".join(match.missing_skills) or "нет", 350)
-        )
-    alternatives = [
-        g for g in match.alternatives if g.importance not in {"not_required", "context"}
-    ]
-    for group in alternatives[:2]:
-        importance = {
-            "required": "обязательно",
-            "preferred": "желательно",
-            "unspecified": "важность не указана",
-        }[group.importance]
-        state = "есть: " + ", ".join(group.matched_options) if group.satisfied else "нет в профиле"
-        lines.append(_short(f"Один из ({importance}): {' / '.join(group.options)} — {state}", 180))
-    if len(alternatives) > 2:
-        lines.append(f"Других групп альтернатив: {len(alternatives) - 2}.")
-    documents = [q for q in match.qualifications if q.importance not in {"not_required", "context"}]
-    for document in documents[:3]:
-        importance = {
-            "required": "обязательно",
-            "preferred": "желательно",
-            "unspecified": "важность не указана",
-        }[document.importance]
-        lines.append(
-            _short(
-                f"Документ ({importance}): {document.name} — "
-                f"{QUALIFICATION_LABELS[document.status]}",
-                170,
-            )
-        )
-    if len(documents) > 3:
-        lines.append(f"Других документов/допусков для уточнения: {len(documents) - 3}.")
-    if documents and not (match.ranking and match.ranking.applied):
-        lines.append("Документы не включены в балл; сведения не проверены.")
-    elif documents:
-        lines.append("Документы участвуют в проверке условий; сведения не проверены.")
-    if match.reasons:
-        heading = "Факты сравнения:" if match.ranking and match.ranking.applied else "Причины:"
-        lines += ["", heading] + ["• " + _short(reason, 180) for reason in match.reasons[:3]]
-    if not match.eligible:
-        lines.insert(0, "Не соответствует обязательным условиям профиля.\n")
-    if match.warnings:
-        lines += ["", "Уточнения:"] + [
-            "• " + _short(warning, 180) for warning in match.warnings[:4]
-        ]
+    return format_card(vacancy, match).render()[0]
+
+
+def render_match_details(match: MatchResult) -> str:
+    lines = ["Как подобрана вакансия", score_label(match), evidence_label(match)]
+    if match.ranking and match.ranking.applied:
+        lines.append("Модель учла совпадения и полноту сведений в момент подбора.")
+    else:
+        lines.append("Баллы показывают, насколько вакансия совпала с профилем на момент подбора.")
+    for heading, values in (("Что совпало", match.reasons), ("Что уточнить", match.warnings)):
+        if values:
+            lines += ["", heading, *("• " + _short(value, 220) for value in values[:6])]
     return "\n".join(lines)
 
 
-def render_profile(profile: CandidateProfile) -> str:
+def experience_label(profile: CandidateProfile) -> str | None:
+    from scoring.comparison import total_experience
+
+    claim = total_experience(profile)
+    if claim.status == "conflict":
+        values = " и ".join(
+            (f"{v:g}" if isinstance(v, (float, int)) else str(v)).replace(".", ",")
+            for v in claim.alternatives
+        )
+        return f"требует уточнения ({values} г.)"
+    value = claim.value
+    if value is None:
+        return None
+    years = f"{value:g}".replace(".", ",")
+    unit = "лет"
+    if value % 1 or (value % 10 in {2, 3, 4} and not 12 <= value % 100 <= 14):
+        unit = "года"
+    elif value % 10 == 1 and value % 100 != 11:
+        unit = "год"
+    facts = profile.professional_facts
+    by_dates = facts and any(
+        f.id == "experience_total" and f.name == "calendar_union_years" for f in facts.facts
+    )
+    source = "по датам работы" if by_dates else "указан в профиле"
+    return f"{years} {unit} ({source})"
+
+
+def calendar_notes(profile):
+    facts = profile.professional_facts
+    if not facts or not facts.episodes:
+        return []
+    years, complete, _ = work_calendar(facts)
+    lines = []
+    if years is not None and years != profile.experience_years:
+        number = f"{years:g}".replace(".", ",")
+        lines.append(f"По заполненным периодам работы — {number} г.")
+    if not complete:
+        lines.append("Для полного расчёта уточните вид опыта и даты записей.")
+    return lines
+
+
+def render_profile(profile: CandidateProfile, *, title: str = "Мой профиль") -> str:
     from scoring.comparison import candidate_skill_names
 
     prefs = profile.preferences
-    experience = profile.experience_years if profile.experience_years is not None else "не указан"
-    documents = []
-    for document in profile.qualifications:
-        label = document.name + (
-            " (указано: нет)" if document.status == "absent" else " (с ваших слов)"
+    skills = sorted(candidate_skill_names(profile))
+    lines = [title, ""]
+    if prefs.positions:
+        lines.append("Должности для поиска: " + _short(", ".join(prefs.positions), 450))
+    lines.append("Навыки: " + _short(", ".join(skills) or "пока не указаны", 800))
+    if experience := experience_label(profile):
+        lines.append(f"Общий стаж: {experience}")
+    lines.extend(calendar_notes(profile))
+    if profile.professional_facts and profile.professional_facts.episodes:
+        lines.append(f"Мест работы и проектов: {len(profile.professional_facts.episodes)}")
+    conditions = []
+    if prefs.locations:
+        conditions.append("Города: " + _short(", ".join(prefs.locations), 300))
+    if prefs.remote != "any":
+        conditions.append("Формат: " + REMOTE_LABELS[prefs.remote])
+    if prefs.salary_min is not None:
+        tax = "до налогов" if prefs.salary_gross else "на руки"
+        amount = f"{prefs.salary_min:,}".replace(",", " ")
+        conditions.append(_short(f"От {amount} {prefs.currency} в месяц · {tax}", 150))
+    required = [
+        name
+        for flag, name in (
+            (prefs.salary_required, "зарплата"),
+            (prefs.locations_required, "города"),
         )
-        if document.valid_until:
-            label += f" до {document.valid_until:%d.%m.%Y}"
-        documents.append(label)
-    return "\n".join(
-        [
-            "Текущий профиль",
-            "Навыки: "
-            + _short(", ".join(sorted(candidate_skill_names(profile))) or "не указаны", 1500),
-            f"Общий опыт: {experience}",
-            "Позиции: " + _short(", ".join(prefs.positions) or "не указаны", 700),
-            "Формат: " + REMOTE_LABELS[prefs.remote],
-            "Города: " + _short(", ".join(prefs.locations) or "любые", 400),
-            "Обязательные условия: "
-            + (
-                ", ".join(
-                    name
-                    for flag, name in [
-                        (prefs.salary_required, "зарплата"),
-                        (prefs.locations_required, "города"),
-                    ]
-                    if flag
-                )
-                or "зарплата и города — предпочтения"
-            ),
-            "Документы и допуски: " + _short("; ".join(documents) or "не указаны", 500),
-            "Минимум зарплаты: "
-            + (
-                _short(f"{prefs.salary_min} {prefs.currency}", 100)
-                + ", "
-                + ("до налогов" if prefs.salary_gross else "на руки")
-                if prefs.salary_min is not None
-                else "не задан"
-            ),
-            "Чтобы изменить профиль, выберите поле ниже.",
-        ]
-    )
+        if flag
+    ]
+    if required:
+        conditions.append("Обязательные условия: " + ", ".join(required))
+    if conditions:
+        lines += ["", *conditions]
+    if profile.qualifications:
+        documents = []
+        for doc in profile.qualifications:
+            label = "указано: нет" if doc.status == "absent" else "с ваших слов"
+            expiry = f" до {doc.valid_until:%d.%m.%Y}" if doc.valid_until else ""
+            documents.append(f"{doc.name}{expiry} ({label})")
+        lines += ["", "Документы и допуски: " + _short(", ".join(documents), 450)]
+    return "\n".join(lines)

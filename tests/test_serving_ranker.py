@@ -357,7 +357,7 @@ def test_offline_and_serving_use_identical_vectors(tmp_path, vacancy, profile):
 
 
 def test_active_render_explains_rule_percentage(tmp_path, vacancy, profile):
-    from bot.cards import render_card
+    from bot.cards import render_card, render_match_details
 
     result = apply_ranker(
         rank_vacancies(cards(vacancy), profile),
@@ -365,5 +365,5 @@ def test_active_render_explains_rule_percentage(tmp_path, vacancy, profile):
         RankerPolicy(mode="model", model_path=save(tmp_path, artifact())),
         RetrievalParameters(),
     )
-    assert "Порядок и допуск определены моделью" in render_card(*result[0])
-    assert "Не вероятность найма" in render_card(*result[0])
+    assert "Индекс релевантности" not in render_card(*result[0])
+    assert "Модель учла совпадения" in render_match_details(result[0][1])

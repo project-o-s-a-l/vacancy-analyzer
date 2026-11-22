@@ -181,7 +181,9 @@ async def test_empty_and_unregistered_history_cannot_be_reset(sessions):
 def test_history_controls_have_bounded_callbacks_and_do_not_expand_other_lists():
     keyboard = page_keyboard("history", 0, False)
     assert keyboard.inline_keyboard[0][0].callback_data == "history:reset"
-    assert page_keyboard("saved", 0, False) is None
+    assert [
+        [b.callback_data for b in row] for row in page_keyboard("saved", 0, False).inline_keyboard
+    ] == [["menu:library"]]
     for row in history_reset_keyboard("0" * 32).inline_keyboard:
         for button in row:
             assert len(button.callback_data.encode()) <= 64

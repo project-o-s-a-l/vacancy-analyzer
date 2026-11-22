@@ -4,6 +4,7 @@ from aiogram.types import Message
 from bot.common import PrivateChatsMiddleware
 from bot.concurrent import OrderedDispatcher
 from bot.help import HELP
+from bot.keyboards import main_keyboard
 from bot.profile_editor import register_profile_editor
 from bot.profiles import register_profiles
 from bot.recommendations import register_recommendations
@@ -22,7 +23,7 @@ def build_dispatcher(service: UserService) -> Dispatcher:
 
     @router.message()
     async def fallback(message: Message) -> None:
-        await message.answer(HELP, parse_mode=None)
+        await message.answer(HELP, reply_markup=main_keyboard(), parse_mode=None)
 
     dispatcher = OrderedDispatcher()
     dispatcher.include_router(router)

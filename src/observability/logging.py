@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from observability.console import render_text
+from observability.console import SOURCE_LABELS, render_text
 from observability.events import (
     PIPELINE_CODES,
     PIPELINE_EVENTS,
@@ -38,11 +38,11 @@ EVENTS = {
     "operation.finished": "Операция завершена",
     "collection.plan_changed": "План поиска обновлён",
     "collection.no_profiles": "Нет готовых профилей для сбора. Заполните анкету через /start.",
-    "collection.direction_started": "Поиск HH начат",
-    "collection.direction_finished": "Обработка направления HH завершена",
+    "collection.direction_started": "Поиск начат",
+    "collection.direction_finished": "Обработка направления завершена",
     "collection.network_deferred": "Сбой HTTP при сборе; повтор после заданного интервала",
     "collection.already_running": "Сборщик уже работает; повторный запуск пропущен",
-    "collection.stopped": "Фоновый сбор HH остановлен. Приложение продолжает работать с базой.",
+    "collection.stopped": "Сбор с площадки остановлен. Приложение продолжает работать с базой.",
     "collection.card_skipped": "Карточка HH пропущена",
     "analysis.deferred": "Задание обработки отложено",
     "analysis.startup_deferred": "Проверка каталога отложена",
@@ -76,10 +76,9 @@ HINTS = {
     "invalid_token": "Неверный формат TELEGRAM_BOT_TOKEN. Проверьте локальный .env.",
     "invalid_configuration": "Ошибка конфигурации. Проверьте параметры команды и локальный .env.",
     "invalid_arguments": "Неверные аргументы команды. Используйте --help.",
-    "collection_stopped": (
-        "Сбор HH остановлен. Проверьте доступ и сохранённые страницы; затем перезапустите сбор."
-    ),
-    "collection_cancelled": "Сбор HH остановлен приложением.",
+    "collection_stopped": ("Сбор остановлен. Проверьте доступ к площадке и возобновите её сбор."),
+    "collection_cancelled": "Сбор остановлен приложением.",
+    "source_error": "Ошибка сборщика площадки. Проверьте её конфигурацию и журнал.",
     "hh_http_403": "HH вернул HTTP 403: доступ запрещён. Фоновый сбор остановлен.",
     "hh_http_429": "HH вернул HTTP 429: ограничение частоты запросов. Фоновый сбор остановлен.",
     "hh_captcha": "HH запросил капчу. Фоновый сбор остановлен.",
@@ -359,7 +358,7 @@ def _fields(values):
         ("job_state", {"pending", "running", "succeeded", "failed", "superseded", "cancelled"}),
         ("change_kind", {"new", "changed", "unchanged"}),
         ("snapshot_state", {"new", "reused"}),
-        ("source_kind", {"html", "api"}),
+        ("source_kind", SOURCE_LABELS),
         ("component_kind", {"bot", "collector", "analysis"}),
         ("availability", {"active", "unknown", "closed", "expired"}),
         (

@@ -4,19 +4,24 @@ from datetime import UTC, datetime
 from time import perf_counter
 
 from domain import CandidateProfile, Vacancy
-from domain.matching import MatchResult
+from domain.exchange_rates import currency_code, current_rates
+from domain.matching import MatchResult, SalaryConversion
 from nlp.analysis_identity import current_vacancy_analysis as current_analysis
 from nlp.extraction import skill_key
 from nlp.qualifications import QUALIFICATIONS_VERSION
 from nlp.requirements import RULES_VERSION
-from nlp.titles import title_tokens
 from nlp.vacancy_requirements import matching_requirements
-from scoring.comparison import candidate_skill_names, compare_facts, qualification_matches
+from scoring.comparison import (
+    candidate_skill_names,
+    compare_facts,
+    customer_reference,
+    qualification_matches,
+)
 from scoring.eligibility import (
     check_eligibility,
     condition_value,
     location_matches,
-    salary_comparable,
+    salary_bounds,
 )
 from scoring.skill_score import match_skills
 
@@ -28,6 +33,33 @@ WEIGHTS = {
     "preferences": 0.10,
     "freshness": 0.05,
 }
+
+
+def score_totals(components, profile, vacancy, comparison):
+    """Reassign inactive criteria to the professional requirements of this vacancy."""
+    preferences = profile.preferences
+    weights = WEIGHTS.copy()
+    if not preferences.salary_min:
+        weights["salary"] = 0
+    if preferences.remote == "any" and (
+        not preferences.locations or condition_value(vacancy, "remote") is True
+    ):
+        weights["preferences"] = 0
+    if components["title"] is None:
+        weights["title"] = 0
+    unused = sum(WEIGHTS[key] - weights[key] for key in ("salary", "preferences", "title"))
+    minimum_years = [
+        item.years_required
+        for item in comparison.items
+        if item.years_required is not None and item.importance != "preferred"
+    ]
+    # A zero minimum is satisfied by everybody. Give it no extra weight for unset preferences.
+    experience_share = 0 if minimum_years and max(minimum_years) == 0 else 1 / 3
+    weights["skills"] += unused * (1 - experience_share)
+    weights["experience"] += unused * experience_share
+    known = [(weights[key], value) for key, value in components.items() if value is not None]
+    score = round(100 * sum(weight * value for weight, value in known), 2)
+    return score, round(sum(weight for weight, _ in known), 6)
 
 
 def score_vacancy(
@@ -47,6 +79,7 @@ def score_vacancy(
         analysis and analysis.input_scope == "full" and analysis.requirements_source == "llm"
     )
     requirements = matching_requirements(vacancy, candidate_skill_names(profile))
+    requirements.skills = [item for item in requirements.skills if not customer_reference(item)]
     skills = match_skills(
         candidate_skill_names(profile),
         requirements.names("required"),
@@ -122,39 +155,32 @@ def score_vacancy(
     )
 
     preferences = profile.preferences
-    title = None
-    if preferences.positions:
-        vacancy_tokens = title_tokens(vacancy.title)
-        title = (
-            max(
-                len(vacancy_tokens & tokens) / len(tokens) if tokens else 0.0
-                for position in preferences.positions
-                if (tokens := title_tokens(position))
-            )
-            if any(title_tokens(position) for position in preferences.positions)
-            else 0.0
-        )
-
     context = [
         comparison.features[key]
         for key in ("role_match", "task_match")
         if comparison.features[key] is not None
     ]
+    # Keep the historical component key for stored matches. Only performed work is evidence.
+    title = sum(context) / len(context) if context else None
     if context:
-        title = sum([*context, *([title] if title is not None else [])]) / (
-            len(context) + (title is not None)
-        )
         reasons.append("Сопоставлены роли и задачи по нормализованным фактам")
 
     salary = None
-    if preferences.salary_min is not None:
-        comparable = salary_comparable(vacancy, profile)
-        upper = condition_value(vacancy, "salary_to")
-        if upper is None:
-            upper = condition_value(vacancy, "salary_from")
-        if comparable and upper is not None:
-            salary = min(1.0, upper / preferences.salary_min) if preferences.salary_min else 1.0
-            if vacancy.salary_from is None or vacancy.salary_from < preferences.salary_min:
+    conversion = None
+    if preferences.salary_min:
+        lower, upper = salary_bounds(vacancy, profile)
+        offered = upper if upper is not None else lower
+        if offered is not None:
+            salary = min(1.0, float(offered / preferences.salary_min))
+            source_currency = condition_value(vacancy, "currency")
+            if currency_code(source_currency) != currency_code(preferences.currency):
+                conversion = SalaryConversion(
+                    lower=lower,
+                    upper=upper,
+                    currency=preferences.currency,
+                    as_of=current_rates().as_of,
+                )
+            if lower is None or lower < preferences.salary_min:
                 warnings.append("Нижняя граница зарплаты не подтверждает желаемый минимум")
         else:
             warnings.append("Зарплата неизвестна или несопоставима по валюте/периоду/gross")
@@ -183,14 +209,13 @@ def score_vacancy(
         "preferences": sum(preference_parts) / len(preference_parts) if preference_parts else None,
         "freshness": max(0.0, 1 - age / 30),
     }
-    coverage = sum(WEIGHTS[key] for key, value in components.items() if value is not None)
-    # Fixed denominator: incomplete evidence must not turn a fresh empty vacancy into 100%.
-    total = sum(WEIGHTS[key] * value for key, value in components.items() if value is not None)
+    score, coverage = score_totals(components, profile, vacancy, comparison)
     return MatchResult(
         vacancy_id=str(vacancy.id),
-        score=round(100 * total, 2),
+        score=score,
         components=components,
-        evidence_coverage=round(coverage, 6),
+        salary_conversion=conversion,
+        evidence_coverage=coverage,
         matched_skills=list(skills.matched),
         missing_skills=list(skills.missing),
         reasons=reasons,

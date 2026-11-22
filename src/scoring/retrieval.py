@@ -6,6 +6,7 @@ from domain.retrieval import RETRIEVAL_VERSION, RetrievalEvidence
 from nlp.extraction import canonical_skill, extract_skills
 from nlp.titles import title_tokens
 from processing.cleaner import clean_html
+from scoring.title_aliases import TitleVariant, title_variants
 from storage.payloads import payload_hash
 
 INDEX_FIELDS = ("title", "skills", "description", "description_html")
@@ -37,13 +38,24 @@ def document_terms(document):
 
 @dataclass(frozen=True)
 class RetrievalQuery:
-    titles: tuple[frozenset[str], ...]
+    forms: tuple[TitleVariant, ...]
     skills: frozenset[str]
     terms: frozenset[str]
 
+    @property
+    def titles(self):
+        return tuple(form.terms for form in self.forms if not form.required)
+
+    def titles_for(self, title):
+        return [form.terms for form in self.forms if form.required <= title]
+
+    def alias_requirements(self):
+        # A guard containing an original query term already passes the original index lookup.
+        return {f.required for f in self.forms if f.required and f.required.isdisjoint(self.terms)}
+
     def payload(self):
         return dict(
-            titles=[sorted(t) for t in self.titles],
+            titles=[sorted(title) for title in self.titles],
             skills=sorted(self.skills),
             terms=sorted(self.terms),
         )
@@ -52,20 +64,21 @@ class RetrievalQuery:
 def profile_query(profile):
     from scoring.comparison import candidate_skill_names
 
-    titles = tuple(frozenset(tokens(position)) for position in profile.preferences.positions)
+    groups = [title_variants(position, tokens) for position in profile.preferences.positions]
+    forms = tuple(dict.fromkeys(form for group in groups for form in group))
     skills = frozenset(word for skill in candidate_skill_names(profile) for word in tokens(skill))
-    return RetrievalQuery(titles, skills, frozenset().union(skills, *titles))
+    terms = skills.union(*(group[0].terms for group in groups))
+    return RetrievalQuery(forms, skills, terms)
 
 
 def lexical_evidence(document, query, parameters):
     title, skills, body = (set(document[name]) for name in ("title", "skills", "body"))
-    wanted_titles = set().union(*query.titles)
+    titles = query.titles_for(title)
+    wanted_titles = set().union(*titles)
     title_matches = wanted_titles & title
     skill_matches = set(query.skills) & (skills | title)
     body_matches = set(query.terms) & body
-    title_score = max(
-        (len(wanted & title) / len(wanted) for wanted in query.titles if wanted), default=0
-    )
+    title_score = max((len(wanted & title) / len(wanted) for wanted in titles if wanted), default=0)
     skill_denominator = len(query.skills)
     body_denominator = len(query.terms)
     if parameters.normalization == "coverage":

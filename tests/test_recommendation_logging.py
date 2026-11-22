@@ -13,6 +13,7 @@ from test_duplicate_vacancies import seed
 from domain.delivery import DeliveryFailure
 from jobs.feedback import FeedbackService
 from jobs.notify import NotificationService
+from jobs.rank import default_retrieval_parameters
 from jobs.resumes import ResumeService
 from jobs.users import UserService
 from observability import logging_session
@@ -55,7 +56,8 @@ async def test_six_copies_reset_one_repeat_and_separate_users(
         assert "catalog_rows" not in selection and selection["scanned_count"] == 1
         assert selection["copy_excluded"] == 5
         assert selection["retained_groups"] == selection["scored_count"] == 1
-        assert selection["selected_count"] == 1 and selection["top_k"] == 64
+        assert selection["selected_count"] == 1
+        assert selection["top_k"] == default_retrieval_parameters().k
         assert facts(rows, "selection.copy_excluded") == []
         assert selection["detail_count"] == 1 and selection["catalog_counts_sampled"] == 0
         delivery = [

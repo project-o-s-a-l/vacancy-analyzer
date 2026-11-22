@@ -6,7 +6,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from jobs.feedback import FeedbackService
 from jobs.notify import NotificationService
 from jobs.profile_editor import ProfileEditor
-from jobs.profiles import EDIT_FIELDS, FIELDS, update_field
+from jobs.profiles import (
+    EDIT_FIELDS,
+    LEGACY_SETUP_FIELDS,
+    SALARY_CURRENCIES,
+    SETUP_FIELDS,
+    update_field,
+)
 from jobs.resumes import ResumeService
 from jobs.skill_gap import analyze_skill_gap
 from nlp.ollama_resume import OllamaResumeAnalyzer
@@ -103,10 +109,16 @@ class UserService:
             await session.execute(select(FeedbackModel.user_id).limit(1))
             await session.execute(select(FeedbackEventModel.action_context).limit(1))
             await session.execute(select(NotificationModel.exposure_context).limit(1))
-            await session.execute(select(NotificationModel.history_reset_at).limit(1))
+            await session.execute(
+                select(NotificationModel.history_reset_at, NotificationModel.awaiting_rating).limit(
+                    1
+                )
+            )
             await session.execute(select(ResumeModel.user_id).limit(1))
             await session.execute(select(ResumeSourceModel.user_id).limit(1))
-            await session.execute(select(ResumeModel.processing_job_id).limit(1))
+            await session.execute(
+                select(ResumeModel.processing_job_id, ResumeModel.notice_due_at).limit(1)
+            )
             await session.execute(select(BackgroundJob.id).limit(1))
             await session.execute(select(VacancyModel.analysis).limit(1))
             await session.execute(
@@ -175,23 +187,35 @@ class UserService:
                 raise ValueError("Откройте /profile и выберите поле для изменения.")
             if expected_revision is not None and expected_revision != user.revision:
                 raise ValueError("Кнопка устарела. Откройте /start или /profile.")
-            mode, field = user.form_state.split(":", 1)
+            mode, field, *selection = user.form_state.split(":")
             if expected_field is not None and expected_field != field:
                 raise ValueError("Эта кнопка относится к предыдущему шагу. Откройте /profile.")
-            profile = update_field(user.profile, field, text)
+            if field == "salary" and text in SALARY_CURRENCIES:
+                return await repository.save(replace(user, form_state=f"{mode}:salary:{text}"))
+            profile = update_field(
+                user.profile, field, text, salary_currency=selection[0] if selection else None
+            )
             next_state = None
             if mode == "setup":
-                index = FIELDS.index(field)
-                if index + 1 < len(FIELDS):
-                    next_state = "setup:" + FIELDS[index + 1]
+                if field == "skills" and not profile.skills:
+                    raise ValueError("Укажите хотя бы один навык или загрузите резюме.")
+                steps = LEGACY_SETUP_FIELDS if field in LEGACY_SETUP_FIELDS else SETUP_FIELDS
+                if field in steps[:-1]:
+                    next_state = "setup:" + steps[steps.index(field) + 1]
             user = replace(user, profile=profile, form_state=next_state)
-            return await repository.save(user, confirmed_fields={field})
+            skipped_experience = (
+                mode == "setup" and field == "experience" and profile.experience_years is None
+            )
+            return await repository.save(
+                user, confirmed_fields=() if skipped_experience else {field}
+            )
 
     async def notifications(
         self,
         user_id: int,
         *,
         require_profile: bool = True,
+        wait_for_rating: bool = False,
     ) -> NotificationService:
         from storage.repositories.selection_repository import SelectionRepository
 
@@ -209,6 +233,7 @@ class UserService:
             user.profile,
             chat_id=user.user_id,
             top=self.top,
+            wait_for_rating=wait_for_rating,
             min_score=self.min_score,
             fresh_days=self.fresh_days,
             ranker_policy=self.ranker_policy,

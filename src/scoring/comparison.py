@@ -1,5 +1,6 @@
 """Compare ready profile and job facts; extraction is a separate, candidate-independent boundary."""
 
+import re
 from datetime import UTC, datetime, timedelta
 from statistics import mean
 
@@ -13,6 +14,23 @@ from nlp.titles import title_tokens
 from scoring.request_context import profile_value
 
 LEVELS = {"beginner": 1, "intermediate": 2, "advanced": 3}
+ENGINEERING_TOLERANCE = re.compile(r"\bдопуск\w*\s+на\s+(?:характеристик|размер|геометри)", re.I)
+CUSTOMER_LIST = re.compile(
+    r"^\s*(?:(?:наши|среди наших)\s+(?:клиент\w*|заказчик\w*|партн[её]р\w*)\s*[:—–-]"
+    r"|нам доверяют(?:\s*[:—–-]|[^.!?\n]{0,60}\b(?:компании|организации|бренды)\s*:)"
+    r"|our (?:clients|customers|partners)\s*(?:include\b|are\b|[:—–-]))",
+    re.I,
+)
+
+
+def customer_list_only(quotes):
+    return bool(quotes) and all(CUSTOMER_LIST.match(quote or "") for quote in quotes)
+
+
+def customer_reference(requirement):
+    return requirement.importance == "unspecified" and customer_list_only(
+        [e.text for e in requirement.evidence]
+    )
 
 
 def ready_facts(vacancy):
@@ -240,7 +258,16 @@ def _compare_facts(vacancy, profile, *, now=None):
         ):
             continue  # Extraction placeholder is not an observed requirement.
         wanted = indexed[req.fact_id]
+        # Existing extractions can label manufacturing tolerances as personal work permits.
+        if wanted.kind == "qualification" and ENGINEERING_TOLERANCE.search(wanted.name):
+            continue
         importance = req.importance.value or "unspecified"
+        if (
+            wanted.kind == "skill"
+            and importance == "unspecified"
+            and customer_list_only([e.quote for e in req.evidence])
+        ):
+            continue
         if importance in {"not_required", "context"} and not (
             req.id == "req:source:experience" and req.years_min.value == 0
         ):
@@ -395,6 +422,8 @@ def _compare_facts(vacancy, profile, *, now=None):
     from nlp.vacancy_requirements import phrase_requirements
 
     for requirement in phrase_requirements(facts, candidate_skill_names(profile)):
+        if customer_reference(requirement):
+            continue
         key = skill_key(requirement.skill)
         statuses = {e.importance for e in requirement.evidence} - {"context", "unspecified"}
         conflict = len(statuses) > 1

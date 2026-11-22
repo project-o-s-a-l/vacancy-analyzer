@@ -53,7 +53,8 @@ async def test_service_metadata_preserves_cache_but_content_and_freshness_still_
             update(VacancyModel).values(last_checked_at=datetime.now(UTC) - timedelta(days=2))
         )
     selected, message = await (await users.notifications(42))._selection()
-    assert not selected and "актуальности" in message and len(calls) > count
+    assert [v.id for v, _ in selected] == [v.id for v, _ in first]
+    assert message is None and len(calls) > count
     count = len(calls)
     async with sessions.begin() as session:
         await session.execute(update(VacancyModel).values(archived=True))

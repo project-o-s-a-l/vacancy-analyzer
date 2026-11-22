@@ -11,7 +11,7 @@ from sqlalchemy import event, func, select
 
 from collectors.base import SearchCard, SearchPage, SearchQuery
 from jobs.catalog_checks import check_catalog
-from jobs.catalog_freshness import check_interval, require_fresh
+from jobs.catalog_freshness import available_for_delivery
 from jobs.catalog_metrics import catalog_status
 from jobs.collection_budget import BudgetDeferred, BudgetedSource, aware
 from jobs.collection_progress import (
@@ -23,6 +23,7 @@ from jobs.collection_progress import (
 from jobs.collection_scheduler import collection_loop
 from storage.models import (
     BackgroundJob,
+    CollectionBudget,
     CollectionDirection,
     CollectionObservation,
     VacancyModel,
@@ -168,7 +169,7 @@ async def test_failed_detail_does_not_rewind_or_block_other_pages(crawl_sessions
         assert await session.scalar(select(func.count()).select_from(VacancyModel)) == 4
 
 
-async def test_changed_snippet_and_ttl_refresh_without_disappearance_closure(
+async def test_changed_snippet_waits_three_days_without_disappearance_closure(
     crawl_sessions, vacancy
 ):
     source, query = Replay(vacancy, [["701", "702"]]), SearchQuery(text="changes")
@@ -181,11 +182,11 @@ async def test_changed_snippet_and_ttl_refresh_without_disappearance_closure(
     )
     source.pages = [["701"]]
     await crawl_slice(source, crawl_sessions, query, now=NOW + timedelta(hours=1))
+    assert source.details == ["701", "702"]
+    await crawl_slice(source, crawl_sessions, query, now=NOW + timedelta(hours=71))
+    assert source.details == ["701", "702"]
+    await crawl_slice(source, crawl_sessions, query, now=NOW + timedelta(hours=72))
     assert source.details == ["701", "702", "701"]
-    await crawl_slice(source, crawl_sessions, query, now=NOW + timedelta(hours=2))
-    assert len(source.details) == 3
-    await crawl_slice(source, crawl_sessions, query, now=NOW + timedelta(hours=8))
-    assert len(source.details) == 4
     async with crawl_sessions() as session:
         gone = await session.scalar(select(VacancyModel).where(VacancyModel.source_id == "702"))
         assert not gone.archived  # Search absence is never closure.
@@ -216,6 +217,82 @@ async def test_directions_removed_readded_sort_identity_depth_and_starvation(
     source.paging_kind = "different-sort-v2"
     changed = await sync_directions(source, crawl_sessions, [a], now=NOW)
     assert set(changed).isdisjoint(keys)
+
+
+async def test_new_only_skips_known_backlog_and_leaves_it_for_normal_collection(
+    crawl_sessions, vacancy, monkeypatch
+):
+    known_ids = [str(i) for i in range(701, 711)]
+    source = Replay(vacancy, [known_ids[:5], known_ids[5:]])
+    query = SearchQuery(text="discover", per_page=5)
+    now = datetime.now(UTC)
+    old = now - timedelta(days=4)
+    await sync_directions(source, crawl_sessions, [query], now=old)
+    for minute in range(3):
+        await crawl_slice(source, crawl_sessions, query, now=old + timedelta(minutes=minute))
+    # A previous normal sweep filled the entire backpressure allowance with old cards.
+    for minute in range(3):
+        await crawl_slice(
+            source, crawl_sessions, query, now=now - timedelta(minutes=3 - minute), detail_limit=0
+        )
+    key = direction_key(source, query)
+    async with crawl_sessions() as session:
+        assert all(o.pending for o in await session.scalars(select(CollectionObservation)))
+        original = await session.scalar(select(VacancyModel).where(VacancyModel.source_id == "701"))
+    source.pages = [["701", "702", "711"]]
+    source.fingerprint = "c" * 64
+    source.details.clear()
+    await collection_loop(
+        source,
+        crawl_sessions,
+        query,
+        False,
+        3600,
+        query_texts=[query.text],
+        new_only=True,
+        analysis_pipeline="new-only-test",
+    )
+    assert source.details == ["711"]
+    async with crawl_sessions() as session:
+        row = await session.get(VacancyModel, original.id)
+        assert (
+            row.last_checked_at,
+            row.last_seen_at,
+            row.revision_number,
+            row.search_fingerprint,
+        ) == (
+            original.last_checked_at,
+            original.last_seen_at,
+            original.revision_number,
+            original.search_fingerprint,
+        )
+        assert (await session.get(CollectionObservation, (key, "701"))).pending
+        assert await session.scalar(select(func.count()).select_from(BackgroundJob)) == 1
+    report = await catalog_status(crawl_sessions)
+    assert report["directions"][0]["pending_details"] == len(known_ids)
+    assert report["directions"][0]["pending_new_details"] == 0
+
+    checks = AsyncMock()
+    monkeypatch.setattr("jobs.collection_scheduler.check_catalog", checks)
+
+    async def stop(_):
+        raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        await collection_loop(
+            source,
+            crawl_sessions,
+            query,
+            True,
+            3600,
+            query_texts=[query.text],
+            check_limit=20,
+            new_only=True,
+            sleep=stop,
+        )
+    checks.assert_not_awaited()
+    await crawl_slice(source, crawl_sessions, query, now=now + timedelta(hours=2))
+    assert set(source.details[1:]) == set(known_ids)
 
 
 async def test_budget_persists_failures_and_honors_retry_after(crawl_sessions, vacancy):
@@ -249,11 +326,75 @@ async def test_budget_persists_failures_and_honors_retry_after(crawl_sessions, v
         await wrap().get_vacancy("1")
 
 
+async def test_superjob_paces_requests_across_its_hourly_target(crawl_sessions, vacancy):
+    source = Replay(vacancy)
+    source.source_name = "superjob"
+    now = NOW
+
+    async def sleep(seconds):
+        nonlocal now
+        now += timedelta(seconds=seconds)
+
+    async with crawl_sessions.begin() as session:
+        session.add(
+            CollectionBudget(
+                source="superjob",
+                window_at=NOW - timedelta(minutes=59),
+                search_used=60,
+                detail_used=700,
+                next_request_at=NOW,
+                blocked=False,
+                metrics={},
+            )
+        )
+    budget = BudgetedSource(
+        source,
+        crawl_sessions,
+        search_limit=None,
+        detail_limit=None,
+        delay=2,
+        request_intervals={"search": 5, "detail": 3600 / 700},
+        now=lambda: now,
+        sleep=sleep,
+    )
+    await budget.get_vacancy("701")
+    query = SearchQuery(text="synthetic")
+    await budget.search_page(query, 0)
+    assert now == NOW + timedelta(seconds=2)
+    await budget.get_vacancy("702")
+    assert now == NOW + timedelta(seconds=3600 / 700)
+    await budget.search_page(query, 0)
+    assert now == NOW + timedelta(seconds=3600 / 700 + 2)
+    async with crawl_sessions() as session:
+        row = await session.get(CollectionBudget, "superjob")
+        assert (row.search_used, row.detail_used) == (62, 702)
+
+
+async def test_fast_slice_reports_end_with_pending_details(crawl_sessions, vacancy, caplog):
+    source = Replay(vacancy, [["701", "702"]])
+    query = SearchQuery(text="end")
+    keys = await sync_directions(source, crawl_sessions, [query], now=NOW)
+    options = {"detail_limit": 1, "new_only": True, "active_slice_interval": 1}
+    with caplog.at_level("INFO", logger="jobs.collection_progress"):
+        await crawl_slice(source, crawl_sessions, query, now=NOW, **options)
+    sweep = next(r for r in caplog.records if r.event_code == "collection.sweep_finished")
+    assert sweep.event_fields["pending_count"] == 1
+    assert sweep.event_fields["total"] == 2
+
+    next_slice = NOW + timedelta(seconds=1)
+    assert await choose_direction(crawl_sessions, keys, now=next_slice) == next(iter(keys))
+    assert await crawl_slice(source, crawl_sessions, query, now=next_slice, **options) == 1
+    assert source.calls == [0]
+    report = await catalog_status(crawl_sessions, now=next_slice)
+    assert report["directions"][0]["pending_new_details"] == 0
+    assert await choose_direction(crawl_sessions, keys, now=next_slice) is None
+
+
 async def test_final_freshness_network_failure_and_priority_are_bounded(crawl_sessions, vacancy):
     old = vacancy.model_copy(update={"collected_at": NOW - timedelta(days=3)})
     async with crawl_sessions.begin() as session:
         vid = await VacancyRepository(session).save(old)
-        assert await require_fresh(session, [vid], now=NOW) == set()
+        assert await available_for_delivery(session, [vid], now=NOW) == {vid}
     source = SimpleNamespace(get_vacancy=AsyncMock(side_effect=httpx.ReadTimeout("offline")))
     await check_catalog(source, crawl_sessions, now=NOW)
     async with crawl_sessions.begin() as session:
@@ -261,28 +402,29 @@ async def test_final_freshness_network_failure_and_priority_are_bounded(crawl_se
         assert aware(row.last_checked_at) == old.collected_at
         assert aware(row.last_check_attempt_at) == NOW
         assert not row.archived and row.check_requested_at
-        assert await require_fresh(session, [vid], now=NOW) == set()
+        assert await available_for_delivery(session, [vid], now=NOW) == {vid}
     await check_catalog(source, crawl_sessions, now=NOW + timedelta(seconds=10))
     assert source.get_vacancy.await_count == 1
     source.get_vacancy.side_effect = None
     source.get_vacancy.return_value = vacancy
     await check_catalog(source, crawl_sessions, now=NOW + timedelta(hours=1))
     async with crawl_sessions.begin() as session:
-        assert await require_fresh(session, [vid], now=NOW + timedelta(hours=1)) == {vid}
+        assert await available_for_delivery(session, [vid], now=NOW + timedelta(hours=1)) == {vid}
 
 
-def test_adaptive_check_targets(vacancy):
-    row = SimpleNamespace(
-        check_requested_at=None,
-        valid_until=None,
-        published_at=NOW - timedelta(days=1),
-        last_seen_at=NOW,
-    )
-    assert check_interval(row, NOW) == 86400
-    row.last_seen_at = NOW - timedelta(days=8)
-    assert check_interval(row, NOW) == 259200
-    row.valid_until = NOW + timedelta(days=1)
-    assert check_interval(row, NOW) == 21600
+async def test_old_schedule_and_delivery_request_wait_for_three_day_boundary(sessions, vacancy):
+    async with sessions.begin() as session:
+        vid = await VacancyRepository(session).save(
+            vacancy.model_copy(update={"collected_at": NOW})
+        )
+        row = await session.get(VacancyModel, vid)
+        row.next_check_at = NOW + timedelta(hours=6)
+        row.check_requested_at = NOW  # Persisted by an older release.
+    source = SimpleNamespace(get_vacancy=AsyncMock(return_value=vacancy))
+    due = NOW + timedelta(days=3)
+    assert await check_catalog(source, sessions, now=due - timedelta(seconds=1)) == 0
+    assert await check_catalog(source, sessions, now=due) == 1
+    source.get_vacancy.assert_awaited_once()
 
 
 async def test_runtime_calls_persisted_cursor_on_repeat(sessions, vacancy):
@@ -373,17 +515,43 @@ async def test_source_job_and_inbox_commit_together(crawl_sessions, vacancy, mon
         assert await session.scalar(select(func.count()).select_from(BackgroundJob)) == 1
 
 
-async def test_final_selection_defers_old_card_without_network(crawl_sessions, vacancy, profile):
+@pytest.mark.parametrize("verified", [True, False])
+async def test_delivery_sends_old_or_unchecked_card_and_requests_check(
+    crawl_sessions, vacancy, profile, verified
+):
+    from bot.cards import render_card
     from jobs.notify import NotificationService
 
-    old = vacancy.model_copy(update={"collected_at": datetime.now(UTC) - timedelta(days=2)})
+    old = vacancy.model_copy(update={"collected_at": datetime.now(UTC) - timedelta(days=3)})
     async with crawl_sessions.begin() as session:
-        vid = await VacancyRepository(session).save(old)
+        vid = await VacancyRepository(session).save(old, verified=verified)
     service = NotificationService(crawl_sessions, profile, chat_id=1, min_score=0)
-    selected, message = await service._selection()
-    assert selected == [] and "проверки актуальности" in message
+    sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=101))
+    assert (await service.deliver(sender)).sent == 1
+    _, sent, match = sender.send_recommendation.await_args.args
+    assert sent.id == vid
+    label = "Последняя проверка на HH" if verified else "ещё не проверена"
+    assert label in render_card(sent, match)
     async with crawl_sessions() as session:
-        assert (await session.get(VacancyModel, vid)).check_requested_at
+        row = await session.get(VacancyModel, vid)
+        assert row.check_requested_at and row.availability == "active"
+        assert (aware(row.last_checked_at) if row.last_checked_at else None) == (
+            old.collected_at if verified else None
+        )
+
+
+async def test_final_availability_rechecks_source_state(crawl_sessions, vacancy):
+    async with crawl_sessions.begin() as session:
+        vid = await VacancyRepository(session).save(vacancy)
+        row = await session.get(VacancyModel, vid)
+        row.availability = "closed"
+        assert await available_for_delivery(session, [vid], now=NOW) == set()
+        row.availability = "active"
+        row.valid_until = NOW
+        assert await available_for_delivery(session, [vid], now=NOW) == set()
+        row.valid_until = None
+        row.archived = True
+        assert await available_for_delivery(session, [vid], now=NOW) == set()
 
 
 @pytest.mark.postgres

@@ -223,14 +223,25 @@ def test_priority_changes_score_and_provides_evidence_without_filtering(vacancy,
     a = score_vacancy(required_java, profile, now=now)
     b = score_vacancy(required_docker, profile, now=now)
     assert a.components["skills"] == 0.75 and b.components["skills"] == 0.25
-    assert a.score - b.score == 20
+    assert a.score - b.score == pytest.approx(95 / 3, abs=0.01)
     assert a.missing_preferred == ["docker"] and not a.missing_required
     assert b.missing_required == ["docker"] and not b.missing_preferred
     assert a.eligible and b.eligible  # An incomplete profile is not proof of lacking the skill.
     assert a.requirements_version == RULES_VERSION
     assert any(v.section == "Требования" for v in a.requirements[1].evidence)
-    assert "Желательно, нет в профиле: docker" in render_card(required_java, a)
-    assert "Обязательно, нет в профиле: docker" in render_card(required_docker, b)
+    assert "Будут плюсом: Docker" in render_card(required_java, a)
+    assert "Нужны, но не указаны в профиле: Docker" in render_card(required_docker, b)
+
+
+def test_customer_name_does_not_become_a_skill_but_an_explicit_requirement_does(vacancy, now):
+    profile = CandidateProfile(skills={"1с": {}})
+    customers = "Нам доверяют свои знания известные компании: ВкусВилл, 1С-Рарус, Интерлизинг."
+    for line in (customers, "Наши клиенты — 1С-Рарус, Интерлизинг."):
+        match = score_vacancy(job(vacancy, now, line), profile, now=now)
+        assert not match.matched_skills and match.components["skills"] is None
+        assert not any(item.name == "1с" for item in match.comparison.items)
+    match = score_vacancy(job(vacancy, now, customers + "\nТребования: 1С"), profile, now=now)
+    assert match.matched_skills == ["1с"] and match.components["skills"] == 1
 
 
 def test_unknown_priority_stays_unknown_and_negated_context_gives_no_points(vacancy, now):
@@ -242,7 +253,7 @@ def test_unknown_priority_stays_unknown_and_negated_context_gives_no_points(vaca
     unknown = score_vacancy(job(vacancy, now, "Java, Docker"), profile, now=now)
     assert unknown.components["skills"] == 0.5
     assert unknown.missing_unspecified == ["docker"]
-    assert "Важность не указана" in render_card(vacancy, unknown)
+    assert "Также упомянуты в вакансии: Docker" in render_card(vacancy, unknown)
 
 
 def test_new_match_fields_allow_old_stored_context(vacancy, profile, now):
@@ -271,7 +282,7 @@ async def test_delivered_card_and_durable_context_include_requirement_evidence(s
     service = UserService(sessions, min_score=0, top=1)
     await build_dispatcher(service).feed_update(bot, command_update("/latest"))
     cards = [v.text for v in transport.requests if isinstance(v, SendMessage)]
-    assert any("Желательно, нет в профиле: docker" in text for text in cards)
+    assert any("Будут плюсом: Docker" in text for text in cards)
     async with sessions() as session:
         notification = await session.get(NotificationModel, (42, sample.id))
         context = notification.exposure_context["match"]

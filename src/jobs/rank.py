@@ -3,10 +3,12 @@ from datetime import UTC, datetime
 from time import perf_counter
 
 from domain import CandidateProfile, Vacancy
+from domain.exchange_rates import use_rates
 from domain.matching import MatchResult
 from domain.retrieval import RetrievalParameters
 from domain.vacancy_analysis import VacancyCategory, is_fresh
 from jobs.candidates import retrieve_candidates
+from jobs.exchange_rates import rates_for
 from jobs.serving_compute import bounded_recommendations, compute
 from observability import emit_event
 from observability.actions import observed
@@ -32,6 +34,12 @@ def default_retrieval_parameters():
 @bounded_recommendations
 @prepared_profile_request
 async def rank_recent(repository: VacancyRepository, profile: CandidateProfile, **kwargs):
+    live = repository is not None and kwargs.get("candidate_source") is None
+    with use_rates(await rates_for(profile, live=live)):
+        return await _rank_with_cache(repository, profile, **kwargs)
+
+
+async def _rank_with_cache(repository, profile, **kwargs):
     owner = kwargs.get("cache_owner")
     if owner is None or kwargs.get("candidate_source") is not None:
         return await _rank_recent(repository, profile, **kwargs)

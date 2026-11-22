@@ -8,6 +8,7 @@ from aiogram.types import BotCommand
 
 from bot.handlers import build_dispatcher
 from bot.rate_limits import TelegramLimits
+from bot.resume_notices import background_resume_notices
 from domain.serving_ranker import RankerPolicy
 from jobs.analysis_worker import background_analysis
 from jobs.collection_runtime import background_collection
@@ -67,8 +68,9 @@ async def _run_bot(settings: Settings) -> None:
     engine = None
     try:
         engine = create_engine(settings.database_url)
+        sessions = session_factory(engine)
         service = UserService(
-            session_factory(engine),
+            sessions,
             top=settings.telegram_top,
             min_score=settings.telegram_min_score,
             queued_resumes=True,
@@ -84,17 +86,15 @@ async def _run_bot(settings: Settings) -> None:
             raise ValueError("Для бота уже установлен webhook. Отключите его перед long polling.")
         await bot.set_my_commands(
             [
-                BotCommand(command="resume", description="Загрузить резюме"),
-                BotCommand(command="latest", description="Новые рекомендации"),
-                BotCommand(command="saved", description="Сохранённые вакансии"),
-                BotCommand(command="applied", description="Ваши отклики"),
-                BotCommand(command="profile", description="Текущий профиль"),
-                BotCommand(command="skillgap", description="Что можно дополнить в профиле"),
+                BotCommand(command="latest", description="Найти вакансии"),
+                BotCommand(command="library", description="Мои вакансии и отклики"),
+                BotCommand(command="profile", description="Мой профиль"),
             ]
         )
         async with (
             background_collection(settings, engine),
             background_analysis(settings, engine),
+            background_resume_notices(bot, sessions),
             monitor_loop(),
         ):
             emit_event(logger, "component.ready", component_kind="bot", result="ready")

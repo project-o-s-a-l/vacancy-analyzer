@@ -24,6 +24,15 @@ def isolated_model_slot(tmp_path_factory):
         yield
 
 
+@pytest.fixture(scope="session", autouse=True)
+def offline_salary_rates():
+    from jobs import exchange_rates
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(exchange_rates._cache, "next_refresh", float("inf"))
+        yield
+
+
 @pytest.fixture
 def sample_data():
     path = Path(__file__).parent / "fixtures" / "vacancies.json"

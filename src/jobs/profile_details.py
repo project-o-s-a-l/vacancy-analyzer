@@ -16,12 +16,12 @@ from domain.professional import (
     SkillFact,
     SourceReference,
     TaskFact,
-    ValueFact,
     digest,
 )
 from jobs.profiles import EDIT_FIELDS, update_field
 from nlp.extraction import canonical_skill, skill_key
 from nlp.professional_facts import candidate_facts, profile_input_revision
+from nlp.profile_experience import sync_profile_experience
 
 EMPTY = {"?", "не знаю", "очистить", "пропустить", "-"}
 SECTIONS = {"episode": "career", "role": "career", "task": "career", "skill": "skills"}
@@ -63,6 +63,7 @@ def parse_date(text, *, end=False):
 
 def rebase(profile):
     """Bind a complete authored snapshot to the compatible short profile wire."""
+    sync_profile_experience(profile, confirmed=True)
     facts = profile.professional_facts
     revision = profile_input_revision(profile)
     facts.input_sha256 = facts.source_revision = revision
@@ -84,7 +85,7 @@ def change(profile, owner, kind, key, field, text):
     if kind == "basic":
         if field not in EDIT_FIELDS:
             raise ValueError("Неизвестное поле")
-        profile = update_field(profile, field, text)
+        profile = update_field(profile, field, text, salary_currency=key or None)
         profile.professional_facts = candidate_facts(
             profile, owner, previous=facts, confirmed_fields={field}
         )
@@ -234,25 +235,6 @@ def change(profile, owner, kind, key, field, text):
                     remove_orphans(old - set(ids))
             else:
                 raise ValueError("Неизвестное поле опыта")
-        if field in {"new", "delete", "started", "ended", "ongoing", "type"}:
-            # Changed work dates invalidate an imported calendar-derived total, even
-            # after an unrelated preference edit. A new import must not resurrect it.
-            if (
-                "experience" not in facts.reviewed_sections
-                and any(f.id == "experience:calendar" for f in facts.facts)
-                and not any(f.id.startswith("experience:stated:") for f in facts.facts)
-            ):
-                profile.experience_years = None
-                facts.facts = [f for f in facts.facts if f.kind != "experience_total"]
-                facts.facts.append(
-                    ValueFact(
-                        id="experience_total",
-                        name="years",
-                        kind="experience_total",
-                        assertion=claim(None),
-                    )
-                )
-                facts.reviewed_sections.append("experience")
     else:
         fact = next((f for f in facts.facts if f.id == key and f.kind == kind), None)
         if field == "new":

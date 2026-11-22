@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiogram import Bot
 from aiogram.enums import ChatType
-from aiogram.methods import SendMessage
+from aiogram.methods import EditMessageText, SendMessage
 from aiogram.types import CallbackQuery, Chat, Message, Update, User
 from test_bot import TEST_TOKEN, RecordingSession, command_update
 
@@ -27,16 +27,16 @@ def text_update(text, user_id=42):
     return update
 
 
-def callback_update(data, *, user_id=42, chat_id=None):
+def callback_update(data, *, user_id=42, chat_id=None, event_key="test-callback", message_id=1):
     return Update(
         update_id=2,
         callback_query=CallbackQuery(
-            id="test-callback",
+            id=event_key,
             chat_instance="private-test",
             from_user=User(id=user_id, is_bot=False, first_name="Candidate"),
             data=data,
             message=Message(
-                message_id=1,
+                message_id=message_id,
                 date=datetime.now(UTC),
                 chat=Chat(id=chat_id or user_id, type=ChatType.PRIVATE),
                 from_user=User(id=123456, is_bot=True, first_name="Test"),
@@ -54,7 +54,9 @@ async def store_profile(sessions, user_id, profile):
 
 async def click_button(dispatcher, bot, transport, label, *, user_id=42):
     message = next(
-        r for r in reversed(transport.requests) if isinstance(r, SendMessage) and r.reply_markup
+        r
+        for r in reversed(transport.requests)
+        if isinstance(r, (SendMessage, EditMessageText)) and r.reply_markup
     )
     data = next(
         b.callback_data
@@ -95,30 +97,19 @@ async def test_two_users_can_fill_profiles_interleaved(sessions):
     first = [
         "Python, Docker",
         "3",
-        "Python developer",
-        "required",
-        "150000 RUB до налогов",
-        "пропустить",
     ]
     second = [
         "Java, Kafka",
         "7",
-        "Java developer",
-        "office",
-        "250000 RUB на руки",
-        "Санкт-Петербург",
     ]
     for first_answer, second_answer in zip(first, second, strict=True):
         await users.accept_answer(42, first_answer)
         await users.accept_answer(99, second_answer)
     a, b = await users.get(42), await users.get(99)
     assert a.form_state is b.form_state is None
-    assert a.profile.preferences.remote == "required"
-    assert b.profile.preferences.remote == "office"
-    assert a.profile.preferences.salary_gross is True
-    assert b.profile.preferences.salary_gross is False
-    assert a.profile.preferences.locations == []
-    assert b.profile.preferences.locations == ["Санкт-Петербург"]
+    assert a.profile.preferences.positions == b.profile.preferences.positions == []
+    assert a.profile.experience_years == 3
+    assert b.profile.experience_years == 7
     assert set(a.profile.skills) == {"python", "docker"}
     assert set(b.profile.skills) == {"java", "kafka"}
 
@@ -131,8 +122,8 @@ async def test_two_users_can_fill_profiles_interleaved(sessions):
         ("experience", "-1"),
         ("experience", "200"),
         ("remote", "иногда"),
-        ("salary", "150000"),
-        ("salary", "150000 RUB"),
+        ("salary", "100 200 12 RUB"),
+        ("salary", "150000 RUB в неделю"),
         ("salary", "1000000001 RUB net"),
         ("positions", ",,"),
     ],
@@ -152,6 +143,27 @@ async def test_invalid_answer_keeps_previous_data_and_step(sessions):
     assert user.form_state == "setup:experience"
     assert user.profile.experience_years is None
     assert set(user.profile.skills) == {"python"}
+
+
+async def test_salary_currency_button_in_existing_form(sessions):
+    users = UserService(sessions)
+    await users.register(42)
+    old = await users.begin_edit(42, "salary")
+    dispatcher = build_dispatcher(users)
+    bot = Bot(TEST_TOKEN, session=RecordingSession())
+    try:
+        data = f"answer:{old.revision}:salary:EUR"
+        await dispatcher.feed_update(bot, callback_update(data))
+        pending = await users.get(42)
+        assert pending.form_state == "edit:salary:EUR"
+        assert pending.profile.preferences.salary_min is None
+        await dispatcher.feed_update(bot, callback_update(data))
+        assert (await users.get(42)).revision == pending.revision
+        await dispatcher.feed_update(bot, text_update("от 3500 на руки"))
+        saved = (await users.get(42)).profile.preferences
+        assert (saved.salary_min, saved.currency, saved.salary_gross) == (3500, "EUR", False)
+    finally:
+        await bot.session.close()
 
 
 async def test_edit_and_cancel_do_not_reset_other_fields(sessions, profile):
@@ -192,22 +204,62 @@ async def test_public_start_accepts_different_users_without_shared_profile(sessi
     assert (await users.get(99)).profile.skills == {}
 
 
+async def test_first_time_user_can_return_from_upload_and_skip_optional_questions(sessions):
+    users = UserService(sessions)
+    transport = RecordingSession()
+    bot = Bot(TEST_TOKEN, session=transport)
+    dispatcher = build_dispatcher(users)
+    await dispatcher.feed_update(bot, text_update("/start"))
+    assert "Шаг 1 из 2" in transport.requests[-1].text
+    await click_button(dispatcher, bot, transport, "Загрузить резюме")
+    assert "PDF" in transport.requests[-1].text
+    await click_button(dispatcher, bot, transport, "← К анкете")
+    await dispatcher.feed_update(bot, text_update("пропустить"))
+    assert (await users.get(42)).form_state == "setup:skills"
+    await dispatcher.feed_update(bot, text_update("Git, SQL"))
+    assert "Шаг 2 из 2" in transport.requests[-1].text
+    await click_button(dispatcher, bot, transport, "Пропустить")
+    await click_button(dispatcher, bot, transport, "Мои вакансии")
+    await click_button(dispatcher, bot, transport, "Сохранённые")
+    assert "«Сохранить»" in transport.requests[-1].text
+    await click_button(dispatcher, bot, transport, "← В меню")
+    await click_button(dispatcher, bot, transport, "Мой профиль")
+    user = await users.get(42)
+    assert user.form_state is None and user.profile.experience_years is None
+    assert "git, sql" in transport.requests[-1].text
+    await bot.session.close()
+
+
 async def test_profile_setup_with_real_dispatcher_and_buttons(sessions):
     users = UserService(sessions)
     recording = RecordingSession()
     bot = Bot(TEST_TOKEN, session=recording)
     dispatcher = build_dispatcher(users)
-    for text in ["/start", "Python, SQL", "3", "Python developer"]:
-        await dispatcher.feed_update(bot, text_update(text))
-    revision = (await users.get(42)).revision
-    await dispatcher.feed_update(bot, callback_update(f"answer:{revision}:remote:required"))
-    for text in ["150 000 RUB до налогов", "пропустить"]:
+    for text in ["/start", "Python, SQL", "3"]:
         await dispatcher.feed_update(bot, text_update(text))
     user = await users.get(42)
     assert user.form_state is None
-    assert user.profile.preferences.salary_min == 150000
-    assert user.profile.preferences.remote == "required"
+    assert user.profile.preferences.positions == []
     assert "Профиль сохранён" in recording.requests[-1].text
+    await click_button(dispatcher, bot, recording, "Найти вакансии")
+    assert "Новых рекомендаций" in recording.requests[-1].text
+
+
+async def test_legacy_setup_finishes_after_restart(sessions):
+    users = UserService(sessions)
+    async with sessions.begin() as session:
+        repo = UserRepository(session)
+        await repo.register(42)
+        await repo.save(RegisteredUser(42, CandidateProfile(skills={"sql": {}}), "setup:remote"))
+    user = await users.get(42)
+    await users.accept_answer(
+        42, "required", expected_field="remote", expected_revision=user.revision
+    )
+    await users.accept_answer(42, "150 000 RUB до налогов")
+    user = await users.accept_answer(42, "Казань")
+    assert user.form_state is None and user.profile.preferences.remote == "required"
+    assert user.profile.preferences.salary_min == 150000
+    assert user.profile.preferences.locations == ["Казань"]
 
 
 async def test_callback_cannot_edit_another_users_profile(sessions, profile):

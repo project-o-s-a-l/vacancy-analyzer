@@ -3,7 +3,7 @@
 from datetime import datetime
 
 COMPONENTS = {
-    "collector": "Сбор HH",
+    "collector": "Сбор",
     "analysis": "Анализ",
     "bot": "Бот",
     "matching": "Подбор",
@@ -12,6 +12,15 @@ COMPONENTS = {
     "experiment": "Проверка",
     "runtime": "Приложение",
     "application": "Приложение",
+}
+SOURCE_LABELS = {
+    "hh": "HH",
+    "html": "HH",
+    "api": "HH",
+    "habr_career": "Хабр Карьера",
+    "trudvsem": "Работа России",
+    "superjob": "SuperJob",
+    "avito": "Авито Работа",
 }
 RESULTS = {
     "success": "успешно",
@@ -71,10 +80,11 @@ def render_text(payload):
                 "model.request_finished": f"Ответ модели для {kind} получен",
             }.get(event, message)
     details = []
+    source = SOURCE_LABELS.get(payload.get("source_kind"))
     if event.startswith("model.") and payload.get("model"):
         details.append(f"модель {payload['model']}")
     if payload.get("source_vacancy_id"):
-        details.append(f"HH {payload['source_vacancy_id']}")
+        details.append(f"{source or 'ID'} {payload['source_vacancy_id']}")
     if "status_code" in payload:
         details.append(f"HTTP {payload['status_code']}")
     if payload.get("scope"):
@@ -97,9 +107,17 @@ def render_text(payload):
         if key in payload:
             details.append(f"{label}: {payload[key]}")
     if event not in COUNTERS and "count" in payload:
-        label = "потеряно строк" if event == "logging.file_degraded" else "количество"
+        label = {
+            "logging.file_degraded": "потеряно строк",
+            "collection.progress": "сохранено вакансий",
+        }.get(event, "количество")
         details.append(f"{label}: {payload['count']}")
-    if payload.get("pending_count"):
+    if event == "collection.sweep_finished":
+        if "total" in payload:
+            details.append(f"по данным площадки: {payload['total']}")
+        if "pending_count" in payload:
+            details.append(f"карточек ждут загрузки: {payload['pending_count']}")
+    elif payload.get("pending_count"):
         details.append(f"исход записи не подтверждён: {payload['pending_count']}")
     if payload.get("suppressed_count"):
         details.append(f"повторов: {payload['suppressed_count']}")
@@ -115,7 +133,8 @@ def render_text(payload):
             details.append(result)
     if payload.get("next_run_at"):
         next_run = datetime.fromisoformat(payload["next_run_at"]).astimezone()
-        details.append(f"повтор после {next_run:%d.%m %H:%M:%S}")
+        label = "следующий обход после" if event == "collection.sweep_finished" else "повтор после"
+        details.append(f"{label} {next_run:%d.%m %H:%M:%S}")
     if "wait_ms" in payload:
         details.append(f"ожидание {duration(payload['wait_ms'])}")
     if "duration_ms" in payload and payload["duration_ms"] is not None:
@@ -129,6 +148,8 @@ def render_text(payload):
         if event.startswith("job.")
         else COMPONENTS.get(payload["component"], "Приложение")
     )
+    if payload["component"] == "collector" and source:
+        component = f"{component} {source}"
     timestamp = datetime.fromisoformat(payload["timestamp"]).astimezone()
     text = f"{timestamp:%d.%m %H:%M:%S} {payload['level']:<7} [{component}] {message}"
     if details:

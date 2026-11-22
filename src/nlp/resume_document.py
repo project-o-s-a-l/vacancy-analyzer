@@ -38,7 +38,8 @@ PERIOD = re.compile(
 )
 SECTION = re.compile(
     r"^(?:опыт(?: работы)?|employment|work experience|experience|образование|education|"
-    r"учебные проекты?|academic projects?|личные проекты?|personal projects?|проекты?|projects?|"
+    r"учебные проекты?|academic projects?|личные проекты?|personal projects?|"
+    r"коммерческий проект|коммерческие проекты|commercial projects?|проекты?|projects?|"
     r"навыки|skills|квалификации|qualifications|сертификаты|certificates|о себе|about me|"
     r"контакты|contacts)\s*[:—-]?\s*$",
     re.I,
@@ -46,13 +47,18 @@ SECTION = re.compile(
 LABEL = re.compile(
     r"^(?P<label>должность|позиция|роль|role|position|задачи|обязанности|достижения|"
     r"tasks|responsibilities|achievements|выполнял задачи|описание проекта|"
-    r"проект|учебный проект|личный проект|project|"
+    r"проект|учебный проект|личный проект|коммерческий проект|commercial project|project|"
     r"сертификат|квалификация|допуск|certificate|qualification)\s*[:—-]\s*(?P<value>.+)$",
     re.I,
 )
 NEGATED = re.compile(
     r"\b(?:не (?:знаю|владею|использовал|умею)|нет опыта|без опыта|no experience|not proficient)\b",
     re.I,
+)
+EXPERIENCE_NOTES = (
+    "Общий стаж и даты расходятся",
+    "По подтверждённым периодам работы:",
+    "Есть неполные/неверные даты",
 )
 
 
@@ -151,43 +157,38 @@ def union_years(intervals):
     return round(sum((end - start).days for start, end in merged) / 365.2425, 2)
 
 
+def counts_as_work(kind, context):
+    return kind == "employment" or (kind == "project" and context == "work")
+
+
+def resolve_total(stated, calculated, complete):
+    stated = sorted(set(stated))
+    if len(stated) > 1 or (stated and calculated is not None and abs(stated[0] - calculated) > 0.1):
+        return None, True
+    if stated:
+        return stated[0], False
+    return calculated if complete and calculated is not None and calculated <= 80 else None, False
+
+
 def resolve_experience(result):
-    result.notes = [
-        n
-        for n in result.notes
-        if not n.startswith(
-            (
-                "Общий стаж и даты расходятся",
-                "По подтверждённым периодам работы:",
-                "Есть неполные/неверные даты",
-            )
-        )
-    ]
+    result.notes = [n for n in result.notes if not n.startswith(EXPERIENCE_NOTES)]
     valid = []
     unresolved = False
     for period in result.periods:
-        if period.kind == "project":
+        if period.kind == "project" and not counts_as_work(period.kind, period.context):
             continue
         value = interval(period, result.reference_time)
-        if period.kind != "employment" or value is None:
+        if period.kind == "unspecified" or value is None:
             unresolved = True
         else:
             valid.append(value[:2])
     result.calculated_experience_years = union_years(valid) if valid else None
-    stated = sorted(set(result.stated_experience_years))
     calculated = result.calculated_experience_years
-    conflict = len(stated) > 1 or (
-        bool(stated) and calculated is not None and abs(stated[0] - calculated) > 0.1
+    result.experience_years, conflict = resolve_total(
+        result.stated_experience_years, calculated, not unresolved
     )
     if conflict:
-        result.experience_years = None
         result.notes.append("Общий стаж и даты расходятся; значения сохранены для проверки.")
-    elif stated:
-        result.experience_years = stated[0]
-    elif valid and not unresolved and calculated <= 80:
-        result.experience_years = calculated
-    else:
-        result.experience_years = None
     if unresolved or calculated is not None and calculated > 80:
         result.notes.append(
             "Есть неполные/неверные даты или неясный вид опыта; полный стаж неизвестен."
@@ -209,6 +210,7 @@ def extract_document(text, *, reference_time=None):
     result.reference_time = reference_time or datetime.now(UTC)
     result.stated_experience_years = []
     context = "unspecified"
+    project_section = False
     in_skills = False
     next_position = False
     task_section = False
@@ -230,9 +232,12 @@ def extract_document(text, *, reference_time=None):
             if last_period:
                 last_period.end = start
                 last_period = None
+            project_section = bool(re.search(r"проекты?|projects?", line, re.I))
             context = (
                 "work"
-                if re.match(r"опыт|employment|work experience|experience", line, re.I)
+                if re.match(
+                    r"опыт|employment|work experience|experience|коммерческ|commercial", line, re.I
+                )
                 else "academic"
                 if re.match(r"учеб|academic|образование|education", line, re.I)
                 else "personal"
@@ -242,36 +247,24 @@ def extract_document(text, *, reference_time=None):
             known_ranges.append((start, end))
         period = PERIOD.search(line)
         incomplete = re.match(rf"(?P<start>{DATE})\s*[–—-]\s*(?:\?|\.\.\.)?\s*$", line, re.I)
-        if period:
+        if period or incomplete:
             if last_period:
                 last_period.end = start
             last_period = ResumePeriod(
                 start=start,
                 end=len(text),
-                date_start=period["start"],
-                date_end=period["end"],
-                kind="employment"
+                date_start=(period or incomplete)["start"],
+                date_end=period["end"] if period else "",
+                kind="project"
+                if project_section or context in {"academic", "personal"}
+                else "employment"
                 if context == "work"
-                else "project"
-                if context in {"academic", "personal"}
                 else "unspecified",
                 context=context,
             )
             result.periods.append(last_period)
-            if period[0] == line:
+            if period and period[0] == line:
                 known_ranges.append((start, end))
-        elif incomplete:
-            if last_period:
-                last_period.end = start
-            last_period = ResumePeriod(
-                start=start,
-                end=len(text),
-                date_start=incomplete["start"],
-                date_end="",
-                kind="employment" if context == "work" else "unspecified",
-                context=context,
-            )
-            result.periods.append(last_period)
         total = (
             extract_resume(line).experience_years
             if EXPERIENCE.fullmatch(line) or NO_EXPERIENCE.fullmatch(line)
@@ -280,7 +273,7 @@ def extract_document(text, *, reference_time=None):
         if total is not None:
             result.stated_experience_years.append(total)
             if re.match(r"опыт работы|total work experience", line, re.I):
-                context = "work"
+                context, project_section = "work", False
         skill_heading = SKILLS.fullmatch(line)
         position = POSITION.fullmatch(line)
         label = LABEL.fullmatch(line)
@@ -321,9 +314,9 @@ def extract_document(text, *, reference_time=None):
                 )
             ]
             if last_period is None and (
-                kind == "role" and context == "work" or "проект" in name or name == "project"
+                kind == "role" and context == "work" or "проект" in name or name.endswith("project")
             ):
-                project = "проект" in name or name == "project"
+                project = "проект" in name or name.endswith("project")
                 last_period = ResumePeriod(
                     start=start,
                     end=len(text),
@@ -334,6 +327,8 @@ def extract_document(text, *, reference_time=None):
                     if "учеб" in name
                     else "personal"
                     if "личн" in name
+                    else "work"
+                    if name.startswith(("коммерческий", "commercial"))
                     else context,
                 )
                 result.periods.append(last_period)

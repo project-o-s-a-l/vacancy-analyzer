@@ -110,7 +110,7 @@ async def test_application_worker_collects_profiles_into_shared_catalog(
         await original_loop(*args, **kwargs, sleep=sleep)
 
     monkeypatch.setattr(collection_runtime, "collection_loop", loop)
-    async with background_collection(settings(), engine):
+    async with background_collection(settings(collection_mode="profiles"), engine):
         async with asyncio.timeout(3):
             await idle.wait()
         client.close.assert_not_called()
@@ -218,13 +218,24 @@ async def test_standalone_command_uses_same_coordinator(monkeypatch, source):
     monkeypatch.setattr(cli, "session_factory", lambda _: None)
     monkeypatch.setattr(cli, "run_collection", collect)
     args = cli.parser().parse_args(
-        ["collect", "--query", "Бухгалтер", "--source", source, "--pages", "2", "--watch"]
+        [
+            "collect",
+            "--query",
+            "Бухгалтер",
+            "--source",
+            source,
+            "--pages",
+            "2",
+            "--watch",
+            "--new-only",
+        ]
     )
     await cli.run_command(args)
     assert collect.await_args.args[:2] == (config, engine)
     assert collect.await_args.args[2].max_pages == 2
     assert collect.await_args.kwargs == {
         "watch": True,
+        "new_only": True,
         "query_texts": ["Бухгалтер"],
         "source": source,
     }
@@ -282,3 +293,32 @@ async def test_database_lease_is_released_when_worker_is_cancelled(
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         await other_engine.dispose()
+
+
+@pytest.mark.parametrize("missing", [False, True], ids=["failed", "uninstalled"])
+async def test_one_failing_source_keeps_other_sources_running(
+    postgres_sessions, monkeypatch, missing
+):
+    completed = []
+
+    def provider(name):
+        if missing and name == "superjob":
+            raise collection_runtime.SourceAdapterError("superjob")
+
+        @asynccontextmanager
+        async def connect(settings):
+            if name == "superjob":
+                raise ValueError("Source unavailable")
+            completed.append(name)
+            yield SimpleNamespace(paging_kind=None)
+
+        return SimpleNamespace(open=connect)
+
+    monkeypatch.setattr(collection_runtime, "source_adapter", provider)
+    monkeypatch.setattr(collection_runtime, "collection_loop", AsyncMock())
+    config = Settings(_env_file=None, collection_sources=("hh", "superjob", "trudvsem"))
+    with pytest.raises(ValueError, match="superjob"):
+        await run_collection(
+            config, postgres_sessions.kw["bind"], SearchQuery(category="it"), watch=False
+        )
+    assert set(completed) == {"html", "trudvsem"}

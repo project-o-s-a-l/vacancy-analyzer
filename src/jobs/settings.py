@@ -5,6 +5,12 @@ from urllib.parse import urlsplit
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from domain.retrieval import DEFAULT_RETRIEVAL_K
+
+DEFAULT_COLLECTION_SOURCES = ("hh", "habr_career", "trudvsem", "superjob")
+COLLECTION_SOURCES = (*DEFAULT_COLLECTION_SOURCES, "avito")
+DEFAULT_CHECK_INTERVAL = 3 * 24 * 60 * 60
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -19,11 +25,28 @@ class Settings(BaseSettings):
     hh_profile_check_interval: float = Field(default=60, ge=10, allow_inf_nan=False)
     hh_snapshots_dir: Path = Path("data/raw/hh")
     hh_auto_collect: bool = True
+    collection_new_only: bool = False
+    collection_mode: Literal["it", "profiles"] = "it"
+    collection_sources: tuple[
+        Literal["hh", "habr_career", "trudvsem", "superjob", "avito"], ...
+    ] = Field(
+        default=DEFAULT_COLLECTION_SOURCES,
+        min_length=1,
+    )
+    public_search_requests_per_hour: int = Field(default=60, ge=1, le=1000)
+    public_detail_requests_per_hour: int = Field(default=120, ge=1, le=5000)
+    public_request_delay: float = Field(default=5, ge=1, allow_inf_nan=False)
+    superjob_detail_target_per_hour: int = Field(default=700, ge=1, le=3600)
+    superjob_request_delay: float = Field(default=2, ge=1, allow_inf_nan=False)
+    avito_new_target_per_hour: int = Field(default=500, ge=1, le=3600)
+    avito_detail_requests_per_hour: int = Field(default=720, ge=1, le=3600)
+    avito_request_delay: float = Field(default=2, ge=1, allow_inf_nan=False)
+    avito_search_requests_per_hour: int = Field(default=180, ge=1, le=1000)
     hh_source: Literal["html", "api"] = "html"
     hh_search_requests_per_hour: int = Field(default=30, ge=1, le=1000)
     hh_detail_requests_per_hour: int = Field(default=90, ge=1, le=5000)
     hh_check_limit: int = Field(default=20, ge=0, le=100)
-    hh_check_interval: float = Field(default=86400, ge=3600, allow_inf_nan=False)
+    hh_check_interval: float = Field(default=DEFAULT_CHECK_INTERVAL, ge=3600, allow_inf_nan=False)
     hh_check_batch_interval: float = Field(default=3600, ge=3600, allow_inf_nan=False)
     vacancy_llm_enabled: bool = False
     resume_llm_enabled: bool = False
@@ -46,7 +69,7 @@ class Settings(BaseSettings):
     ranker_mode: Literal["rules", "shadow", "model"] = "rules"
     ranker_model_path: Path | None = None
     saved_selections_enabled: bool = True
-    retrieval_k: int = Field(default=64, ge=1, le=5000)
+    retrieval_k: int = Field(default=DEFAULT_RETRIEVAL_K, ge=1, le=5000)
     retrieval_pool_factor: int = Field(default=4, ge=1, le=16)
     retrieval_normalization: Literal["legacy", "coverage"] = "coverage"
     retrieval_backend: Literal["sql", "compact"] = "sql"

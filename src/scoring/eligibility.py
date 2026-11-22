@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 from domain import CandidateProfile, Vacancy
 from domain.eligibility import EligibilityEvidence, EligibilityIssue, EligibilityResult
+from domain.exchange_rates import current_rates
 from nlp.text import normalize_text
 from scoring.comparison import compare_facts, ready_facts, total_experience
 
@@ -26,15 +27,19 @@ def condition_value(vacancy, field):
     return claim.value if claim is not None else getattr(vacancy, field)
 
 
-def salary_comparable(vacancy: Vacancy, profile: CandidateProfile) -> bool:
+def salary_bounds(vacancy: Vacancy, profile: CandidateProfile):
+    """Comparable monthly bounds in the candidate's currency, before display rounding."""
     prefs = profile.preferences
-    currency = (condition_value(vacancy, "currency") or "").upper()
-    if currency == "RUR":
-        currency = "RUB"
+    if (
+        condition_value(vacancy, "salary_gross") != prefs.salary_gross
+        or condition_value(vacancy, "salary_period") != "MONTH"
+    ):
+        return None, None
+    currency = condition_value(vacancy, "currency") or ""
+    rates = current_rates()
     return (
-        currency == prefs.currency
-        and condition_value(vacancy, "salary_gross") == prefs.salary_gross
-        and condition_value(vacancy, "salary_period") == "MONTH"
+        rates.convert(condition_value(vacancy, "salary_from"), currency, prefs.currency),
+        rates.convert(condition_value(vacancy, "salary_to"), currency, prefs.currency),
     )
 
 
@@ -195,18 +200,15 @@ def check_eligibility(
                 state="unknown" if match is None else "contradiction",
             )
     if prefs.salary_min is not None and prefs.salary_min > 0:
-        comparable = salary_comparable(vacancy, profile)
-        if not comparable:
+        lower, upper = salary_bounds(vacancy, profile)
+        if lower is None and upper is None:
             issue(
                 "salary_incomparable",
                 "salary",
                 "Зарплата неизвестна или несопоставима по валюте, периоду и налогам",
                 exclude=prefs.salary_required,
             )
-        elif (
-            condition_value(vacancy, "salary_to") is not None
-            and condition_value(vacancy, "salary_to") < prefs.salary_min
-        ):
+        elif upper is not None and upper < prefs.salary_min:
             issue(
                 "salary_below_minimum",
                 "salary",
@@ -214,15 +216,11 @@ def check_eligibility(
                 exclude=prefs.salary_required,
                 state="contradiction",
             )
-        elif (
-            condition_value(vacancy, "salary_from") is None
-            or condition_value(vacancy, "salary_from") < prefs.salary_min
-        ):
-            unknown = condition_value(vacancy, "salary_to") is None
+        elif lower is None or lower < prefs.salary_min:
             issue(
                 "salary_not_guaranteed",
                 "salary",
                 "Зарплатный минимум не гарантирован нижней границей",
-                exclude=prefs.salary_required and unknown,
+                exclude=prefs.salary_required and upper is None,
             )
     return result

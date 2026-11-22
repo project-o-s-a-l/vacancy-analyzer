@@ -2,37 +2,93 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from domain import Vacancy
 from domain.feedback import REASONS, FeedbackState
+from domain.vacancy import SOURCE_NAMES
+from jobs.profiles import SALARY_CURRENCIES
 
 
-def vacancy_keyboard(vacancy: Vacancy, state: FeedbackState | None = None) -> InlineKeyboardMarkup:
+def main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Найти вакансии", callback_data="menu:latest")],
+            [
+                InlineKeyboardButton(text="Мои вакансии", callback_data="menu:library"),
+                InlineKeyboardButton(text="Мой профиль", callback_data="menu:profile"),
+            ],
+        ]
+    )
+
+
+def library_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="Сохранённые", callback_data="fbpage:saved:0"),
+                InlineKeyboardButton(text="Мои отклики", callback_data="fbpage:applied:0"),
+            ],
+            [InlineKeyboardButton(text="История рекомендаций", callback_data="fbpage:history:0")],
+            [InlineKeyboardButton(text="← В меню", callback_data="menu:home")],
+        ]
+    )
+
+
+def vacancy_keyboard(
+    vacancy: Vacancy, state: FeedbackState | None = None, *, expanded: bool = False
+) -> InlineKeyboardMarkup:
     state = state or FeedbackState(vacancy.id)
     identifier = vacancy.id.hex
 
     def button(action: str, text: str) -> InlineKeyboardButton:
         return InlineKeyboardButton(text=text, callback_data=f"fb:{action}:{identifier}")
 
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="Открыть вакансию", url=str(vacancy.url))],
+    label = (
+        SOURCE_NAMES.get(vacancy.source, vacancy.source)
+        if vacancy._source_links
+        else "Открыть вакансию"
+    )
+    rows = [[InlineKeyboardButton(text=label, url=str(vacancy.url))]]
+    for source, url in sorted(vacancy._source_links.items()):
+        rows.append([InlineKeyboardButton(text=SOURCE_NAMES.get(source, source), url=url)])
+    rows.append(
+        [
+            button("like", "👍 Интересно ✓" if state.interest == "like" else "👍 Интересно"),
+            button(
+                "dislike",
+                "👎 Не подходит ✓" if state.interest == "dislike" else "👎 Не подходит",
+            ),
+        ]
+    )
+    if expanded:
+        rows.extend(
             [
-                button("like", "👍 Интересно ✓" if state.interest == "like" else "👍 Интересно"),
-                button(
-                    "dislike",
-                    "👎 Не подходит ✓" if state.interest == "dislike" else "👎 Не подходит",
-                ),
-            ],
+                [
+                    InlineKeyboardButton(
+                        text="Как подобрана вакансия", callback_data=f"card:match:{identifier}"
+                    )
+                ],
+                [
+                    button(
+                        "unapply" if state.applied else "apply",
+                        "Снять отметку об отклике" if state.applied else "Отметить отклик",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        text="← К вакансии", callback_data=f"card:back:{identifier}"
+                    )
+                ],
+            ]
+        )
+    else:
+        rows.append(
             [
                 button(
                     "unsave" if state.saved else "save",
-                    "Убрать из сохранённых" if state.saved else "📌 Сохранить",
+                    "Убрать из сохранённых" if state.saved else "Сохранить",
                 ),
-                button(
-                    "unapply" if state.applied else "apply",
-                    "Убрать отметку отклика" if state.applied else "✅ Откликнулся",
-                ),
-            ],
-        ]
-    )
+                InlineKeyboardButton(text="Ещё действия", callback_data=f"card:more:{identifier}"),
+            ]
+        )
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def reason_keyboard(state: FeedbackState) -> InlineKeyboardMarkup:
@@ -54,7 +110,7 @@ def reason_keyboard(state: FeedbackState) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def page_keyboard(kind: str, page: int, has_next: bool) -> InlineKeyboardMarkup | None:
+def page_keyboard(kind: str, page: int, has_next: bool) -> InlineKeyboardMarkup:
     buttons = []
     if page:
         buttons.append(
@@ -67,7 +123,8 @@ def page_keyboard(kind: str, page: int, has_next: bool) -> InlineKeyboardMarkup 
     rows = [buttons] if buttons else []
     if kind == "history":
         rows.append([InlineKeyboardButton(text="Очистить историю", callback_data="history:reset")])
-    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+    rows.append([InlineKeyboardButton(text="← Мои вакансии", callback_data="menu:library")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def history_reset_keyboard(token: str) -> InlineKeyboardMarkup:
@@ -83,39 +140,22 @@ def history_reset_keyboard(token: str) -> InlineKeyboardMarkup:
     )
 
 
-def profile_keyboard() -> InlineKeyboardMarkup:
-    fields = [
-        ("episode", "Опыт и проекты"),
-        ("skill", "Навыки и их применение"),
-        ("role", "Прошлые роли"),
-        ("task", "Задачи"),
-        ("experience", "Общий стаж"),
-        ("positions", "Желаемые должности"),
-        ("remote", "Формат работы"),
-        ("salary", "Зарплата"),
-        ("locations", "Города"),
-        ("qualifications", "Документы и допуски"),
-        ("constraints", "Обязательные условия"),
-    ]
-    buttons = [
-        InlineKeyboardButton(text=title, callback_data="details:" + field)
-        for field, title in fields
-    ]
+def profile_keyboard(*, editing: bool = False) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Открыть / продолжить редактор", callback_data="details:home"
+                    text="Продолжить редактирование" if editing else "Изменить профиль",
+                    callback_data="details:home",
                 )
             ],
             [InlineKeyboardButton(text="Загрузить резюме", callback_data="resume:upload")],
-            *[buttons[index : index + 2] for index in range(0, len(buttons), 2)],
-            [InlineKeyboardButton(text="История рекомендаций", callback_data="fbpage:history:0")],
+            [InlineKeyboardButton(text="← В меню", callback_data="menu:home")],
         ]
     )
 
 
-def form_keyboard(field: str, revision: int = 0) -> InlineKeyboardMarkup | None:
+def form_keyboard(field: str, revision: int = 0) -> InlineKeyboardMarkup:
     if field == "constraints":
         return InlineKeyboardMarkup(
             inline_keyboard=[
@@ -150,13 +190,26 @@ def form_keyboard(field: str, revision: int = 0) -> InlineKeyboardMarkup | None:
             ]
         )
     if field != "skills":
-        return InlineKeyboardMarkup(
-            inline_keyboard=[
+        rows = []
+        if field == "salary":
+            rows.append(
                 [
                     InlineKeyboardButton(
-                        text="Пропустить", callback_data=f"answer:{revision}:{field}:skip"
+                        text=code, callback_data=f"answer:{revision}:salary:{code}"
                     )
+                    for code in SALARY_CURRENCIES
                 ]
+            )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    text="Пропустить", callback_data=f"answer:{revision}:{field}:skip"
+                )
             ]
         )
-    return None
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Загрузить резюме", callback_data="resume:upload")]
+        ]
+    )

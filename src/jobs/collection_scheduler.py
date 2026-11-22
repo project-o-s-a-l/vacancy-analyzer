@@ -17,6 +17,7 @@ from domain import CandidateProfile
 from jobs.catalog_checks import check_catalog
 from jobs.collect import collect_vacancies
 from jobs.search_plan import PLAN_VERSION, plan_profile, plan_queries
+from jobs.settings import DEFAULT_CHECK_INTERVAL
 from nlp.ollama import OllamaVacancyAnalyzer
 from observability import emit_event, operation
 from storage.models import SearchPlanModel
@@ -99,16 +100,20 @@ async def collection_loop(
     interval: float,
     *,
     query_texts: list[str] | None = None,
+    new_only: bool = False,
     profile_check_interval: float = 60,
+    active_slice_interval: float | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     analyzer: OllamaVacancyAnalyzer | None = None,
     analysis_pipeline: str | None = None,
     check_limit: int = 0,
-    check_interval: float = 86400,
+    check_interval: float = DEFAULT_CHECK_INTERVAL,
     check_batch_interval: float = 3600,
 ) -> None:
     """Check profiles between directions and during idle time; schedule each direction fairly."""
+    if new_only:
+        check_limit = 0
     if getattr(source, "paging_kind", None):
         await persisted_collection_loop(
             source,
@@ -117,7 +122,9 @@ async def collection_loop(
             watch,
             interval,
             query_texts=query_texts,
+            new_only=new_only,
             profile_check_interval=profile_check_interval,
+            active_slice_interval=active_slice_interval,
             sleep=sleep,
             check_limit=check_limit,
             check_interval=check_interval,
@@ -183,6 +190,7 @@ async def collection_loop(
                         query,
                         analyzer=analyzer,
                         analysis_pipeline=analysis_pipeline,
+                        new_only=new_only,
                     )
                     emit_event(
                         logger,
@@ -263,7 +271,9 @@ async def persisted_collection_loop(
     interval,
     *,
     query_texts,
+    new_only,
     profile_check_interval,
+    active_slice_interval,
     sleep,
     check_limit,
     check_interval,
@@ -276,24 +286,55 @@ async def persisted_collection_loop(
     from sqlalchemy import select
 
     from collectors.errors import CollectionStopped
-    from jobs.collection_budget import BudgetDeferred
+    from jobs.collection_budget import BudgetDeferred, BudgetedSource, pending_http_backoff
     from jobs.collection_progress import choose_direction, crawl_slice, sync_directions
     from storage.models import CollectionBudget
 
-    fixed = build_queries(query_texts, template) if query_texts is not None else None
+    source_name = getattr(source, "source_name", "hh")
+    watch_backoff = isinstance(source, BudgetedSource) and not source.inline_details
+    if template.category == "it":
+        roles = getattr(source, "catalog_roles", ())
+        fixed = (
+            [template.model_copy(update={"professional_role": role}) for role in roles]
+            if roles
+            else [template, *build_queries(getattr(source, "it_search_terms", ()), template)]
+        )
+    else:
+        fixed = build_queries(query_texts, template) if query_texts is not None else None
+    keys = await sync_directions(source, sessions, fixed) if fixed is not None else {}
+    # A manual discovery run can start a new sweep even if the previous one just finished.
+    manual_run_started_at = datetime.now(UTC) if new_only and not watch else None
     while True:
         now = datetime.now(UTC)
-        queries = fixed if fixed is not None else await load_profile_queries(sessions, template)
-        demand = Counter()
+        ran_slice = False
         if fixed is None:
+            queries = await load_profile_queries(sessions, template)
+            demand = Counter()
             async with sessions() as session:
                 for plan in await session.scalars(select(SearchPlanModel.queries)):
                     demand.update({" ".join(q["text"].casefold().split()) for q in plan})
-        keys = await sync_directions(source, sessions, queries, demand=demand, now=now)
-        if watch and check_limit:
+            keys = await sync_directions(source, sessions, queries, demand=demand, now=now)
+        budget = None
+        check_on_start = watch_backoff and source.stop_on_initial_429
+        if (watch and (check_limit or watch_backoff)) or check_on_start:
             async with sessions() as session:
-                budget = await session.get(CollectionBudget, "hh")
-                last = budget.metrics.get("check_batch_at") if budget else None
+                budget = await session.get(CollectionBudget, source_name)
+        if budget and watch_backoff and (backoff := pending_http_backoff(budget, now)):
+            status, retry_at = backoff
+            source.check_throttle(budget, status, retry_at)
+            if watch:
+                emit_event(
+                    logger,
+                    "collection.deferred",
+                    code=budget.metrics.get("rate_limit_reason") or "source_cooldown",
+                    result="deferred",
+                    status_code=status,
+                    next_run_at=retry_at,
+                )
+                await sleep(max(0, (retry_at - datetime.now(UTC)).total_seconds()))
+                continue
+        if watch and check_limit:
+            last = budget.metrics.get("check_batch_at") if budget else None
             if (
                 last is None
                 or datetime.fromisoformat(last) + timedelta(seconds=check_batch_interval) <= now
@@ -315,21 +356,51 @@ async def persisted_collection_loop(
                 ):
                     pass  # Durable source circuit/budget prevents further network work.
                 async with sessions.begin() as session:
-                    budget = await session.get(CollectionBudget, "hh", with_for_update=True)
+                    budget = await session.get(CollectionBudget, source_name, with_for_update=True)
                     if budget:
                         budget.metrics = dict(budget.metrics) | {"check_batch_at": now.isoformat()}
-        selected = [await choose_direction(sessions, keys, now=now)] if watch else list(keys)
-        for key in selected:
-            if key:
-                # --pages bounds work in this invocation; the cursor survives the invocation.
-                for _ in range(template.max_pages):
-                    await crawl_slice(
-                        source,
-                        sessions,
-                        keys[key],
-                        interval=interval,
-                        analysis_pipeline=analysis_pipeline,
-                    )
+        if template.category == "it":
+            # One shared slice budget per publisher (not per HH role).
+            for _ in range(template.max_pages):
+                key = await choose_direction(sessions, keys, due_only=watch)
+                if key is None:
+                    break
+                ran_slice = True
+                await crawl_slice(
+                    source,
+                    sessions,
+                    keys[key],
+                    interval=interval,
+                    check_interval=check_interval,
+                    new_only=new_only,
+                    manual_run_started_at=manual_run_started_at,
+                    active_slice_interval=active_slice_interval,
+                    detail_limit=template.per_page
+                    if getattr(source, "inline_details", False)
+                    else 10,
+                    analysis_pipeline=analysis_pipeline,
+                )
+        else:
+            selected = [await choose_direction(sessions, keys, now=now)] if watch else list(keys)
+            for key in selected:
+                if key:
+                    ran_slice = True
+                    for _ in range(template.max_pages):
+                        await crawl_slice(
+                            source,
+                            sessions,
+                            keys[key],
+                            interval=interval,
+                            check_interval=check_interval,
+                            new_only=new_only,
+                            manual_run_started_at=manual_run_started_at,
+                            active_slice_interval=active_slice_interval,
+                            analysis_pipeline=analysis_pipeline,
+                        )
         if not watch:
             return
-        await sleep(profile_check_interval)
+        await sleep(
+            active_slice_interval
+            if ran_slice and active_slice_interval is not None
+            else profile_check_interval
+        )

@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from aiogram import Bot
-from aiogram.methods import SendMessage
+from aiogram.methods import EditMessageText, SendMessage
 from pydantic import ValidationError
 from test_bot import TEST_TOKEN, RecordingSession, command_update
 from test_users import callback_update, store_profile
@@ -370,7 +370,8 @@ async def test_telegram_constraint_choice_is_persisted_and_user_isolated(session
     )
     assert not (await users.get(99)).profile.preferences.salary_required
     assert any(
-        isinstance(m, SendMessage) and "Обязательные условия: зарплата, города" in m.text
+        isinstance(m, (SendMessage, EditMessageText))
+        and "Обязательные условия: зарплата, города" in m.text
         for m in transport.requests
     )
 

@@ -9,6 +9,7 @@ import tracemalloc
 from collections import defaultdict
 from pathlib import Path
 
+from domain.exchange_rates import current_rates
 from domain.retrieval import RetrievalParameters
 from domain.vacancy_analysis import analysis_input_hash, is_fresh
 from domain.vacancy_duplicates import vacancy_duplicate_key
@@ -77,10 +78,14 @@ class MemoryCandidateSource:
         from storage.repositories.candidate_repository import compact_order
 
         groups = {}
+        guards = query.alias_requirements()
         for row in self.rows:
             if not ready(row, parameters.version) or not compact_available(row, profile, options):
                 continue
-            overlap = bool(query.terms.intersection(document_terms(row["lexical_document"])))
+            document = row["lexical_document"]
+            overlap = bool(query.terms.intersection(document_terms(document))) or any(
+                guard.issubset(document["title"]) for guard in guards
+            )
             if overlap != positive:
                 continue
             pick = {
@@ -145,14 +150,11 @@ def compact_available(row, profile, options):
         }:
             return False
     if prefs.salary_required and prefs.salary_min and prefs.salary_min > 0:
-        currency = (row["currency"] or "").upper().replace("RUR", "RUB")
-        if (
-            currency != prefs.currency
-            or row["salary_period"] != "MONTH"
-            or row["salary_gross"] != prefs.salary_gross
-        ):
+        if row["salary_period"] != "MONTH" or row["salary_gross"] != prefs.salary_gross:
             return False
-        if max(row["salary_from"] or 0, row["salary_to"] or 0) < prefs.salary_min:
+        upper = row["salary_to"] if row["salary_to"] is not None else row["salary_from"]
+        offered = current_rates().convert(upper, row["currency"] or "", prefs.currency)
+        if offered is None or offered < prefs.salary_min:
             return False
     return True
 

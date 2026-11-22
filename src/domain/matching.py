@@ -1,3 +1,6 @@
+from datetime import date
+from decimal import Decimal
+
 from pydantic import BaseModel, Field
 
 from domain.comparison import ComparisonResult
@@ -8,10 +11,18 @@ from domain.retrieval import RetrievalEvidence
 from domain.serving_ranker import RankingDecision
 
 
+class SalaryConversion(BaseModel):
+    currency: str
+    as_of: date
+    lower: Decimal | None
+    upper: Decimal | None
+
+
 class MatchResult(BaseModel):
     vacancy_id: str
     score: float = Field(ge=0, le=100)
     components: dict[str, float | None]
+    salary_conversion: SalaryConversion | None = None
     evidence_coverage: float = Field(ge=0, le=1)
     matched_skills: list[str]
     missing_skills: list[str]

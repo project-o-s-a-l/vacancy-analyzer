@@ -69,6 +69,23 @@ def test_ongoing_is_fixed_to_reference_and_total_conflict_is_preserved():
     assert facts.episodes[0].ongoing.value is True
 
 
+def test_commercial_projects_share_calendar_with_employment_and_personal_projects_are_excluded():
+    text = (
+        "Опыт работы\n01.2020 — 12.2021\nДолжность: Инженер\n"
+        "Коммерческие проекты\n01.2021 — 12.2022\nПроект: Разработка\n"
+        "Личные проекты\n01.2010 — 12.2019\nПроект: Библиотека"
+    )
+    extraction = extract_document(text, reference_time=AT)
+    assert extraction.experience_years == 3
+    facts = resume_facts(text, extraction, 42, version=RESUME_VERSION)
+    assert [(e.kind, e.context) for e in facts.episodes] == [
+        ("employment", "work"),
+        ("project", "work"),
+        ("project", "personal"),
+    ]
+    facts.verify_text("resume:42", facts.source_revision, {"text": text})
+
+
 def test_incomplete_dates_and_undated_project_remain_in_facts():
     text = (
         "Опыт работы\n01.2020 — ?\nДолжность: Инженер\nУчебные проекты\nУчебный проект: База данных"

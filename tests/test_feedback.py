@@ -17,6 +17,7 @@ from domain.feedback import FeedbackState
 from jobs.feedback import FeedbackService
 from jobs.notify import NotificationService
 from jobs.users import UserService
+from scoring import score_vacancy
 from storage.models import FeedbackEventModel, NotificationModel
 from storage.payloads import payload_hash
 from storage.repositories import VacancyRepository
@@ -240,17 +241,7 @@ async def test_pagination_is_private_and_preserves_archived_bookmarks(sessions, 
 
 
 def update(data, event_key="callback", user_id=42):
-    result = callback_update(data, user_id=user_id)
-    return result.model_copy(
-        update={
-            "callback_query": result.callback_query.model_copy(
-                update={
-                    "id": event_key,
-                    "message": result.callback_query.message.model_copy(update={"message_id": 10}),
-                }
-            )
-        }
-    )
+    return callback_update(data, user_id=user_id, event_key=event_key, message_id=10)
 
 
 async def test_real_dispatcher_records_feedback_and_updates_buttons(feedback, sessions, vacancy):
@@ -311,7 +302,7 @@ async def test_history_pagination_and_archived_label(sessions, vacancy, profile,
     await build_dispatcher(UserService(sessions)).feed_update(bot, update("fbpage:history:1"))
     messages = [request for request in session.requests if isinstance(request, SendMessage)]
     assert any("страница 2" in request.text for request in messages)
-    cards = [request for request in messages if request.text.startswith("Вакансия в архиве")]
+    cards = [request for request in messages if "Вакансия в архиве" in request.text]
     assert len(cards) == 2
     assert any(
         button.callback_data == "fbpage:history:0"
@@ -373,12 +364,54 @@ async def test_telegram_edit_failure_does_not_undo_committed_action(feedback, se
 def test_callbacks_fit_telegram_limit_and_contain_no_user_ids(vacancy):
     for keyboard in [
         vacancy_keyboard(vacancy),
+        vacancy_keyboard(vacancy, expanded=True),
         reason_keyboard(FeedbackState(vacancy.id, version=2_147_483_647)),
     ]:
         for row in keyboard.inline_keyboard:
             for button in row:
                 if button.callback_data:
                     assert len(button.callback_data.encode()) <= 64
+
+
+async def test_card_actions_and_explanation_use_the_shown_message(sessions, vacancy, profile):
+    match = score_vacancy(vacancy, profile)
+    match.reasons = ["Совпали навыки на момент отправки"]
+    await seed(sessions, vacancy, profile, context={"match": match.model_dump(mode="json")})
+    transport = RecordingSession()
+    bot = Bot(TEST_TOKEN, session=transport)
+    dispatcher = build_dispatcher(UserService(sessions))
+    compact = vacancy_keyboard(vacancy).inline_keyboard
+    assert [b.text for row in compact for b in row] == [
+        "Открыть вакансию",
+        "👍 Интересно",
+        "👎 Не подходит",
+        "Сохранить",
+        "Ещё действия",
+    ]
+    more = next(b for row in compact for b in row if b.text == "Ещё действия")
+    await dispatcher.feed_update(bot, update(more.callback_data))
+    buttons = {
+        b.text: b.callback_data
+        for row in transport.requests[-1].reply_markup.inline_keyboard
+        for b in row
+    }
+    assert {"👍 Интересно", "👎 Не подходит", "Отметить отклик"} <= buttons.keys()
+    details = buttons["Как подобрана вакансия"]
+    await dispatcher.feed_update(bot, update(details))
+    assert "Совпали навыки на момент отправки" in transport.requests[-1].text
+    await dispatcher.feed_update(bot, callback_update(details))  # another message in the same chat
+    assert (
+        isinstance(transport.requests[-1], AnswerCallbackQuery)
+        and transport.requests[-1].show_alert
+    )
+    await dispatcher.feed_update(bot, update(details, user_id=99))
+    assert (
+        isinstance(transport.requests[-1], AnswerCallbackQuery)
+        and transport.requests[-1].show_alert
+    )
+    await dispatcher.feed_update(bot, update(buttons["← К вакансии"]))
+    assert transport.requests[-1].reply_markup.inline_keyboard == compact
+    assert await event_count(sessions) == 0
 
 
 @pytest.mark.postgres

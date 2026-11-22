@@ -9,9 +9,20 @@ from nlp.extraction import canonical_skill
 from nlp.qualifications import qualification_key, qualification_name
 from nlp.resume import invalid_resume_skill, looks_like_resume
 
-FIELDS = ("skills", "experience", "positions", "remote", "salary", "locations")
-EDIT_FIELDS = (*FIELDS, "qualifications", "constraints")
+SETUP_FIELDS = ("skills", "experience")
+# Users already answering the last three questions can finish their saved form.
+LEGACY_SETUP_FIELDS = ("remote", "salary", "locations")
+EDIT_FIELDS = (*SETUP_FIELDS, *LEGACY_SETUP_FIELDS, "positions", "qualifications", "constraints")
 _SKIP = {"пропустить", "нет", "-", "?", "не знаю", "очистить"}
+SALARY_CURRENCIES = ("RUB", "USD", "EUR")
+_SALARY = re.compile(
+    r"(?:(?:желаемая зарплата|зарплата|salary)\s*:?\s*)?(?:от\s+)?"
+    r"(?P<amount>[0-9]{1,3}(?:\s[0-9]{3})+|[0-9]+)\s*"
+    r"(?P<currency>руб(?:лей|ля|ль|\.?)|₽|доллар(?:ов|а)?|\$|евро|€|(?!net\b)[a-z]{3})?"
+    r"\s*(?:в месяц|/\s*мес\.?)?\s*"
+    r"(?P<tax>до (?:вычета )?налог(?:ов|а)|на руки|после (?:вычета )?налогов|gross|net)?",
+    re.I,
+)
 
 
 def _list(text: str, *, maximum: int, item_length: int) -> list[str]:
@@ -22,7 +33,9 @@ def _list(text: str, *, maximum: int, item_length: int) -> list[str]:
     return values
 
 
-def update_field(profile: CandidateProfile, field: str, text: str) -> CandidateProfile:
+def update_field(
+    profile: CandidateProfile, field: str, text: str, *, salary_currency: str | None = None
+) -> CandidateProfile:
     text = text.strip()
     if not text or len(text) > 4000:
         raise ValueError("Отправьте текст длиной от 1 до 4000 символов.")
@@ -43,8 +56,12 @@ def update_field(profile: CandidateProfile, field: str, text: str) -> CandidateP
                 "В навыках нужны конкретные умения и технологии. "
                 "Опыт укажите отдельно; «студент» не является навыком."
             )
+        # Older profiles can retain source spelling. Keep their keys and attached
+        # facts when the same skill is submitted with different capitalization.
+        existing = {canonical_skill(name): name for name in profile.skills}
+        keys = [existing.get(name, name) for name in names]
         data["skills"] = {
-            name: profile.skills.get(name, Skill()).model_dump(mode="json") for name in names
+            name: profile.skills.get(name, Skill()).model_dump(mode="json") for name in keys
         }
     elif field == "experience":
         try:
@@ -83,18 +100,28 @@ def update_field(profile: CandidateProfile, field: str, text: str) -> CandidateP
             data["preferences"]["salary_min"] = None
             data["preferences"]["salary_required"] = False
         else:
-            match = re.fullmatch(
-                r"([\d ]+)\s+([a-zA-Z]{3})\s+(до налогов|на руки|gross|net)", text, re.IGNORECASE
-            )
+            match = _SALARY.fullmatch(text)
             if not match:
-                raise ValueError("Укажите сумму, валюту и налоги: например, 150000 RUB на руки.")
-            amount = int(match[1].replace(" ", ""))
+                raise ValueError("Введите месячный минимум, например «от 100 000 рублей на руки».")
+            amount = int("".join(match["amount"].split()))
             if not 0 <= amount <= 1_000_000_000:
                 raise ValueError("Укажите зарплату от 0 до 1 000 000 000.")
+            currency = (
+                match["currency"] or salary_currency or profile.preferences.currency
+            ).upper()
+            if currency.startswith("РУБ") or currency in {"₽", "RUR"}:
+                currency = "RUB"
+            elif currency.startswith("ДОЛЛАР") or currency == "$":
+                currency = "USD"
+            elif currency in {"ЕВРО", "€"}:
+                currency = "EUR"
+            tax = (match["tax"] or "").casefold()
             data["preferences"].update(
                 salary_min=amount,
-                currency=match[2].upper(),
-                salary_gross=match[3].casefold() in {"до налогов", "gross"},
+                currency=currency,
+                salary_gross=(tax == "gross" or tax.startswith("до "))
+                if tax
+                else profile.preferences.salary_gross,
             )
     elif field == "constraints":
         modes = {

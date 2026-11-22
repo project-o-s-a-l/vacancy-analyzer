@@ -4,7 +4,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError, TelegramNetworkError, TelegramServerError
 from aiogram.types import LinkPreviewOptions
 
-from bot.cards import render_card
+from bot.cards import format_card
 from bot.keyboards import vacancy_keyboard
 from domain import Vacancy
 from domain.delivery import DeliveryFailure
@@ -19,8 +19,7 @@ class TelegramSender:
         try:
             message = await self.bot.send_message(
                 chat_id,
-                render_card(vacancy, match),
-                parse_mode=None,
+                **format_card(vacancy, match).as_kwargs(),
                 reply_markup=vacancy_keyboard(vacancy),
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )

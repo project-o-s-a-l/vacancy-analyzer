@@ -6,11 +6,11 @@ import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.enums import ChatType, MessageEntityType
-from aiogram.methods import GetMe, SendMessage
+from aiogram.methods import EditMessageText, GetMe, SendMessage
 from aiogram.types import Chat, Message, MessageEntity, Update, User
 from asyncpg import ConnectionDoesNotExistError
 
-from bot.cards import render_card, render_profile
+from bot.cards import format_card, render_card, render_profile
 from bot.handlers import build_dispatcher
 from jobs.cli import main
 from jobs.notify import DeliveryReport
@@ -80,7 +80,7 @@ async def service(sessions, profile):
     "command,expected",
     [
         ("/start", "Помогаю выбирать"),
-        ("/profile", "Текущий профиль"),
+        ("/profile", "Мой профиль"),
         ("/status", "Отправлено вам"),
         ("/latest", "Новых рекомендаций"),
     ],
@@ -90,7 +90,11 @@ async def test_registered_user_commands_pass_real_dispatcher(service, command, e
     bot = Bot(TEST_TOKEN, session=session)
     try:
         await build_dispatcher(service).feed_update(bot, command_update(command))
-        messages = [method for method in session.requests if isinstance(method, SendMessage)]
+        messages = [
+            method
+            for method in session.requests
+            if isinstance(method, (SendMessage, EditMessageText))
+        ]
         assert messages
         assert any(expected in message.text for message in messages)
         assert messages[0].chat_id == 42
@@ -148,22 +152,34 @@ def test_card_plain_text_and_bounded_utf16_length(vacancy, profile, now):
     match.missing_skills = ["Z" * 10000]
     match.reasons = ["😀" * 10000] * 100
     match.warnings = ["😀" * 10000] * 100
-    text = render_card(vacancy, match)
+    text, entities = format_card(vacancy, match).render()
     assert len(text.encode("utf-16-le")) // 2 < 4096
     assert "<b>" in text
     assert "<script>" in text
+    assert len(entities) == 1 and entities[0].type == "bold" and entities[0].offset == 0
+    assert entities[0].length == len(text.splitlines()[0].encode("utf-16-le")) // 2
 
 
 def test_card_shows_salary_semantics(vacancy, profile, now):
     text = render_card(vacancy, score_vacancy(vacancy, profile, now=now))
-    assert "RUB / мес., до налогов" in text
-    assert "180 000–250 000" in text
+    assert text.startswith(f"{vacancy.title}\n{vacancy.company}\n\n")
+    assert "180 000–250 000 ₽ в месяц · до налогов" in text
+    assert "Навыки из вашего профиля" in text and "Полнота сравнения" not in text
 
 
 def test_profile_length_is_bounded(profile):
     profile.preferences.positions = ["😀" * 10000]
     profile.preferences.locations = ["😀" * 10000]
     assert len(render_profile(profile).encode("utf-16-le")) // 2 < 4096
+
+
+def test_card_keeps_skill_tenure_separate_from_general_experience(vacancy, profile, now):
+    vacancy.experience = None
+    vacancy.skills = ["Git"]
+    vacancy.description = "Требования: опыт работы с Git от 3 лет."
+    text = render_card(vacancy, score_vacancy(vacancy, profile, now=now))
+    assert "Требуемый опыт с Git: от 3 лет" in text
+    assert "\nОпыт:" not in text
 
 
 @pytest.mark.parametrize("command", ["demo", "telegram-preview"])
@@ -255,7 +271,7 @@ async def test_existing_webhook_is_preserved(monkeypatch):
     engine.dispose.assert_awaited_once()
 
 
-async def test_main_menu_contains_six_core_actions(monkeypatch):
+async def test_main_menu_contains_three_core_actions(monkeypatch):
     from bot import runtime
 
     bot = SimpleNamespace(
@@ -275,14 +291,7 @@ async def test_main_menu_contains_six_core_actions(monkeypatch):
     )
     await runtime.run_bot(Settings(_env_file=None))
     commands = bot.set_my_commands.call_args.args[0]
-    assert {item.command for item in commands} == {
-        "resume",
-        "latest",
-        "profile",
-        "saved",
-        "applied",
-        "skillgap",
-    }
+    assert [item.command for item in commands] == ["latest", "library", "profile"]
     polling.assert_awaited_once()
 
 
@@ -291,8 +300,13 @@ async def test_removed_market_commands_return_core_help(service, command):
     transport = RecordingSession()
     bot = Bot(TEST_TOKEN, session=transport)
     await build_dispatcher(service).feed_update(bot, command_update(command))
-    text = transport.requests[-1].text
-    assert "/latest" in text and "/market" not in text and "/stats" not in text
+    reply = transport.requests[-1]
+    assert "/market" not in reply.text and "/stats" not in reply.text
+    assert [b.text for row in reply.reply_markup.inline_keyboard for b in row] == [
+        "Найти вакансии",
+        "Мои вакансии",
+        "Мой профиль",
+    ]
 
 
 async def test_telegram_id_uses_token_without_owner_or_database(monkeypatch, capsys):

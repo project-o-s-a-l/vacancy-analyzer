@@ -3,48 +3,52 @@
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
+from sqlalchemy.orm import load_only
 
 from jobs.collection_budget import aware
+from jobs.settings import DEFAULT_CHECK_INTERVAL
 from storage.models import VacancyModel
 
-FINAL_MAX_AGE = 24 * 3600
+RECHECK_AFTER = timedelta(seconds=DEFAULT_CHECK_INTERVAL)
 
 
-def check_interval(row, now, base=86400):
-    """Six hours for risky/used cards, 24h active, up to 72h low activity."""
-    if (
-        row.check_requested_at
-        or (
-            getattr(row, "last_recommended_at", None)
-            and aware(row.last_recommended_at) > now - timedelta(days=1)
-        )
-        or (row.valid_until and aware(row.valid_until) <= now + timedelta(days=2))
-        or aware(row.published_at) < now - timedelta(days=21)
-    ):
-        return max(3600, base / 4)
-    if aware(row.last_seen_at) < now - timedelta(days=7):
-        return base * 3
-    return base
+def detail_due(row, now, interval):
+    if row.check_error:
+        return row.next_check_at is None or aware(row.next_check_at) <= now
+    return row.last_checked_at is None or aware(row.last_checked_at) <= now - interval
 
 
-async def require_fresh(session, ids, *, now=None, max_age=FINAL_MAX_AGE):
-    """Bounded priority requests; delivery never waits on an external site."""
+async def available_for_delivery(session, ids, *, now=None):
+    """Use the last known availability and request overdue checks independently."""
     now = now or datetime.now(UTC)
-    fresh = set()
-    rows = await session.scalars(select(VacancyModel).where(VacancyModel.id.in_(ids)))
+    available = set()
+    rows = await session.scalars(
+        select(VacancyModel)
+        .where(
+            VacancyModel.id.in_(ids),
+            VacancyModel.availability.in_(("active", "unknown")),
+            VacancyModel.archived.is_(False),
+            VacancyModel.published_at <= now,
+            VacancyModel.valid_until.is_(None) | (VacancyModel.valid_until > now),
+        )
+        .options(
+            load_only(
+                VacancyModel.last_checked_at,
+                VacancyModel.check_error,
+                VacancyModel.check_requested_at,
+                VacancyModel.availability,
+            )
+        )
+    )
     for row in rows:
+        available.add(row.id)
         row.last_recommended_at = now
-        if row.last_checked_at and not row.check_error:
-            target = aware(row.last_checked_at) + timedelta(hours=6)
-            if row.next_check_at is None or aware(row.next_check_at) > target:
-                row.next_check_at = target
         if (
             row.last_checked_at
-            and aware(row.last_checked_at) >= now - timedelta(seconds=max_age)
+            and aware(row.last_checked_at) > now - RECHECK_AFTER
             and row.availability == "active"
             and not row.check_error
         ):
-            fresh.add(row.id)
-        elif row.availability in {"active", "unknown"}:
-            row.check_requested_at = row.check_requested_at or now
-    return fresh
+            continue
+        row.check_requested_at = row.check_requested_at or now
+    return available

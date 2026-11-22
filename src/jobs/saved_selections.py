@@ -5,9 +5,10 @@ from functools import lru_cache
 from pathlib import Path
 
 from domain.contracts import source_contract
+from domain.exchange_rates import current_rates
 from domain.matching import MatchResult
 from scoring import score_vacancy
-from scoring.baseline import WEIGHTS
+from scoring.baseline import score_totals
 from scoring.serving_cache import vacancy_revision  # public compatibility import
 from scoring.serving_features import digest, feature_contract, profile_revision
 from storage.repositories.selection_repository import MAX_POOL, SelectionRepository
@@ -37,17 +38,13 @@ def selection_contract():
     )
 
 
-def refresh_time(match, vacancy, now):
+def refresh_time(match, vacancy, profile, now):
     # All other date-dependent evidence expires at the UTC date boundary (request key).
     match.components["freshness"] = max(
         0.0, 1 - max(0.0, (now - vacancy.published_at).total_seconds() / 86400) / 30
     )
-    match.score = round(
-        100
-        * sum(
-            WEIGHTS[name] * value for name, value in match.components.items() if value is not None
-        ),
-        2,
+    match.score, match.evidence_coverage = score_totals(
+        match.components, profile, vacancy, match.comparison
     )
     match.retrieval = None
     match.ranking = None
@@ -73,6 +70,7 @@ async def score_selection(
     context = {
         "version": "saved-selection-v2",
         "profile_revision": profile_revision(profile),
+        "salary_rates": current_rates().revision if profile.preferences.salary_min else None,
         "contract": selection_contract(),
         "parameters": selection.parameters.model_dump(),
         "days": days,
@@ -123,7 +121,7 @@ def _score_entries(entries, selection, profile, now, include_ineligible):
             match = score_vacancy(vacancy, profile, now=now)
         else:
             hits += 1
-            refresh_time(match, vacancy, now)
+            refresh_time(match, vacancy, profile, now)
             from scoring.eligibility import check_eligibility
 
             # Pair atoms depend on the UTC date, already in the key. The exact-time

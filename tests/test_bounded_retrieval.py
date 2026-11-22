@@ -222,6 +222,49 @@ async def test_notification_history_above_postgres_bind_limit(
 
 
 @pytest.mark.postgres
+async def test_sent_history_precedes_the_256_candidate_limit(
+    postgres_sessions, vacancy, monkeypatch
+):
+    from jobs.notify import NotificationService
+    from jobs.recommendations import recommend
+    from storage.repositories.notification_repository import NotificationRepository
+
+    monkeypatch.setenv("RETRIEVAL_K", "256")
+    now = datetime.now(UTC)
+    cards = [
+        job(vacancy, company=f"Company {i}", published_at=now - timedelta(minutes=i + 1))
+        for i in range(356)
+    ]
+    await bulk(postgres_sessions, cards[:256])
+    async with postgres_sessions.begin() as session:
+        notifications = NotificationRepository(session)
+        for message_id, card in enumerate(cards[:100], 1):
+            claim = await notifications.claim(42, card.id)
+            await notifications.finish(42, card.id, claim, "sent", message_id=message_id)
+
+    scored = []
+
+    async def observe_ranking(*args, **kwargs):
+        result = await recommend(*args, **kwargs)
+        scored[:] = [v.id for v, _ in result.ranking]
+        return result
+
+    monkeypatch.setattr("jobs.notify.recommend", observe_ranking)
+    service = NotificationService(postgres_sessions, candidate(), chat_id=42, min_score=0)
+    assert len(await service.pending()) == 5
+    assert len(scored) == 156 and set(scored) == {v.id for v in cards[100:256]}
+
+    other = NotificationService(postgres_sessions, candidate(), chat_id=43, min_score=0)
+    await other.pending()
+    assert len(scored) == 256 and set(scored) == {v.id for v in cards[:256]}
+
+    copy_of_sent = cards[0].model_copy(update={"id": uuid4(), "source_id": "copy-of-sent"})
+    await bulk(postgres_sessions, [*cards[256:], copy_of_sent])
+    assert len(await service.pending()) == 5
+    assert len(scored) == 256 and set(scored) == {v.id for v in cards[100:]}
+
+
+@pytest.mark.postgres
 async def test_sparse_cards_without_duplicate_key_cross_batches(postgres_sessions, vacancy):
     cards = [
         job(vacancy, company=f"sparse-{i}", description=None, description_html=None)

@@ -6,12 +6,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 RETRIEVAL_VERSION = "lexical-v1"
 SELECTION_VERSION = "bounded-sql-v2"
+DEFAULT_RETRIEVAL_K = 256
 
 
 class RetrievalParameters(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     version: Literal["lexical-v1"] = RETRIEVAL_VERSION
-    k: int = Field(default=64, ge=1, le=5000)
+    k: int = Field(default=DEFAULT_RETRIEVAL_K, ge=1, le=5000)
     batch_size: int = Field(default=32, ge=1, le=128)
     selection_version: Literal["bounded-sql-v2"] = SELECTION_VERSION
     normalization: Literal["legacy", "coverage"] = "coverage"
