@@ -199,7 +199,10 @@ def test_read_all_resume_formats_without_writing_files(kind):
     data = TEXT.encode() if kind == "txt" else docx(TEXT) if kind == "docx" else pdf()
     text, actual = read_resume(data, "RESUME." + kind.upper())
     assert actual == kind
-    assert "Java" in text if kind != "pdf" else "Accountant" in text
+    if kind == "pdf":
+        assert "Accountant" in text
+    else:
+        assert text == TEXT
     assert extract_resume(text).skills
 
 

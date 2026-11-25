@@ -1,10 +1,7 @@
-import importlib.util
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from alembic.migration import MigrationContext
-from alembic.operations import Operations
 from sqlalchemy import func, select
 from test_candidates import job
 
@@ -35,20 +32,20 @@ async def test_0020_populated_upgrade_preserves_profiles_claims_and_only_confirm
                     message_id=100 if index == 0 else None,
                 )
         profile = (await s.get(TelegramUserModel, 42)).profile
-    path = Path(__file__).parents[1] / "alembic/versions/0020_serving.py"
-    spec = importlib.util.spec_from_file_location("migration_0020", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    from alembic.config import Config
 
-    def apply(connection, operation):
-        with Operations.context(MigrationContext.configure(connection)):
-            operation()
+    from alembic import command
 
-    engine = sessions.kw["bind"]
-    async with engine.begin() as c:
-        await c.run_sync(apply, module.downgrade)
-    async with engine.begin() as c:
-        await c.run_sync(apply, module.upgrade)
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+
+    def roundtrip(connection):
+        config.attributes["connection"] = connection
+        command.stamp(config, "head")
+        command.downgrade(config, "0019")
+        command.upgrade(config, "head")
+
+    async with sessions.kw["bind"].begin() as connection:
+        await connection.run_sync(roundtrip)
     async with sessions() as s:
         assert await s.scalar(select(func.count()).select_from(VacancyModel)) == 4
         assert (await s.get(TelegramUserModel, 42)).profile == profile

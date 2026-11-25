@@ -37,13 +37,6 @@ from storage.repositories.notification_repository import NotificationRepository
 from storage.repositories.user_repository import RegisteredUser, UserRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def learning_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 @pytest.fixture
 def private_root(tmp_path, monkeypatch):
     monkeypatch.setattr("jobs.learning_privacy.ROOT", tmp_path / "private")
@@ -63,10 +56,8 @@ async def shown(sessions, vacancy, profile):
     return users.feedback
 
 
-async def test_frozen_versions_reversals_noop_and_preference_reason(
-    learning_sessions, vacancy, profile
-):
-    sessions = learning_sessions
+async def test_frozen_versions_reversals_noop_and_preference_reason(db_sessions, vacancy, profile):
+    sessions = db_sessions
     feedback = await shown(sessions, vacancy, profile)
     await feedback.record(42, vacancy.id, "save", event_key="1", exposure_message_id=10)
     await feedback.record(42, vacancy.id, "save", event_key="2", exposure_message_id=10)
@@ -101,10 +92,8 @@ async def test_frozen_versions_reversals_noop_and_preference_reason(
     assert all(r["state_version"] == i for i, r in enumerate(rows, 1))
 
 
-async def test_event_key_and_reason_cannot_move_to_another_show(
-    learning_sessions, vacancy, profile
-):
-    sessions = learning_sessions
+async def test_event_key_and_reason_cannot_move_to_another_show(db_sessions, vacancy, profile):
+    sessions = db_sessions
     feedback = await shown(sessions, vacancy, profile)
     state = await feedback.record(
         42, vacancy.id, "dislike", event_key="same", exposure_message_id=10
@@ -127,10 +116,8 @@ async def test_event_key_and_reason_cannot_move_to_another_show(
     assert (await feedback.card(42, vacancy.id))[1] == state
 
 
-async def test_legacy_unconfirmed_and_forged_context_are_review_only(
-    learning_sessions, vacancy, profile
-):
-    sessions = learning_sessions
+async def test_legacy_unconfirmed_and_forged_context_are_review_only(db_sessions, vacancy, profile):
+    sessions = db_sessions
     await seed(sessions, vacancy, profile)
     feedback = FeedbackService(sessions)
     await feedback.record(42, vacancy.id, "like", event_key="legacy", exposure_message_id=10)
@@ -143,9 +130,7 @@ async def test_legacy_unconfirmed_and_forged_context_are_review_only(
 
 
 @pytest.mark.parametrize("status", ["failed", "uncertain"])
-async def test_cancelled_or_unconfirmed_delivery_has_no_training_show(
-    sessions, vacancy, profile, status
-):
+async def test_cancelled_or_unconfirmed_delivery_has_no_training_show(sessions, vacancy, status):
     async with sessions.begin() as session:
         await VacancyRepository(session).save(vacancy)
         await UserRepository(session).register(42)
@@ -160,9 +145,9 @@ async def test_cancelled_or_unconfirmed_delivery_has_no_training_show(
 
 
 async def test_export_denied_contact_free_and_revocation_cascades(
-    learning_sessions, private_root, vacancy, profile
+    db_sessions, private_root, vacancy, profile
 ):
-    sessions = learning_sessions
+    sessions = db_sessions
     profile.preferences.positions.append("private_person@example.org")
     feedback = await shown(sessions, vacancy, profile)
     await feedback.record(42, vacancy.id, "like", event_key="x", exposure_message_id=10)
@@ -198,9 +183,9 @@ async def test_export_denied_contact_free_and_revocation_cascades(
 
 
 async def test_erasure_cleans_profile_exposures_events_and_cache(
-    learning_sessions, private_root, vacancy, profile
+    db_sessions, private_root, vacancy, profile
 ):
-    sessions = learning_sessions
+    sessions = db_sessions
     feedback = await shown(sessions, vacancy, profile)
     await feedback.record(42, vacancy.id, "like", event_key="x", exposure_message_id=10)
     await grant(sessions, 42, "request")
@@ -449,19 +434,19 @@ async def test_release_requires_raw_resource_evidence_and_keeps_lineage(
 
 
 async def test_resume_delete_revokes_registered_exports_atomically(
-    learning_sessions, private_root, vacancy, profile
+    db_sessions, private_root, vacancy, profile
 ):
-    feedback = await shown(learning_sessions, vacancy, profile)
+    feedback = await shown(db_sessions, vacancy, profile)
     await feedback.record(42, vacancy.id, "save", event_key="x", exposure_message_id=10)
-    await grant(learning_sessions, 42, "fixture-request")
-    export = await export_feedback(learning_sessions, 42)
-    service = UserService(learning_sessions)
+    await grant(db_sessions, 42, "fixture-request")
+    export = await export_feedback(db_sessions, 42)
+    service = UserService(db_sessions)
     original = (await service.get(42)).profile
     await service.resumes.delete(42)
     assert (await service.get(42)).profile == original
     assert not managed_path(f"{export['artifact_id']}/observations.json").exists()
     with pytest.raises(ValueError, match="not granted"):
-        await export_feedback(learning_sessions, 42)
+        await export_feedback(db_sessions, 42)
 
 
 async def test_model_check_refuses_revoked_and_future_monitor_window(sessions, private_root):
@@ -509,12 +494,12 @@ async def test_catalog_time_guard_uses_observed_source_not_publication_date(sess
 
 
 async def test_late_telemetry_cannot_survive_owner_delete_and_recreate(
-    learning_sessions, private_root, profile
+    db_sessions, private_root, profile
 ):
     from jobs.feedback_monitoring import record_selection
     from storage.repositories.selection_repository import SelectionRepository
 
-    sessions = learning_sessions
+    sessions = db_sessions
     async with sessions.begin() as session:
         user = await UserRepository(session).register(42)
         await UserRepository(session).save(RegisteredUser(42, profile, None, user.revision))

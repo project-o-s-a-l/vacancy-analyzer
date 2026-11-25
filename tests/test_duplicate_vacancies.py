@@ -17,13 +17,6 @@ from storage.repositories.notification_repository import NotificationRepository
 from storage.repositories.user_repository import RegisteredUser, UserRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def duplicate_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 async def seed(sessions, vacancy, profile, copies=6):
     cards = [
         vacancy.model_copy(
@@ -90,9 +83,9 @@ def test_sparse_cards_are_not_merged(vacancy):
 
 
 async def test_six_source_ids_give_one_recommendation_across_restarts(
-    duplicate_sessions, vacancy, profile
+    db_sessions, vacancy, profile
 ):
-    sessions = duplicate_sessions
+    sessions = db_sessions
     await seed(sessions, vacancy, profile)
     service = NotificationService(sessions, profile, chat_id=42, min_score=0)
     assert len(await service.pending()) == 1
@@ -107,8 +100,8 @@ async def test_six_source_ids_give_one_recommendation_across_restarts(
 
 
 @pytest.mark.parametrize("status", ["sending", "sent", "uncertain", "failed"])
-async def test_group_claim_respects_delivery_outcome(duplicate_sessions, vacancy, profile, status):
-    sessions = duplicate_sessions
+async def test_group_claim_respects_delivery_outcome(db_sessions, vacancy, profile, status):
+    sessions = db_sessions
     cards = await seed(sessions, vacancy, profile, copies=2)
     async with sessions.begin() as session:
         repo = NotificationRepository(session)
@@ -124,8 +117,8 @@ async def test_group_claim_respects_delivery_outcome(duplicate_sessions, vacancy
     assert pending == []
 
 
-async def test_history_reset_allows_one_copy_again(duplicate_sessions, vacancy, profile):
-    sessions = duplicate_sessions
+async def test_history_reset_allows_one_copy_again(db_sessions, vacancy, profile):
+    sessions = db_sessions
     cards = await seed(sessions, vacancy, profile)
     async with sessions.begin() as session:
         repo = NotificationRepository(session)
@@ -141,9 +134,9 @@ async def test_history_reset_allows_one_copy_again(duplicate_sessions, vacancy, 
 
 @pytest.mark.parametrize("action", ["dislike", "apply"])
 async def test_feedback_blocks_copies_even_after_history_reset(
-    duplicate_sessions, vacancy, profile, action
+    db_sessions, vacancy, profile, action
 ):
-    sessions = duplicate_sessions
+    sessions = db_sessions
     cards = await seed(sessions, vacancy, profile)
     async with sessions.begin() as session:
         repo = NotificationRepository(session)
@@ -157,10 +150,8 @@ async def test_feedback_blocks_copies_even_after_history_reset(
     assert await NotificationService(sessions, profile, chat_id=42, min_score=0).pending() == []
 
 
-async def test_delivery_remembers_old_content_after_source_update(
-    duplicate_sessions, vacancy, profile
-):
-    sessions = duplicate_sessions
+async def test_delivery_remembers_old_content_after_source_update(db_sessions, vacancy, profile):
+    sessions = db_sessions
     cards = await seed(sessions, vacancy, profile, copies=2)
     original_key = vacancy_duplicate_key(cards[0])
     async with sessions.begin() as session:

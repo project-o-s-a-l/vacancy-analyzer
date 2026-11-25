@@ -41,16 +41,21 @@ def match(text, known, explicit=()):
         "Required: either Java or Kotlin",
     ],
 )
-@pytest.mark.parametrize("known", [("Java",), ("Kotlin",), ("Java", "Kotlin")])
-def test_one_option_is_sufficient_without_double_weight(text, known):
-    analysis, result = match(text, known, ["Java", "Kotlin"])
-    assert result.score == 1
-    assert result.missing == ()
+def test_required_alternative_wordings(text):
+    analysis = analyze_requirements(text, ["Java", "Kotlin"])
     assert len(analysis.alternatives) == 1
+    assert analysis.alternatives[0].options == ["java", "kotlin"]
     assert analysis.alternatives[0].importance == "required"
-    assert result.alternatives[0].satisfied
     assert not analysis.names("required") and not analysis.names("unspecified")
     assert all(not item.counted_separately for item in analysis.skills)
+
+
+@pytest.mark.parametrize("known", [("Java",), ("Kotlin",), ("Java", "Kotlin")])
+def test_one_option_is_sufficient_without_double_weight(known):
+    _, result = match("Требования: Java или Kotlin", known, ["Java", "Kotlin"])
+    assert result.score == 1
+    assert result.missing == ()
+    assert result.alternatives[0].satisfied
 
 
 def test_missing_group_is_one_condition_not_two_individual_skills():

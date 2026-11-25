@@ -10,10 +10,17 @@ from domain.professional import FACT_POLICY, FACT_SCHEMA, PROFILE_SCHEMA, digest
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 
 
+def source_file_hash(path: Path):
+    data = path.read_bytes()
+    if path.suffix == ".py":
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(data).hexdigest()
+
+
 @lru_cache(maxsize=32)
 def source_contract(paths: tuple[str, ...]):
     """Changes take effect after application restart, alongside the loaded Python code."""
-    return {path: hashlib.sha256((SOURCE_ROOT / path).read_bytes()).hexdigest() for path in paths}
+    return {path: source_file_hash(SOURCE_ROOT / path) for path in paths}
 
 
 @lru_cache(maxsize=1)

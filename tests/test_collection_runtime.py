@@ -295,6 +295,16 @@ async def test_database_lease_is_released_when_worker_is_cancelled(
         await other_engine.dispose()
 
 
+async def test_background_collection_recovers_after_lock_and_transient_error(monkeypatch):
+    run = AsyncMock(side_effect=[CollectionAlreadyRunning(), ConnectionError(), None])
+    pause = AsyncMock()
+    monkeypatch.setattr(collection_runtime, "run_collection", run)
+    monkeypatch.setattr(collection_runtime.asyncio, "sleep", pause)
+    await collection_runtime._background_worker(settings(), None)
+    assert run.await_count == 3
+    assert [call.args[0] for call in pause.await_args_list] == [5, 10]
+
+
 @pytest.mark.parametrize("missing", [False, True], ids=["failed", "uninstalled"])
 async def test_one_failing_source_keeps_other_sources_running(
     postgres_sessions, monkeypatch, missing

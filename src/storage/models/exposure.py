@@ -3,9 +3,9 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import JSON, BigInteger, DateTime, ForeignKey, UniqueConstraint, func, select
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, column_property, mapped_column
 
 from storage.models.vacancy import Base
 
@@ -19,3 +19,17 @@ class ExposureModel(Base):
     message_id: Mapped[int] = mapped_column(BigInteger)
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     context: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
+
+
+def confirmed_context(legacy, snapshot, owner, vacancy):
+    confirmed = (
+        select(ExposureModel.context)
+        .where(
+            ExposureModel.id == snapshot,
+            ExposureModel.chat_id == owner,
+            ExposureModel.vacancy_id == vacancy,
+        )
+        .correlate_except(ExposureModel)
+        .scalar_subquery()
+    )
+    return column_property(func.coalesce(legacy, confirmed))

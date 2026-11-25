@@ -33,13 +33,6 @@ from storage.repositories import VacancyRepository
 from storage.repositories.user_repository import StaleProfileWrite, UserRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def editor_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 class Chat:
     def __init__(self, service, owner=42):
         self.service, self.owner = service, owner
@@ -94,8 +87,8 @@ async def seed_profile(service, owner=42, role="Разработчик", task="�
     return (await service.get(owner)).profile, key
 
 
-async def test_manual_resume_through_real_bot_without_llm_and_restart(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_manual_resume_through_real_bot_without_llm_and_restart(db_sessions):
+    users = UserService(db_sessions)
     chat = Chat(users)
     await chat.send("/start")
     await chat.send("/profile")
@@ -128,10 +121,10 @@ async def test_manual_resume_through_real_bot_without_llm_and_restart(editor_ses
     await chat.field("Задачи", "Обработка данных")
     # Nothing from the editor is used before its explicit save.
     assert not (await users.get(42)).profile.skills
-    pending = await ProfileEditor(editor_sessions).get(42)
+    pending = await ProfileEditor(db_sessions).get(42)
     assert len(pending.profile.professional_facts.episodes) == 3
     await chat.click("Сохранить правки")
-    restarted = UserService(editor_sessions)
+    restarted = UserService(db_sessions)
     user = await restarted.get(42)
     assert user.form_state is None
     assert user.profile == pending.profile
@@ -162,8 +155,8 @@ async def test_manual_resume_through_real_bot_without_llm_and_restart(editor_ses
     await chat.bot.session.close()
 
 
-async def test_delete_cascade_unknown_clears_and_cancel_are_atomic(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_delete_cascade_unknown_clears_and_cancel_are_atomic(db_sessions):
+    users = UserService(db_sessions)
     original, key = await seed_profile(users)
     edit = await users.editor.open(42)
     edit = await change(users.editor, 42, edit, "episode", "", "new", "project")
@@ -198,12 +191,12 @@ async def test_delete_cascade_unknown_clears_and_cancel_are_atomic(editor_sessio
         ).assertion.value
         == 4
     )
-    async with editor_sessions() as session:
+    async with db_sessions() as session:
         assert len(list(await session.scalars(select(FactRevisionModel)))) >= 3
 
 
-async def test_stale_foreign_repeated_callbacks_and_back(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_stale_foreign_repeated_callbacks_and_back(db_sessions):
+    users = UserService(db_sessions)
     await seed_profile(users)
     await users.register(99)
     chat = Chat(users)
@@ -321,8 +314,8 @@ async def test_salary_buttons_keep_amount_and_currency_together_after_restart(se
     await chat.bot.session.close()
 
 
-async def test_import_review_uses_same_editor_and_preserves_manual_deletions(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_import_review_uses_same_editor_and_preserves_manual_deletions(db_sessions):
+    users = UserService(db_sessions)
     await users.register(42)
     text = (
         "Навыки: Python, SQL\nОпыт работы\n01.2020 — 12.2022\n"
@@ -366,8 +359,8 @@ async def test_import_review_uses_same_editor_and_preserves_manual_deletions(edi
     assert set(replaced.profile.skills) == {"python", "sql"}
 
 
-async def test_profile_change_rejects_old_editor_and_old_import(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_profile_change_rejects_old_editor_and_old_import(db_sessions):
+    users = UserService(db_sessions)
     await seed_profile(users)
     draft = await users.resumes.prepare(42, "Навыки: SQL\nДолжность: Аналитик данных")
     edit = await users.editor.open(42)
@@ -381,8 +374,8 @@ async def test_profile_change_rejects_old_editor_and_old_import(editor_sessions)
     assert (await users.get(42)).profile.experience_years == 7
 
 
-async def test_failed_edit_and_cancel_leave_profile_and_revision_intact(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_failed_edit_and_cancel_leave_profile_and_revision_intact(db_sessions):
+    users = UserService(db_sessions)
     _, key = await seed_profile(users)
     original = await users.get(42)
     edit = await users.editor.open(42)
@@ -394,12 +387,12 @@ async def test_failed_edit_and_cancel_leave_profile_and_revision_intact(editor_s
     assert await users.get(42) == original
 
 
-async def test_read_old_writer_mismatch_preserves_career_and_prunes_removed_skill(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_read_old_writer_mismatch_preserves_career_and_prunes_removed_skill(db_sessions):
+    users = UserService(db_sessions)
     profile, _ = await seed_profile(users)
     legacy = profile_payload(profile)
     legacy["skills"] = {}
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await session.execute(
             update(TelegramUserModel).where(TelegramUserModel.user_id == 42).values(profile=legacy)
         )
@@ -407,37 +400,37 @@ async def test_read_old_writer_mismatch_preserves_career_and_prunes_removed_skil
     assert user.profile.professional_facts.episodes
     assert not user.profile.professional_facts.episodes[0].skill_ids
     assert not any(f.kind == "skill" for f in user.profile.professional_facts.facts)
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         user = await UserRepository(session).save(user)
     assert (await users.get(42)).profile == user.profile
 
 
-async def test_legacy_write_without_revision_rejects_stale_editor_and_repository(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_legacy_write_without_revision_rejects_stale_editor_and_repository(db_sessions):
+    users = UserService(db_sessions)
     profile, _ = await seed_profile(users)
     old = await users.get(42)
     edit = await users.editor.open(42)
     values = profile_payload(profile)
     values["preferences"]["remote"] = "required"
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await session.execute(
             update(TelegramUserModel).where(TelegramUserModel.user_id == 42).values(profile=values)
         )
     with pytest.raises(ValueError, match="Профиль изменился"):
         await users.editor.act(42, edit.token, ["save"])
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         with pytest.raises(StaleProfileWrite):
             await UserRepository(session).save(old)
     assert (await users.get(42)).profile.preferences.remote == "required"
 
 
-async def test_repository_rejects_foreign_facts_before_regeneration(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_repository_rejects_foreign_facts_before_regeneration(db_sessions):
+    users = UserService(db_sessions)
     await seed_profile(users)
     await seed_profile(users, 99, role="Чужая роль", task="Чужая задача")
     user = await users.get(42)
     other = (await users.get(99)).profile
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         with pytest.raises(ValueError, match="another owner"):
             await UserRepository(session).save(
                 replace(user, profile=other), confirmed_fields={"remote"}
@@ -445,8 +438,8 @@ async def test_repository_rejects_foreign_facts_before_regeneration(editor_sessi
     assert (await users.get(42)).profile == user.profile
 
 
-async def test_partial_import_scope_survives_manual_preference_edit(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_partial_import_scope_survives_manual_preference_edit(db_sessions):
+    users = UserService(db_sessions)
     await users.register(42)
     draft = await users.resumes.prepare(
         42, "Навыки: Python\nЗадачи: Обрабатывать данные и готовить отчёты."
@@ -461,8 +454,8 @@ async def test_partial_import_scope_survives_manual_preference_edit(editor_sessi
     assert facts.input_scope == "partial" and facts.input_ranges == ranges
 
 
-async def test_calendar_total_recomputed_after_date_edit_and_reimport(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_calendar_total_recomputed_after_date_edit_and_reimport(db_sessions):
+    users = UserService(db_sessions)
     await users.register(42)
     text = "Навыки: Python\nОпыт работы\n01.2020 — 12.2022\nДолжность: Инженер"
     draft = await users.resumes.prepare(42, text)
@@ -575,17 +568,15 @@ async def test_old_dated_profile_and_open_draft_use_calendar_without_losing_edit
     assert saved.experience_years == 4 and saved.preferences.locations == ["Казань"]
 
 
-async def test_latest_accepts_legacy_profile_with_experience_derived_on_read(
-    editor_sessions, vacancy
-):
-    users = UserService(editor_sessions, min_score=0)
+async def test_latest_accepts_legacy_profile_with_experience_derived_on_read(db_sessions, vacancy):
+    users = UserService(db_sessions, min_score=0)
     profile, _ = await seed_profile(users)
     profile.experience_years = None
     facts = profile.professional_facts
     facts.facts = [f for f in facts.facts if f.kind != "experience_total"]
     facts.input_sha256 = facts.source_revision = profile_input_revision(profile)
     stored_facts = facts.model_dump(mode="json")
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         row = await session.get(TelegramUserModel, 42)
         row.profile = profile_payload(profile)
         row.professional_facts = stored_facts
@@ -603,7 +594,7 @@ async def test_latest_accepts_legacy_profile_with_experience_derived_on_read(
     finally:
         await chat.bot.session.close()
 
-    async with editor_sessions() as session:
+    async with db_sessions() as session:
         row = await session.get(TelegramUserModel, 42)
         assert row.profile["experience_years"] is None
         assert row.professional_facts == stored_facts
@@ -628,18 +619,18 @@ async def test_import_merges_work_periods_and_explicit_zero_overrides_calendar(s
     assert total_experience(saved).value == saved.experience_years == 0
 
 
-async def test_comparison_and_real_retrieval_receive_manual_facts(editor_sessions, vacancy):
-    users = UserService(editor_sessions)
+async def test_comparison_and_real_retrieval_receive_manual_facts(db_sessions, vacancy):
+    users = UserService(db_sessions)
     now = datetime.now(UTC)
     a, key = await seed_profile(users)
     b, _ = await seed_profile(users, 99, role="Бухгалтер", task="Сверять счета")
     assert a.skills == b.skills and a.experience_years == b.experience_years
     v = job(vacancy, now, "Требования: Python обязателен.\nОбязанности:\nРазрабатывать отчёты.")
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await VacancyRepository(session).save(v)
     results = []
     for owner in (42, 99):
-        async with editor_sessions() as session:
+        async with db_sessions() as session:
             current = await UserRepository(session).get(owner)
             pairs = await rank_recent(VacancyRepository(session), current.profile, now=now)
             assert len(pairs) == 1
@@ -676,19 +667,17 @@ async def test_comparison_and_real_retrieval_receive_manual_facts(editor_session
         ("skill", "years", "2"),
     ],
 )
-async def test_fact_only_changes_invalidate_actual_cache(
-    editor_sessions, vacancy, kind, field, value
-):
-    users = UserService(editor_sessions)
+async def test_fact_only_changes_invalidate_actual_cache(db_sessions, vacancy, kind, field, value):
+    users = UserService(db_sessions)
     original, key = await seed_profile(users)
     now = datetime.now(UTC)
     v = job(vacancy, now)
-    async with editor_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await VacancyRepository(session).save(v)
 
     async def rank(profile):
         stats = {}
-        async with editor_sessions.begin() as session:
+        async with db_sessions.begin() as session:
             await rank_recent(
                 VacancyRepository(session), profile, cache_owner=42, now=now, diagnostics=stats
             )
@@ -705,13 +694,13 @@ async def test_fact_only_changes_invalidate_actual_cache(
     assert set(original.skills) == set(current.skills)
     assert original.experience_years == current.experience_years
     assert profile_revision(current) != profile_revision(original)
-    async with editor_sessions() as session:
+    async with db_sessions() as session:
         assert await session.get(SavedSelectionModel, 42) is None
     assert (await rank(current))["candidate_cache_hit"] == 0
 
 
-async def test_mandatory_preference_reaches_eligibility_through_bot(editor_sessions, vacancy):
-    users = UserService(editor_sessions)
+async def test_mandatory_preference_reaches_eligibility_through_bot(db_sessions, vacancy):
+    users = UserService(db_sessions)
     await seed_profile(users)
     v = job(vacancy, datetime.now(UTC), remote=False)
     assert score_vacancy(v, (await users.get(42)).profile).eligible
@@ -764,8 +753,8 @@ async def test_postgres_one_winner_for_duplicate_step_and_atomic_profile_cas(pos
     assert sum(isinstance(r, StaleProfileWrite) for r in results) == 1
 
 
-async def test_pagination_full_text_and_resume_delete_cleans_private_editor(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_pagination_full_text_and_resume_delete_cleans_private_editor(db_sessions):
+    users = UserService(db_sessions)
     await users.register(42)
     edit = await users.editor.open(42)
     for index in range(9):
@@ -783,14 +772,12 @@ async def test_pagination_full_text_and_resume_delete_cleans_private_editor(edit
     await users.editor.open(42, resume_token=draft.token)
     await users.resumes.delete(42)
     assert await users.editor.get(42) is None
-    async with editor_sessions() as session:
+    async with db_sessions() as session:
         assert await session.get(ProfileEditModel, 42) is None
 
 
-async def test_calendar_union_projects_unknown_and_ongoing_are_conservative(
-    editor_sessions, vacancy
-):
-    users = UserService(editor_sessions)
+async def test_calendar_union_projects_unknown_and_ongoing_are_conservative(db_sessions, vacancy):
+    users = UserService(db_sessions)
     original, first = await seed_profile(users)
     now = datetime.now(UTC)
     v = job(vacancy, now, "Требования: Python\nОбязанности:\nРазрабатывать отчёты.")
@@ -824,8 +811,8 @@ async def test_calendar_union_projects_unknown_and_ongoing_are_conservative(
     )  # a frozen snapshot is not a year of new work
 
 
-async def test_resume_review_and_confirmation_buttons_use_edited_snapshot(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_resume_review_and_confirmation_buttons_use_edited_snapshot(db_sessions):
+    users = UserService(db_sessions)
     chat = Chat(users)
     await chat.send("/start")
     await chat.send("/resume Навыки: Python\nОпыт работы\n01.2020 — 12.2021\nДолжность: Инженер")
@@ -850,8 +837,8 @@ async def test_resume_review_and_confirmation_buttons_use_edited_snapshot(editor
     await chat.bot.session.close()
 
 
-async def test_browsing_profile_does_not_block_pasted_resume_or_apply(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_browsing_profile_does_not_block_pasted_resume_or_apply(db_sessions):
+    users = UserService(db_sessions)
     chat = Chat(users)
     await chat.send("/start")
     await chat.send("Git")
@@ -876,8 +863,8 @@ async def test_browsing_profile_does_not_block_pasted_resume_or_apply(editor_ses
 
 
 @pytest.mark.parametrize("keep", [True, False])
-async def test_import_can_keep_or_discard_genuine_profile_edits_in_place(editor_sessions, keep):
-    users = UserService(editor_sessions)
+async def test_import_can_keep_or_discard_genuine_profile_edits_in_place(db_sessions, keep):
+    users = UserService(db_sessions)
     chat = Chat(users)
     await chat.send("/start")
     await chat.send("/profile")
@@ -906,10 +893,10 @@ async def test_import_can_keep_or_discard_genuine_profile_edits_in_place(editor_
     await chat.bot.session.close()
 
 
-async def test_late_inference_cannot_replace_fact_only_manual_edit(editor_sessions):
+async def test_late_inference_cannot_replace_fact_only_manual_edit(db_sessions):
     from domain.resume import ResumeExtraction
 
-    users = UserService(editor_sessions)
+    users = UserService(db_sessions)
     _, key = await seed_profile(users)
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -943,9 +930,9 @@ async def test_late_inference_cannot_replace_fact_only_manual_edit(editor_sessio
 
 
 async def test_characteristics_qualifications_and_preference_clears_survive_import(
-    editor_sessions, vacancy
+    db_sessions, vacancy
 ):
-    users = UserService(editor_sessions)
+    users = UserService(db_sessions)
     await seed_profile(users)
     edit = await users.editor.open(42)
     skill = next(f for f in edit.profile.professional_facts.facts if f.kind == "skill")
@@ -986,19 +973,17 @@ async def test_characteristics_qualifications_and_preference_clears_survive_impo
     assert not profile.preferences.positions
 
 
-async def test_operational_rollback_disables_editor_preserving_saved_data(editor_sessions):
-    users = UserService(editor_sessions)
+async def test_operational_rollback_disables_editor_preserving_saved_data(db_sessions):
+    users = UserService(db_sessions)
     original, _ = await seed_profile(users)
-    disabled = UserService(editor_sessions, profile_editor_enabled=False)
+    disabled = UserService(db_sessions, profile_editor_enabled=False)
     with pytest.raises(ValueError, match="отключён"):
         await disabled.editor.open(42)
     assert (await disabled.get(42)).profile == original
 
 
-async def test_explicit_absence_and_unknown_are_distinct_and_not_resurrected(
-    editor_sessions, vacancy
-):
-    users = UserService(editor_sessions)
+async def test_explicit_absence_and_unknown_are_distinct_and_not_resurrected(db_sessions, vacancy):
+    users = UserService(db_sessions)
     await seed_profile(users)
     v = job(vacancy, datetime.now(UTC))
     edit = await users.editor.open(42)

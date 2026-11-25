@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def evaluation_resource(name):
-    if name not in {"protocol.json", "review.html", "REVIEW.md"}:
+    if name not in {"benchmark.yaml", "protocol.json", "review.html", "REVIEW.md"}:
         raise ValueError("Unknown evaluation resource")
     root = Path(__file__).resolve().parents[2]
     source = root / ("docs/evaluation" if name == "REVIEW.md" else "config/evaluation") / name

@@ -25,13 +25,6 @@ from storage.repositories.notification_repository import NotificationRepository
 from storage.repositories.user_repository import UserRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def cache_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 async def cached(sessions, *, owner=42, profile=None, **options):
     stats = {}
     async with sessions.begin() as session:
@@ -46,11 +39,11 @@ async def cached(sessions, *, owner=42, profile=None, **options):
 
 
 async def test_hit_skips_shortlist_but_matches_full_and_invalidates_on_sql_write(
-    cache_sessions, vacancy, monkeypatch
+    db_sessions, vacancy, monkeypatch
 ):
     from storage.repositories.candidate_repository import CandidateRepository
 
-    sessions = cache_sessions
+    sessions = db_sessions
     await seed(sessions, vacancy)
     now = datetime.now(UTC)
     first, stats = await cached(sessions, now=now)
@@ -71,8 +64,8 @@ async def test_hit_skips_shortlist_but_matches_full_and_invalidates_on_sql_write
     assert stats["candidate_cache_hit"] == 0 and dumped(changed) == dumped(full)
 
 
-async def test_future_publication_expiry_and_day_boundary_refill(cache_sessions, vacancy):
-    sessions = cache_sessions
+async def test_future_publication_expiry_and_day_boundary_refill(db_sessions, vacancy):
+    sessions = db_sessions
     now = datetime(2026, 11, 9, 23, 59, 50, tzinfo=UTC)
     cards = [
         job(vacancy, title=f"Java Developer {i}", published_at=now - timedelta(days=1))
@@ -95,8 +88,8 @@ async def test_future_publication_expiry_and_day_boundary_refill(cache_sessions,
         assert dumped(actual) == dumped(full)
 
 
-async def test_revision_rollback_and_other_owner_are_isolated(cache_sessions, vacancy):
-    sessions = cache_sessions
+async def test_revision_rollback_and_other_owner_are_isolated(db_sessions, vacancy):
+    sessions = db_sessions
     await seed(sessions, vacancy)
     await cached(sessions)
     async with sessions() as s:
@@ -147,10 +140,10 @@ async def test_catalogue_revision_does_not_invert_entity_lock_order(postgres_ses
     await asyncio.wait_for(asyncio.gather(first(), second()), 5)
 
 
-async def test_document_expiry_invalidates_pair_and_result_at_midnight(cache_sessions, vacancy):
+async def test_document_expiry_invalidates_pair_and_result_at_midnight(db_sessions, vacancy):
     from domain.qualifications import Qualification
 
-    sessions = cache_sessions
+    sessions = db_sessions
     now = datetime(2026, 11, 9, 23, 59, 55, tzinfo=UTC)
     profile = candidate(qualifications=[Qualification(name="медкнижка", valid_until=now.date())])
     card = job(
@@ -169,12 +162,12 @@ async def test_document_expiry_invalidates_pair_and_result_at_midnight(cache_ses
 
 
 async def test_repeated_empty_history_result_does_not_repeat_expensive_diagnostic_probe(
-    cache_sessions, vacancy, monkeypatch
+    db_sessions, vacancy, monkeypatch
 ):
     from jobs.notify import NotificationService
     from storage.repositories.candidate_repository import CandidateRepository
 
-    sessions = cache_sessions
+    sessions = db_sessions
     await seed(sessions, vacancy, n=1)
     service = NotificationService(sessions, candidate(), chat_id=42, min_score=0)
     assert (
@@ -241,10 +234,8 @@ async def test_owner_mutation_during_ranking_cannot_publish_or_recreate_cache(
         assert await s.get(SavedSelectionModel, 42) is None
 
 
-async def test_old_card_resolves_original_confirmed_snapshot_after_redelivery(
-    cache_sessions, vacancy
-):
-    sessions = cache_sessions
+async def test_old_card_resolves_original_confirmed_snapshot_after_redelivery(db_sessions, vacancy):
+    sessions = db_sessions
     await UserService(sessions).register(42)
     async with sessions.begin() as s:
         await VacancyRepository(s).save(vacancy)

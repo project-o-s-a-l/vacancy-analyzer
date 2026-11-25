@@ -52,7 +52,7 @@ class VacancyModel(Base):
             sqlite_where=text(SEARCH_REPAIR_PREDICATE),
         ),
         CheckConstraint(
-            "availability IN ('active', 'closed', 'expired', 'unknown')",
+            "availability IN ('active', 'closed', 'expired', 'unknown', 'out_of_scope')",
             name="ck_vacancy_availability",
         ),
     )
@@ -79,12 +79,16 @@ class VacancyModel(Base):
     work_format: Mapped[str | None] = mapped_column(Text)
     working_hours: Mapped[str | None] = mapped_column(Text)
     location: Mapped[str | None] = mapped_column(Text)
+    locations: Mapped[list | None] = mapped_column(
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
+    )
     address: Mapped[str | None] = mapped_column(Text)
     remote: Mapped[bool | None] = mapped_column(Boolean)
     archived: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     valid_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    source_observed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     raw_payload: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     analysis: Mapped[dict | None] = mapped_column(
@@ -146,3 +150,9 @@ class VacancyFactSource(Base):
     raw_payload_hash: Mapped[str] = mapped_column(String(64))
     source_payload: Mapped[dict] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class HtmlImportReceipt(Base):
+    __tablename__ = "html_import_receipts"
+    fingerprint: Mapped[str] = mapped_column(String(64), primary_key=True)
+    vacancy_id: Mapped[UUID] = mapped_column(ForeignKey("vacancies.id", ondelete="CASCADE"))

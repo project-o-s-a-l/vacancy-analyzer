@@ -64,6 +64,7 @@ async def score_selection(
     include_ineligible,
     stats=None,
     owner_epoch=None,
+    release_read=None,
 ):
     if owner_id < 1:
         raise ValueError("Invalid selection owner")
@@ -83,6 +84,8 @@ async def score_selection(
     revision = digest(context)
     store = SelectionRepository(repository.session)
     entries = await store.load(owner_id, revision, now)
+    if release_read is not None:
+        await release_read()
     from jobs.serving_compute import compute
 
     current, ranked, hits = await compute(

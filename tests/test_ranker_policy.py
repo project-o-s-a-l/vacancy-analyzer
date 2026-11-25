@@ -206,17 +206,8 @@ def test_pairwise_learning_uses_professional_evidence_when_old_components_equal(
     assert model.coefficients[FEATURE_NAMES.index("freshness")] == 0
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def f10_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
-async def test_notify_snapshot_low_baseline_and_cache_policy_switch(
-    f10_sessions, tmp_path, vacancy
-):
-    sessions = f10_sessions
+async def test_notify_snapshot_low_baseline_and_cache_policy_switch(db_sessions, tmp_path, vacancy):
+    sessions = db_sessions
     vacancy, profile = sparse_pair(vacancy)
     vacancy = await seed(sessions, vacancy, profile)
     path = save(tmp_path, professional_model())

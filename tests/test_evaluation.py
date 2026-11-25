@@ -431,20 +431,14 @@ async def test_legacy_retrieval_drafts_cannot_choose_k(
     assert all(row["recall"] is None for row in result["experiments"][0]["cases"])
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def evaluation_sessions(request):
-    name = "postgres_sessions" if request.param == "postgres" else "sessions"
-    return request.getfixturevalue(name)
-
-
-async def test_offline_sql_runtime_and_notification_agree(bundle, evaluation_sessions, monkeypatch):
+async def test_offline_sql_runtime_and_notification_agree(bundle, db_sessions, monkeypatch):
     from jobs.admission import admit
     from jobs.notify import NotificationService
     from jobs.rank import rank_recent
     from jobs.retrieval_evaluation import MemoryCandidateSource
     from storage.repositories import VacancyRepository
 
-    sessions = evaluation_sessions
+    sessions = db_sessions
     data, _, _ = load_data(bundle)
     now = data.reference_times["development"]
     case = next(p for p in data.profiles if p.split == "development")

@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 from jobs.semantic_model import MODEL_SPEC as E5_FILES
-from jobs.semantic_model import file_hash
+from jobs.semantic_model import file_hash, open_cpu_session
 from jobs.semantic_process import MAX_RSS, MAX_SECONDS, MIN_AVAILABLE, _release_retained_ollama
 from scoring.serving_features import digest
 
@@ -164,7 +164,6 @@ class LocalSectionEncoder:
 
     def __init__(self, directory, model_name):
         import numpy as np
-        import onnxruntime as ort
         from tokenizers import Tokenizer
 
         validate_encoder(directory, model_name)
@@ -173,16 +172,7 @@ class LocalSectionEncoder:
         self.tokenizer = Tokenizer.from_file(str(Path(directory) / "tokenizer.json"))
         self.tokenizer.no_truncation()
         self.tokenizer.no_padding()
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = options.inter_op_num_threads = 1
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
-        options.add_session_config_entry("session.inter_op.allow_spinning", "0")
-        self.session = ort.InferenceSession(
-            str(Path(directory) / "model.onnx"),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
+        self.session = open_cpu_session(directory)
         self.inputs = {value.name for value in self.session.get_inputs()}
 
     def _normal(self, vector):

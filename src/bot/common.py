@@ -18,6 +18,7 @@ from storage.database import DATABASE_ERRORS
 from storage.repositories.user_repository import RegisteredUser
 
 logger = logging.getLogger(__name__)
+COMMAND_FAILED = object()
 
 
 class PrivateChatsMiddleware(BaseMiddleware):
@@ -54,7 +55,7 @@ class PrivateChatsMiddleware(BaseMiddleware):
                 logger.warning("Telegram reply failed: %s", type(exc).__name__)
         except TelegramAPIError as exc:
             logger.warning("Telegram command failed: %s", type(exc).__name__)
-        return None
+        return COMMAND_FAILED
 
 
 async def send_form(message: Message, user: RegisteredUser, *, replace: bool = False) -> None:

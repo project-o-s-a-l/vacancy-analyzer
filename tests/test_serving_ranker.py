@@ -253,13 +253,6 @@ async def test_unchecked_labels_require_explicit_experiment_flag(tmp_path):
         await train_serving_ranker(tmp_path)
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def serving_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 async def seed(sessions, vacancy, profile):
     v = vacancy.model_copy(update={"published_at": datetime.now(UTC) - timedelta(days=1)})
     async with sessions.begin() as session:
@@ -272,9 +265,9 @@ async def seed(sessions, vacancy, profile):
 
 
 async def test_frozen_shown_features_owner_scope_and_old_message_exclusion(
-    serving_sessions, vacancy, profile
+    db_sessions, vacancy, profile
 ):
-    sessions = serving_sessions
+    sessions = db_sessions
     v = await seed(sessions, vacancy, profile)
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=10))
     users = UserService(sessions, min_score=0)
@@ -306,9 +299,9 @@ async def test_frozen_shown_features_owner_scope_and_old_message_exclusion(
 
 
 async def test_shared_service_uses_policy_and_keeps_ineligible_out(
-    serving_sessions, tmp_path, vacancy, profile
+    db_sessions, tmp_path, vacancy, profile
 ):
-    sessions = serving_sessions
+    sessions = db_sessions
     data = cards(vacancy)
     async with sessions.begin() as session:
         for card in data:

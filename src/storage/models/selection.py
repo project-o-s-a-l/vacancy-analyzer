@@ -1,6 +1,7 @@
 """One bounded, replaceable scoring pool per owner; independent of deliveries."""
 
 from datetime import datetime
+from uuid import UUID
 
 from sqlalchemy import JSON, BigInteger, DateTime, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -31,3 +32,10 @@ class ServingRevisionModel(Base):
     __tablename__ = "serving_revisions"
     scope: Mapped[str] = mapped_column(String(80), primary_key=True)
     revision: Mapped[int] = mapped_column(BigInteger)
+
+
+class RecommendationLease(Base):
+    __tablename__ = "recommendation_leases"
+    owner_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    token: Mapped[UUID]
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

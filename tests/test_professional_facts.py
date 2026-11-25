@@ -34,13 +34,6 @@ from storage.repositories.user_repository import StaleProfileWrite, UserReposito
 from storage.repositories.vacancy_repository import VacancyRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def fact_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 def test_states_are_distinct_and_no_implicit_skill_level():
     assert Skill().level is None
     assert Claim(status="missing") != Claim(status="unknown")
@@ -139,8 +132,8 @@ def test_evidence_spans_are_exact_unicode_and_source_bound():
         ProfessionalFacts.model_validate(data)
 
 
-async def test_legacy_profile_roundtrip_and_rollback_wire(fact_sessions):
-    sessions = fact_sessions
+async def test_legacy_profile_roundtrip_and_rollback_wire(db_sessions):
+    sessions = db_sessions
     legacy = dict(skills={"python": {"level": "intermediate", "years": 3}})
     async with sessions.begin() as session:
         await UserRepository(session).register(17)
@@ -176,8 +169,8 @@ async def test_legacy_profile_roundtrip_and_rollback_wire(fact_sessions):
     assert retained.years.status == "unknown" and retained.years.legacy_value == 3
 
 
-async def test_resume_suggestion_and_confirmation_are_separate(fact_sessions):
-    users = UserService(fact_sessions)
+async def test_resume_suggestion_and_confirmation_are_separate(db_sessions):
+    users = UserService(db_sessions)
     await users.register(17)
     draft = await users.resumes.prepare(17, "Skills: Python, SQL\nDesired position: Developer")
     proposed = [f for f in draft.professional_facts.facts if f.kind == "skill"]
@@ -191,14 +184,14 @@ async def test_resume_suggestion_and_confirmation_are_separate(fact_sessions):
     positions = next(f for f in facts.facts if f.id == "preference:positions")
     assert positions.assertion.origin == "user_confirmed"
     assert facts.reference_time == draft.professional_facts.reference_time
-    async with fact_sessions() as session:
+    async with db_sessions() as session:
         assert (await UserRepository(session).get(17)).profile == confirmed.profile
         history = await FactRepository(session).history("resume_proposal", 17)
         assert any(f.assertion.origin == "machine_proposed" for f in history[0].facts)
 
 
-async def test_stale_profile_and_source_aba_cannot_overwrite(fact_sessions):
-    sessions = fact_sessions
+async def test_stale_profile_and_source_aba_cannot_overwrite(db_sessions):
+    sessions = db_sessions
     users = UserService(sessions)
     await users.register(17)
     async with sessions() as session:
@@ -248,8 +241,8 @@ async def test_concurrent_profile_cas_has_one_winner(postgres_sessions):
         assert user.profile.experience_years in {3, 7}
 
 
-async def test_facts_projection_cas_history_and_transaction_rollback(fact_sessions, vacancy):
-    sessions = fact_sessions
+async def test_facts_projection_cas_history_and_transaction_rollback(db_sessions, vacancy):
+    sessions = db_sessions
     async with sessions.begin() as session:
         key = await VacancyRepository(session).save(vacancy)
     async with sessions() as session:
@@ -289,8 +282,8 @@ async def test_facts_projection_cas_history_and_transaction_rollback(fact_sessio
         assert not await repo.set_facts(key, new, expected_facts_revision=new.revision)
 
 
-async def test_backfill_commits_cursor_with_data_and_resumes(fact_sessions, vacancy, monkeypatch):
-    sessions = fact_sessions
+async def test_backfill_commits_cursor_with_data_and_resumes(db_sessions, vacancy, monkeypatch):
+    sessions = db_sessions
     for owner in (11, 12, 13):
         await UserService(sessions).register(owner)
     async with sessions.begin() as session:
@@ -338,8 +331,8 @@ async def test_backfill_commits_cursor_with_data_and_resumes(fact_sessions, vaca
         assert await session.scalar(select(func.count()).select_from(FactRevisionModel)) == count
 
 
-async def test_old_application_write_preserves_new_history_and_repairs_sidecar(fact_sessions):
-    sessions = fact_sessions
+async def test_old_application_write_preserves_new_history_and_repairs_sidecar(db_sessions):
+    sessions = db_sessions
     users = UserService(sessions)
     await users.register(17)
     await users.accept_answer(17, "Python")
@@ -400,16 +393,16 @@ def test_contracts_ignore_ui_and_invalidate_normalization(tmp_path, monkeypatch)
 
 
 async def test_current_facts_read_and_projection_do_not_reextract(
-    fact_sessions, vacancy, monkeypatch
+    db_sessions, vacancy, monkeypatch
 ):
-    async with fact_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         key = await VacancyRepository(session).save(vacancy)
 
     def fail(*args, **kwargs):
         raise AssertionError("current facts must not reparse source")
 
     monkeypatch.setattr("nlp.requirements.analyze_requirements", fail)
-    async with fact_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         repo = VacancyRepository(session)
         before = await repo.get_by_id(key)
         assert await repo.refresh_facts(key)

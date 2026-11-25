@@ -22,13 +22,6 @@ from storage.repositories import VacancyRepository
 from storage.repositories.user_repository import RegisteredUser, UserRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def catalog_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 def candidate(title):
     return CandidateProfile(skills={"предметное умение": {}}, preferences={"positions": [title]})
 
@@ -61,8 +54,8 @@ def test_expansion_keeps_profession_and_subject(title, expected):
     assert all(q.search_field == "all" and q.period is None for q in queries)
 
 
-async def test_plan_persists_owner_and_original_and_removes_stale_mapping(catalog_sessions):
-    sessions = catalog_sessions
+async def test_plan_persists_owner_and_original_and_removes_stale_mapping(db_sessions):
+    sessions = db_sessions
     async with sessions.begin() as session:
         repo = UserRepository(session)
         for owner in (1, 2):
@@ -118,10 +111,8 @@ async def metadata(sessions, key):
         return await session.get(VacancyModel, key)
 
 
-async def test_identical_and_changed_source_keep_identity_dates_and_revisions(
-    catalog_sessions, vacancy
-):
-    sessions = catalog_sessions
+async def test_identical_and_changed_source_keep_identity_dates_and_revisions(db_sessions, vacancy):
+    sessions = db_sessions
     key = await save(sessions, vacancy)
     observed = vacancy.collected_at + timedelta(days=2)
     refreshed = vacancy.model_copy(
@@ -151,7 +142,7 @@ async def test_identical_and_changed_source_keep_identity_dates_and_revisions(
         assert await session.scalar(select(func.count()).select_from(VacancySnapshot)) == 3
 
 
-async def test_same_card_from_multiple_queries_and_empty_direction(catalog_sessions, vacancy):
+async def test_same_card_from_multiple_queries_and_empty_direction(db_sessions, vacancy):
     now = datetime.now(UTC)
     vacancy = vacancy.model_copy(
         update={"published_at": now - timedelta(days=200), "valid_until": None}
@@ -159,23 +150,21 @@ async def test_same_card_from_multiple_queries_and_empty_direction(catalog_sessi
     source = SimpleNamespace(search=AsyncMock(side_effect=[[], [vacancy], [vacancy]]))
     await collection_loop(
         source,
-        catalog_sessions,
+        db_sessions,
         SearchQuery(text="unused"),
         False,
         3600,
         query_texts=["Учитель", "Бухгалтер", "Водитель"],
     )
     assert source.search.await_count == 3
-    async with catalog_sessions() as session:
+    async with db_sessions() as session:
         assert await session.scalar(select(func.count()).select_from(VacancyModel)) == 1
         assert await session.scalar(select(func.count()).select_from(VacancySnapshot)) == 1
 
 
 @pytest.mark.parametrize("status", [404, 410])
-async def test_direct_missing_confirms_closed_and_search_can_reopen(
-    catalog_sessions, vacancy, status
-):
-    sessions = catalog_sessions
+async def test_direct_missing_confirms_closed_and_search_can_reopen(db_sessions, vacancy, status):
+    sessions = db_sessions
     key = await save(sessions, vacancy)
     now = vacancy.collected_at + timedelta(days=3)
     response = requests.Response()
@@ -203,9 +192,9 @@ async def test_direct_missing_confirms_closed_and_search_can_reopen(
     ],
 )
 async def test_uncertainty_never_closes_or_changes_publication(
-    catalog_sessions, vacancy, error, code, stop
+    db_sessions, vacancy, error, code, stop
 ):
-    sessions = catalog_sessions
+    sessions = db_sessions
     key = await save(sessions, vacancy)
     now = vacancy.collected_at + timedelta(days=3)
     source = SimpleNamespace(get_vacancy=AsyncMock(side_effect=error))
@@ -224,8 +213,8 @@ async def test_uncertainty_never_closes_or_changes_publication(
 
 
 @pytest.mark.parametrize("status", [403, 429])
-async def test_recheck_preserves_typed_block_context(catalog_sessions, vacancy, status):
-    key = await save(catalog_sessions, vacancy)
+async def test_recheck_preserves_typed_block_context(db_sessions, vacancy, status):
+    key = await save(db_sessions, vacancy)
     response = requests.Response()
     response.status_code = status
     source = SimpleNamespace(
@@ -234,18 +223,18 @@ async def test_recheck_preserves_typed_block_context(catalog_sessions, vacancy, 
         )
     )
     with pytest.raises(CollectionStopped) as stopped:
-        await check_catalog(source, catalog_sessions, now=vacancy.collected_at + timedelta(days=3))
+        await check_catalog(source, db_sessions, now=vacancy.collected_at + timedelta(days=3))
     assert stopped.value.code == f"hh_http_{status}"
     assert stopped.value.status_code == status
     assert stopped.value.stage == "catalog_check"
     assert stopped.value.source_vacancy_id == vacancy.source_id
-    row = await metadata(catalog_sessions, key)
+    row = await metadata(db_sessions, key)
     assert row.check_error == "http_error" and row.availability == "unknown" and not row.archived
     source.get_vacancy.assert_awaited_once()
 
 
-async def test_rechecks_are_bounded_and_expired_excluded(catalog_sessions, vacancy):
-    sessions = catalog_sessions
+async def test_rechecks_are_bounded_and_expired_excluded(db_sessions, vacancy):
+    sessions = db_sessions
     now = vacancy.collected_at + timedelta(days=3)
     for number in range(5):
         item = vacancy.model_copy(
@@ -270,11 +259,11 @@ async def test_rechecks_are_bounded_and_expired_excluded(catalog_sessions, vacan
         assert checked.last_checked_at.replace(tzinfo=UTC) == now
 
 
-async def test_changed_card_invalidates_analysis_and_supersedes_old_task(catalog_sessions, vacancy):
+async def test_changed_card_invalidates_analysis_and_supersedes_old_task(db_sessions, vacancy):
     from domain.vacancy_analysis import VacancyAnalysis, VacancyExtraction
     from storage.models import BackgroundJob
 
-    sessions = catalog_sessions
+    sessions = db_sessions
     vacancy = vacancy.model_copy(
         update={"published_at": datetime.now(UTC) - timedelta(days=20), "valid_until": None}
     )
@@ -323,9 +312,9 @@ async def test_changed_card_invalidates_analysis_and_supersedes_old_task(catalog
 
 
 async def test_normal_ranking_excludes_closed_and_expired_but_keeps_uncertainty(
-    catalog_sessions, vacancy, profile
+    db_sessions, vacancy, profile
 ):
-    sessions = catalog_sessions
+    sessions = db_sessions
     now = datetime.now(UTC)
     for number in range(3):
         await save(
@@ -355,8 +344,8 @@ async def test_normal_ranking_excludes_closed_and_expired_but_keeps_uncertainty(
         assert [v.source_id for v, _ in matches] == ["1"]
 
 
-async def test_block_stops_rechecks_before_next_card(catalog_sessions, vacancy):
-    sessions = catalog_sessions
+async def test_block_stops_rechecks_before_next_card(db_sessions, vacancy):
+    sessions = db_sessions
     for number in range(3):
         await save(sessions, vacancy.model_copy(update={"id": uuid4(), "source_id": str(number)}))
     source = SimpleNamespace(get_vacancy=AsyncMock(side_effect=CollectionStopped("captcha")))
@@ -365,8 +354,8 @@ async def test_block_stops_rechecks_before_next_card(catalog_sessions, vacancy):
     assert source.get_vacancy.await_count == 1
 
 
-async def test_expiration_metadata_has_bounded_writes_without_http(catalog_sessions, vacancy):
-    sessions = catalog_sessions
+async def test_expiration_metadata_has_bounded_writes_without_http(db_sessions, vacancy):
+    sessions = db_sessions
     observed = vacancy.collected_at
     now = observed + timedelta(days=2)
     async with sessions.begin() as session:
@@ -390,3 +379,78 @@ async def test_expiration_metadata_has_bounded_writes_without_http(catalog_sessi
             .where(VacancyModel.availability == "expired")
         )
         assert count == 100
+
+
+@pytest.mark.postgres
+async def test_catalog_check_row_lock_and_simultaneous_snapshot_do_not_deadlock(
+    postgres_sessions, vacancy
+):
+    import asyncio
+
+    from sqlalchemy import event
+
+    from domain.vacancy_duplicates import cross_source_key
+
+    card = vacancy.model_copy(
+        update={"description": "Поддержка систем, разработка и тестирование. " * 4}
+    )
+    assert cross_source_key(card.model_dump())
+    async with postgres_sessions.begin() as session:
+        await VacancyRepository(session).save(card)
+    attempted_lock = asyncio.Event()
+
+    def observe(conn, cursor, statement, parameters, context, many):
+        if "FOR UPDATE" in statement and "vacancies.source_id =" in statement:
+            attempted_lock.set()
+
+    async def replay():
+        async with postgres_sessions.begin() as session:
+            old = card.model_copy(update={"raw_payload": {"html": "old publication"}})
+            await VacancyRepository(session).save(old, seen_in_search=False, verified=False)
+
+    engine = postgres_sessions.kw["bind"].sync_engine
+    async with asyncio.timeout(8):
+        async with postgres_sessions.begin() as online:
+            await online.get(VacancyModel, card.id, with_for_update=True)
+            event.listen(engine, "before_cursor_execute", observe)
+            task = asyncio.create_task(replay())
+            try:
+                await attempted_lock.wait()
+                await VacancyRepository(online).save(card.model_copy(update={"archived": True}))
+            finally:
+                event.remove(engine, "before_cursor_execute", observe)
+        await task
+    async with postgres_sessions() as session:
+        assert (await session.get(VacancyModel, card.id)).availability == "closed"
+
+
+async def test_custom_check_interval_drives_display_and_refresh(db_sessions, vacancy, profile):
+    from bot.cards import format_card
+    from jobs.catalog_freshness import available_for_delivery
+    from scoring import score_vacancy
+
+    now = datetime.now(UTC)
+    old = vacancy.model_copy(
+        update={
+            "collected_at": now - timedelta(days=2),
+            "published_at": now - timedelta(days=3),
+            "valid_until": None,
+        }
+    )
+    async with db_sessions.begin() as session:
+        repo = VacancyRepository(session)
+        await repo.save(old)
+        card = await repo.get_by_id(old.id)
+        overdue = set()
+        interval = timedelta(days=1)
+        assert await available_for_delivery(
+            session, [card.id], now=now, interval=interval, overdue=overdue
+        ) == {card.id}
+        assert overdue == {card.id}
+        assert (await session.get(VacancyModel, card.id)).check_requested_at is not None
+        match = score_vacancy(card, profile, now=now)
+        assert "Последняя проверка" in format_card(card, match, check_interval=interval).render()[0]
+        assert (
+            "Последняя проверка"
+            not in format_card(card, match, check_interval=3 * interval).render()[0]
+        )

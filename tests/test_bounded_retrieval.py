@@ -205,16 +205,33 @@ def test_broad_profile_and_multiple_intents_do_not_dilute_exact_match():
 
 
 @pytest.mark.postgres
-async def test_notification_history_above_postgres_bind_limit(
-    postgres_sessions, vacancy, monkeypatch
-):
+async def test_notification_history_above_postgres_bind_limit(postgres_sessions, vacancy):
     from jobs.notify import NotificationService
     from storage.repositories.notification_repository import NotificationRepository
 
     first, other = job(vacancy, company="blocked"), job(vacancy, company="available")
     await bulk(postgres_sessions, [first, other])
-    blocked = {first.id, *[uuid4() for _ in range(40000)]}
-    monkeypatch.setattr(NotificationRepository, "blocked_ids", AsyncMock(return_value=blocked))
+    from sqlalchemy import text
+
+    async with postgres_sessions.begin() as session:
+        # Seed in SQL so even the regression fixture stays below the driver parameter limit.
+        await session.execute(
+            text("""
+            INSERT INTO vacancies (id,source,source_id,url,title,company,skills,published_at,
+                                   collected_at,last_seen_at,raw_payload,archived)
+            SELECT md5('history:' || i)::uuid, 'fixture', i::text, 'https://example.org',
+                   'old', 'old','[]', now(), now(), now(), '{}', true
+              FROM generate_series(1,40000) AS i
+        """)
+        )
+        await session.execute(
+            text("""
+            INSERT INTO telegram_notifications
+                (chat_id,vacancy_id,claim_token,status,attempted_at,attempts)
+            SELECT 71,id,id,'uncertain',now(),1 FROM vacancies WHERE source='fixture'
+        """)
+        )
+        await NotificationRepository(session).claim(71, first.id)
     result = await NotificationService(
         postgres_sessions, candidate(), chat_id=71, min_score=0
     ).pending()
@@ -303,3 +320,20 @@ async def test_required_location_before_pool_remote_exception(postgres_sessions,
         )
     assert {v.id for v in result.items} == {good.id, remote.id}
     assert stats["required_excluded"] == 0 and stats["detail_count"] == 2
+
+
+@pytest.mark.postgres
+async def test_candidate_cache_covers_default_k_above_score_cache_limit(postgres_sessions, vacancy):
+    now = datetime.now(UTC)
+    cards = [job(vacancy, company=f"Independent {n}") for n in range(129)]
+    await bulk(postgres_sessions, cards)
+    runs = []
+    for _ in range(2):
+        stats = {}
+        async with postgres_sessions.begin() as session:
+            ranked = await rank_recent(
+                VacancyRepository(session), candidate(), cache_owner=51, diagnostics=stats, now=now
+            )
+        runs.append((stats["candidate_cache_hit"], [v.id for v, _ in ranked]))
+    assert [hit for hit, _ in runs] == [0, 1]
+    assert len(runs[0][1]) == 129 and runs[0][1] == runs[1][1]

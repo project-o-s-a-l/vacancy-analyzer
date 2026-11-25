@@ -210,7 +210,7 @@ class AnalysisWorker:
                 return await self._process(job)
         except TimeoutError:
             returned = False
-            await self._error(job, "processing_timeout", retry=True)
+            await self._settle(job, "retry", "processing_timeout")
             return "retry"
         except asyncio.CancelledError:
             # Keep the running lease: the server may still be performing inference.
@@ -238,7 +238,7 @@ class AnalysisWorker:
                 except StaleResumeWork:
                     await self._settle(job, "superseded", "input_changed")
                     return "changed"
-            await self._error(job, "model_unavailable", retry=True)
+            await self._settle(job, "retry", "model_unavailable")
             return "retry"
         except StaleResumeWork:
             await self._settle(job, "superseded", "input_changed")
@@ -252,7 +252,7 @@ class AnalysisWorker:
                 validation_code=validation_code(exc),
                 result="failed",
             )
-            await self._error(job, "invalid_response", retry=False)
+            await self._settle(job, "failed", "invalid_response")
             return "failed"
         except Exception as exc:
             returned = False
@@ -264,7 +264,7 @@ class AnalysisWorker:
                 result="deferred",
                 code="unexpected_error",
             )
-            await self._error(job, "worker_error", retry=True)
+            await self._settle(job, "retry", "worker_error")
             return "retry"
         finally:
             analyzer = (
@@ -277,36 +277,45 @@ class AnalysisWorker:
             remote_settled = runtime is not None and not runtime.marker.exists()
             if returned or remote_settled:
                 async with self.sessions.begin() as session:
+                    repo = JobRepository(session)
                     if runtime is None or not runtime.marker.exists():
-                        await JobRepository(session).clear_gate(job.lease_token)
-                    await JobRepository(session).release(job, remote_settled=remote_settled)
+                        await repo.clear_gate(job.lease_token)
+                    await repo.release(job, remote_settled=remote_settled)
 
-    async def _error(self, job, code, *, retry):
+    async def _settle(self, job, outcome, code):
         async with self.sessions.begin() as session:
             repo = JobRepository(session)
             owned = await repo.owned(job)
-            if owned:
-                if retry:
-                    await repo.retry(owned, code)
-                else:
-                    await repo.finish(owned, state="failed", code=code)
-            else:
+            if owned is None:
                 self._discarded(job)
-
-    async def _settle(self, job, state, code):
-        async with self.sessions.begin() as session:
-            repo = JobRepository(session)
-            owned = await repo.owned(job)
-            if owned:
-                await repo.finish(owned, state=state, code=code)
+            elif outcome == "retry":
+                await repo.retry(owned, code)
             else:
-                self._discarded(job)
+                await repo.finish(owned, state=outcome, code=code)
 
     @staticmethod
     def _discarded(job):
         emit_event(
             logger, "job.result_discarded", job_id=job.id, result="skipped", code="claim_lost"
         )
+
+    async def _lock_current_vacancy(self, session, repo, job):
+        # Keep collection's lock order: vacancy, gate, job. Validate within the transaction.
+        await session.get(VacancyModel, job.vacancy_id, with_for_update=True)
+        await repo.gate()
+        owned = await repo.owned(job)
+        if owned is None:
+            self._discarded(job)
+            return None
+        current = await VacancyRepository(session).get_by_id(job.vacancy_id)
+        if (
+            current is None
+            or analysis_input_hash(current) != job.revision
+            or not is_fresh(current, now=datetime.now(UTC))
+        ):
+            await repo.finish(owned, state="superseded", code="input_changed")
+            return None
+        return owned, current
 
     async def _process(self, job):
         analyzer = self.vacancy_analyzer if job.kind == "vacancy_analysis" else self.resume_analyzer
@@ -326,7 +335,7 @@ class AnalysisWorker:
                     await repo.gate()  # Entity → gate → job, also during pipeline migration.
                     owned = await repo.owned(job)
                     if owned and row and row.processing_job_id == job.id:
-                        updated = await JobRepository(session).enqueue(
+                        updated = await repo.enqueue(
                             kind=job.kind,
                             entity_key=job.entity_key,
                             user_id=job.user_id,
@@ -378,21 +387,11 @@ class AnalysisWorker:
             # A source-reviewed import is already finished. Preserve its authored
             # facts as well as analysis; a normal local-model job must not replace it.
             async with self.sessions.begin() as session:
-                await session.get(VacancyModel, job.vacancy_id, with_for_update=True)
                 repo = JobRepository(session)
-                await repo.gate()
-                owned = await repo.owned(job)
-                if owned is None:
-                    self._discarded(job)
+                locked = await self._lock_current_vacancy(session, repo, job)
+                if locked is None:
                     return "changed"
-                current = await VacancyRepository(session).get_by_id(job.vacancy_id)
-                if (
-                    current is None
-                    or analysis_input_hash(current) != job.revision
-                    or not is_fresh(current, now=datetime.now(UTC))
-                ):
-                    await repo.finish(owned, state="superseded", code="input_changed")
-                    return "changed"
+                owned, current = locked
                 if (
                     current.analysis
                     and current.analysis.provider != "ollama"
@@ -418,7 +417,6 @@ class AnalysisWorker:
             emit_event(
                 logger, "model.cache_hit", source_vacancy_id=vacancy.source_id, result="ready"
             )
-        if cached:
             analysis = analyzer.refine_cached(vacancy.analysis, vacancy)
         else:
             from jobs.extraction_cache import ValidatedCache
@@ -429,29 +427,17 @@ class AnalysisWorker:
                 if isinstance(analyzer, OllamaVacancyAnalyzer)
                 else await analyzer.analyze(vacancy)
             )
-        if not cached:
             await analyzer.ready()
             if analyzer.model_digest != analysis.model_digest:
-                await self._error(job, "model_changed", retry=True)
+                await self._settle(job, "retry", "model_changed")
                 return "retry"
         with stage("result_write"):
             async with self.sessions.begin() as session:
-                # Same order as collection: vacancy first, then job, to avoid deadlocks.
-                await session.get(VacancyModel, job.vacancy_id, with_for_update=True)
                 repo = JobRepository(session)
-                await repo.gate()
-                owned = await repo.owned(job)
-                if owned is None:
-                    self._discarded(job)
+                locked = await self._lock_current_vacancy(session, repo, job)
+                if locked is None:
                     return "changed"
-                current = await VacancyRepository(session).get_by_id(job.vacancy_id)
-                if (
-                    current is None
-                    or analysis_input_hash(current) != job.revision
-                    or not is_fresh(current, now=datetime.now(UTC))
-                ):
-                    await repo.finish(owned, state="superseded", code="input_changed")
-                    return "changed"
+                owned, current = locked
                 current_recipe = pipeline_hash(job.kind, analyzer.model)
                 if current_recipe != job.pipeline:
                     from jobs.analysis_queue import enqueue_vacancy
@@ -548,10 +534,19 @@ async def _worker_loop(worker, stop, *, interval=5, startup=None):
     emit_event(logger, "component.ready", component_kind="analysis", result="ready")
     reconciled_at = time.monotonic()
     while not stop.is_set():
-        try:
-            if startup and time.monotonic() - reconciled_at >= 60:
+        if startup and time.monotonic() - reconciled_at >= 60:
+            try:
                 await startup()
-                reconciled_at = time.monotonic()
+            except Exception as exc:
+                emit_event(
+                    logger,
+                    "analysis.startup_deferred",
+                    level=logging.WARNING,
+                    error=exc,
+                    result="deferred",
+                )
+            reconciled_at = time.monotonic()
+        try:
             outcome = await worker.run_once()
             if outcome in {"resume", "analyzed", "cached", "projected", "changed"}:
                 continue  # Drain a burst immediately; idle polling still sleeps.

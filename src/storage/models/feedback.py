@@ -13,6 +13,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from storage.models.exposure import confirmed_context
 from storage.models.vacancy import Base
 
 
@@ -69,8 +70,13 @@ class FeedbackEventModel(Base):
     )
     action: Mapped[str] = mapped_column(String(16))
     reason: Mapped[str | None] = mapped_column(String(16))
-    exposure_context: Mapped[dict | None] = mapped_column(
-        JSON().with_variant(JSONB(), "postgresql")
+    snapshot_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("recommendation_exposures.id", name="fk_feedback_snapshot", ondelete="SET NULL")
     )
+    legacy_context: Mapped[dict | None] = mapped_column(
+        "exposure_context",
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"),
+    )
+    exposure_context = confirmed_context(legacy_context, snapshot_id, user_id, vacancy_id)
     action_context: Mapped[dict | None] = mapped_column(JSON().with_variant(JSONB(), "postgresql"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -156,7 +156,7 @@ def test_absent_local_listener_is_proven_but_remote_timeout_is_not_ignored(monke
     assert called == [True]
 
 
-def test_listener_and_uncertain_marker_preserve_f08_drain(monkeypatch, tmp_path):
+def test_listener_and_uncertain_marker_preserve_f08_drain(monkeypatch):
     import psutil
 
     monkeypatch.setattr(

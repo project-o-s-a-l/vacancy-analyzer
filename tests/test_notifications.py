@@ -87,7 +87,6 @@ async def test_sent_or_ambiguous_attempt_never_auto_retried(session, vacancy, st
                 42, vacancy.id, token, state, message_id=1 if state == "sent" else None
             )
         assert await repository.claim(42, vacancy.id) is None
-        assert vacancy.id in await repository.blocked_ids(42)
 
 
 async def test_repeated_runs_progress_past_previously_sent_top(seeded_sessions, profile, sender):

@@ -90,28 +90,33 @@ def download_model(directory):
     )
 
 
+def open_cpu_session(directory):
+    import onnxruntime as ort
+
+    options = ort.SessionOptions()
+    options.intra_op_num_threads = options.inter_op_num_threads = 1
+    options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    options.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    return ort.InferenceSession(
+        str(Path(directory) / "model.onnx"),
+        sess_options=options,
+        providers=["CPUExecutionProvider"],
+    )
+
+
 class LocalEncoder:
     """Use only inside the bounded inference process. No Torch, CUDA or HTTP calls."""
 
     def __init__(self, directory):
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         import numpy as np
-        import onnxruntime as ort
         from tokenizers import Tokenizer
 
         validate_model(directory)
         self.np = np
         self.tokenizer = Tokenizer.from_file(str(Path(directory) / "tokenizer.json"))
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = options.inter_op_num_threads = 1
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
-        options.add_session_config_entry("session.inter_op.allow_spinning", "0")
-        self.session = ort.InferenceSession(
-            str(Path(directory) / "model.onnx"),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
+        self.session = open_cpu_session(directory)
         self.inputs = {v.name for v in self.session.get_inputs()}
 
     def encode(self, text, kind):

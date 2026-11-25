@@ -5,6 +5,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 
 from alembic import op
 from domain.vacancy_duplicates import DUPLICATE_FIELDS, cross_source_key
+from storage.serving_revisions import install, uninstall
 
 revision = "0025"
 down_revision = "0024"
@@ -49,11 +50,18 @@ def upgrade():
                 batch,
             )
         cursor = rows[-1]["id"]
+    if conn.dialect.name == "sqlite":
+        install(conn, seen_is_content=True)
 
 
 def downgrade():
+    conn = op.get_bind()
+    if conn.dialect.name == "sqlite":
+        uninstall(conn)
     op.drop_index("ix_vacancies_cross_source_key", table_name="vacancies")
     op.drop_column("vacancies", "cross_source_key")
     op.drop_column("collection_observations", "payload")
     op.drop_column("collection_observations", "detail_url")
     op.drop_column("collection_directions", "source")
+    if conn.dialect.name == "sqlite":
+        install(conn, seen_is_content=True)

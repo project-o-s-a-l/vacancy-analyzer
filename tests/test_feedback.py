@@ -135,9 +135,7 @@ async def test_invalid_actions_do_not_write_events(
     assert await event_count(sessions) == 0
 
 
-async def test_feedback_requires_registered_user_and_own_exposure(
-    feedback, sessions, vacancy, profile
-):
+async def test_feedback_requires_registered_user_and_own_exposure(feedback, sessions, vacancy):
     with pytest.raises(ValueError, match="/start"):
         await feedback.record(99, vacancy.id, "like", event_key="x")
     async with sessions.begin() as session:
@@ -181,6 +179,11 @@ async def test_event_retains_exposure_context_after_profile_and_vacancy_changes(
     await FeedbackService(sessions).record(42, vacancy.id, "like", event_key="x")
     async with sessions() as session:
         event = await session.get(FeedbackEventModel, (42, "x"))
+        assert event.legacy_context is None and event.snapshot_id is not None
+        notification = await session.get(NotificationModel, (42, vacancy.id))
+        assert (
+            notification.pending_context is None and notification.claim_token == event.snapshot_id
+        )
         assert event.exposure_context == context
         assert event.exposure_context["profile"]["experience_years"] != 0
         assert event.action_context["profile"]["experience_years"] == 0

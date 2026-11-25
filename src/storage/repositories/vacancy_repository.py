@@ -72,6 +72,7 @@ class VacancyRepository:
                 raise ValueError("Analysis does not match the vacancy content")
             values["analysis"] = vacancy.analysis.model_dump(mode="json")
         observed = vacancy.collected_at
+        values["source_observed_at"] = observed
         values["last_seen_at"] = observed
         values["last_checked_at"] = observed if verified else None
         values["last_check_attempt_at"] = observed if verified else None
@@ -111,35 +112,65 @@ class VacancyRepository:
         values["raw_payload_hash"] = payload_hash(vacancy.raw_payload)
         values["duplicate_key"] = vacancy_duplicates.duplicate_key_v1(values)
         cross_key = values["cross_source_key"] = vacancy_duplicates.cross_source_key(values)
+        current = (
+            select(
+                VacancyModel.id,
+                VacancyModel.catalog_revision,
+                VacancyModel.raw_payload_hash,
+                VacancyModel.archived,
+                VacancyModel.last_check_attempt_at,
+                VacancyModel.last_checked_at,
+                VacancyModel.source_observed_at,
+                VacancyModel.collected_at,
+                VacancyModel.availability,
+                VacancyModel.search_version,
+                VacancyModel.search_revision,
+                VacancyModel.content_revision,
+                VacancyModel.revision_number,
+                VacancyModel.cross_source_key,
+                VacancyModel.duplicate_key,
+            )
+            .where(
+                VacancyModel.source == vacancy.source,
+                VacancyModel.source_id == vacancy.source_id,
+            )
+            .with_for_update()
+        )
+        previous = (await self.session.execute(current)).one_or_none()
+        if previous is None and self.insert is pg_insert:
+            # A missing row cannot be locked. Serialize first writes for this publisher ID.
+            await self.session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:identity, 0))"),
+                {"identity": f"vacancy:{vacancy.source}:{vacancy.source_id}"},
+            )
+            previous = (await self.session.execute(current)).one_or_none()
+        if insert_only and previous:
+            return None
+        if previous and not verified:
+            latest = previous.source_observed_at or previous.collected_at
+            if (
+                previous.last_check_attempt_at
+                or previous.last_checked_at
+                or observed < _aware(latest)
+            ):
+                inserted = await self._snapshot(previous.id, vacancy, values["raw_payload_hash"])
+                if inserted:
+                    await self.archive_source(vacancy.model_copy(update={"id": previous.id}))
+                self._saved(
+                    vacancy,
+                    {**values, "availability": previous.availability},
+                    previous.id,
+                    "unchanged",
+                    "new" if inserted else "reused",
+                    previous.revision_number,
+                )
+                return previous.id
         if cross_key and self.insert is pg_insert:
             # Two different source IDs can be inserted concurrently, before either row exists.
             await self.session.execute(
                 text("SELECT pg_advisory_xact_lock(:key)"),
                 {"key": int.from_bytes(bytes.fromhex(cross_key[:16]), signed=True)},
             )
-        previous = (
-            await self.session.execute(
-                select(
-                    VacancyModel.id,
-                    VacancyModel.catalog_revision,
-                    VacancyModel.raw_payload_hash,
-                    VacancyModel.archived,
-                    VacancyModel.search_version,
-                    VacancyModel.search_revision,
-                    VacancyModel.content_revision,
-                    VacancyModel.revision_number,
-                    VacancyModel.cross_source_key,
-                    VacancyModel.duplicate_key,
-                )
-                .where(
-                    VacancyModel.source == vacancy.source,
-                    VacancyModel.source_id == vacancy.source_id,
-                )
-                .with_for_update()
-            )
-        ).one_or_none()
-        if insert_only and previous:
-            return None
         if cross_key:
             peers = list(
                 await self.session.scalars(
@@ -187,6 +218,7 @@ class VacancyRepository:
             if not verified:
                 # Offline replay of identical content cannot certify or invalidate a live check.
                 metadata = {}
+            metadata["source_observed_at"] = observed
             if seen_in_search:
                 metadata["last_seen_at"] = observed
             metadata["duplicate_key"] = values["duplicate_key"]
@@ -265,20 +297,7 @@ class VacancyRepository:
         if saved_row is None:
             return None
         vacancy_id = saved_row.id
-        snapshot = self.insert(VacancySnapshot).values(
-            id=uuid4(),
-            vacancy_id=vacancy_id,
-            payload_hash=values["raw_payload_hash"],
-            raw_payload=vacancy.raw_payload,
-            observed_at=vacancy.collected_at,
-        )
-        snapshot_id = (
-            await self.session.execute(
-                snapshot.on_conflict_do_nothing(
-                    index_elements=["vacancy_id", "payload_hash"]
-                ).returning(VacancySnapshot.id)
-            )
-        ).scalar_one_or_none()
+        snapshot_id = await self._snapshot(vacancy_id, vacancy, values["raw_payload_hash"])
         inserted = saved_row.inserted if self.insert is pg_insert else previous is None
         change = (
             "new"
@@ -300,6 +319,22 @@ class VacancyRepository:
         )
         await self.refresh_facts(vacancy_id)
         return vacancy_id
+
+    async def _snapshot(self, vacancy_id, vacancy, raw_hash):
+        snapshot = self.insert(VacancySnapshot).values(
+            id=uuid4(),
+            vacancy_id=vacancy_id,
+            payload_hash=raw_hash,
+            raw_payload=vacancy.raw_payload,
+            observed_at=vacancy.collected_at,
+        )
+        return (
+            await self.session.execute(
+                snapshot.on_conflict_do_nothing(
+                    index_elements=["vacancy_id", "payload_hash"]
+                ).returning(VacancySnapshot.id)
+            )
+        ).scalar_one_or_none()
 
     async def refresh_facts(self, vacancy_id: UUID, *, force=False, supplied=None) -> bool:
         """Facts, immutable history and lexical projection commit atomically with the source."""
@@ -582,6 +617,7 @@ class VacancyRepository:
                 VacancyModel.published_at >= since.astimezone(UTC),
                 VacancyModel.published_at <= until.astimezone(UTC),
                 VacancyModel.archived.is_(False),
+                VacancyModel.availability.in_(("active", "unknown")),
                 or_(VacancyModel.valid_until.is_(None), VacancyModel.valid_until > until),
             )
             .order_by(VacancyModel.published_at.desc(), VacancyModel.source, VacancyModel.source_id)
@@ -592,33 +628,61 @@ class VacancyRepository:
         return [_to_domain(row) for row in records[:limit]], len(records) > limit
 
     async def skill_gap_sample(
-        self, *, since: datetime, until: datetime, limit: int = 2000
+        self, *, since: datetime, until: datetime, limit: int = 2000, positions=()
     ) -> tuple[list[Vacancy], bool]:
         if limit < 1 or since.tzinfo is None or until.tzinfo is None or since > until:
             raise ValueError("Invalid analysis window or limit")
-        since, until = since.astimezone(UTC), until.astimezone(UTC)
+        from jobs.serving_compute import compute
+        from scoring.retrieval import tokens
+        from scoring.skill_gap import direction_terms
         from storage.repositories.candidate_repository import CandidateRepository
 
-        # needs the same facts and conditions as ranking, never raw source payloads.
-        rows = (
-            (
-                await self.session.execute(
-                    select(*CandidateRepository.projection(analysis=True))
-                    .where(
-                        VacancyModel.published_at >= since.astimezone(UTC),
-                        VacancyModel.published_at <= until.astimezone(UTC),
-                        VacancyModel.archived.is_(False),
-                        or_(VacancyModel.valid_until.is_(None), VacancyModel.valid_until > until),
-                    )
-                    .order_by(
-                        VacancyModel.published_at.desc(),
-                        VacancyModel.source,
-                        VacancyModel.source_id,
-                    )
-                    .limit(limit + 1)
+        forms = await compute(direction_terms, positions)
+        chosen, groups = [], set()
+        model = VacancyModel
+        result = await self.session.stream(
+            select(model.id, model.title, model.duplicate_key)
+            .where(
+                model.published_at.between(since.astimezone(UTC), until.astimezone(UTC)),
+                model.archived.is_(False),
+                model.availability.not_in(("closed", "out_of_scope")),
+                or_(model.valid_until.is_(None), model.valid_until > until.astimezone(UTC)),
+            )
+            .order_by(model.published_at.desc(), model.source, model.source_id)
+            .execution_options(yield_per=256)
+        )
+
+        def matching(batch):
+            for key, title, group in batch:
+                identity = group or key
+                if identity in groups:
+                    continue
+                if positions:
+                    words = tokens(title)
+                    if not any(form <= words for form in forms):
+                        continue
+                chosen.append(key)
+                groups.add(identity)
+                if len(chosen) > limit:
+                    break
+
+        try:
+            async for batch in result.partitions(256):
+                await compute(matching, batch)
+                if len(chosen) > limit:
+                    break
+        finally:
+            await result.close()
+        repo = CandidateRepository(self.session)
+        selected = []
+        for start in range(0, min(limit, len(chosen)), 128):
+            ids = chosen[start : min(start + 128, limit)]
+            rows = {r["id"]: r for r in await repo.load_selected(ids)}
+            selected.extend(
+                await compute(
+                    lambda ids, rows: [repo.vacancy(rows[key]) for key in ids if key in rows],
+                    ids,
+                    rows,
                 )
             )
-            .mappings()
-            .all()
-        )
-        return [CandidateRepository.vacancy(row) for row in rows[:limit]], len(rows) > limit
+        return selected, len(chosen) > limit

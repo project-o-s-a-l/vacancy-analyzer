@@ -6,7 +6,8 @@ from aiogram import Dispatcher
 from aiogram.dispatcher.dispatcher import DEFAULT_BACKOFF_CONFIG
 from aiogram.types import Message
 
-from jobs.owner_queue import OwnerQueue, QueueFull
+from bot.update_inbox import UpdateInbox
+from storage.database import DATABASE_ERRORS
 
 
 def owner_for(update):
@@ -25,6 +26,10 @@ def owner_for(update):
 
 
 class OrderedDispatcher(Dispatcher):
+    def __init__(self, sessions, **kwargs):
+        super().__init__(**kwargs)
+        self.sessions = sessions
+
     async def _polling(
         self,
         bot,
@@ -35,53 +40,45 @@ class OrderedDispatcher(Dispatcher):
         tasks_concurrency_limit=None,
         **kwargs,
     ):
-        queue = OwnerQueue()
-        # Rejections have their own bounded lane; a flood cannot allocate unbounded tasks
-        # or stop accepting commands from other owners while Telegram is slow.
+        inbox = UpdateInbox(self.sessions, bot.id)
         notices = asyncio.Queue(maxsize=16)
         notified = set()
 
-        def notice(owner, message):
-            if not notices.full() and owner not in notified:
-                notices.put_nowait((owner, message))
-                notified.add(owner)
-
-        async def notify():
+        async def send_notices():
             while True:
-                owner, message = await notices.get()
+                owner = await notices.get()
                 try:
-                    await bot.send_message(owner, message)
-                except Exception:
-                    pass
+                    await inbox.reject(bot, owner)
                 finally:
                     notified.discard(owner)
+                    notices.task_done()
 
-        notifier = asyncio.create_task(notify())
-        try:
-            async for update in self._listen_updates(
-                bot,
-                polling_timeout=polling_timeout,
-                backoff_config=backoff_config,
-                allowed_updates=allowed_updates,
-            ):
-                owner = owner_for(update)
-                if owner is None:
-                    continue
-                try:
-                    future = queue.submit(
-                        owner,
-                        lambda update=update: self._process_update(
-                            bot=bot, update=update, **kwargs
-                        ),
-                    )
-                    future.add_done_callback(lambda f: f.exception() if not f.cancelled() else None)
-                    if queue.count > queue.limit or len(queue.owners[owner]) > 1:
-                        notice(owner, "Команда принята. Дождитесь завершения предыдущих команд.")
-                except QueueFull:
-                    notice(
-                        owner, "Сейчас слишком много команд. Дождитесь ответа и повторите позже."
-                    )
-        finally:
-            await queue.close()
-            notifier.cancel()
-            await asyncio.gather(notifier, return_exceptions=True)
+        async with asyncio.TaskGroup() as group:
+            workers = [group.create_task(inbox.run(self, bot, kwargs)) for _ in range(4)]
+            workers.append(group.create_task(send_notices()))
+            try:
+                async for item in self._listen_updates(
+                    bot,
+                    polling_timeout=polling_timeout,
+                    backoff_config=backoff_config,
+                    allowed_updates=allowed_updates,
+                ):
+                    owner = owner_for(item)
+                    if owner is None:
+                        continue
+                    # The next getUpdates offset acknowledges only committed receipts.
+                    while True:
+                        try:
+                            accepted = await inbox.receive(owner, item)
+                        except DATABASE_ERRORS:
+                            accepted = "busy"
+                        if accepted == "overflow" and owner not in notified and not notices.full():
+                            notified.add(owner)
+                            notices.put_nowait(owner)
+                        if accepted != "busy":
+                            break
+                        await asyncio.sleep(1)
+                await inbox.drain()
+            finally:
+                for worker in workers:
+                    worker.cancel()

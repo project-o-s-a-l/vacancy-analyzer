@@ -10,7 +10,7 @@ depends_on = None
 
 
 def upgrade():
-    install(op.get_bind())
+    install(op.get_bind(), seen_is_content=True)
 
 
 def downgrade():

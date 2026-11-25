@@ -20,13 +20,6 @@ from storage.repositories import VacancyRepository
 from storage.repositories.notification_repository import NotificationRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def candidate_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 def candidate(**updates):
     data = {
         "skills": {"java": {}, "spring": {}},
@@ -90,8 +83,8 @@ async def bulk(sessions, vacancies):
         await session.execute(insert(VacancyModel), values)
 
 
-async def test_old_relevant_card_beyond_500_newer_directions(candidate_sessions, vacancy):
-    sessions = candidate_sessions
+async def test_old_relevant_card_beyond_500_newer_directions(db_sessions, vacancy):
+    sessions = db_sessions
     relevant = job(vacancy, published_at=datetime.now(UTC) - timedelta(days=200))
     unrelated = [
         job(
@@ -133,8 +126,8 @@ async def test_old_relevant_card_beyond_500_newer_directions(candidate_sessions,
         },
     ],
 )
-async def test_constraints_precede_k(candidate_sessions, vacancy, change):
-    sessions = candidate_sessions
+async def test_constraints_precede_k(db_sessions, vacancy, change):
+    sessions = db_sessions
     prefs = {
         "positions": ["Java Developer"],
         "locations": ["Москва"],
@@ -164,7 +157,7 @@ async def test_constraints_precede_k(candidate_sessions, vacancy, change):
         assert [v.id for v in result.items] == [good.id]
 
 
-async def test_document_absence_precedes_k_and_unknowns_remain(candidate_sessions, vacancy):
+async def test_document_absence_precedes_k_and_unknowns_remain(db_sessions, vacancy):
     profile = candidate(qualifications=[{"name": "Медкнижка", "status": "absent"}])
     bad = job(vacancy, description="Требования: обязательна медицинская книжка. Java Spring")
     unknown = job(
@@ -176,22 +169,20 @@ async def test_document_absence_precedes_k_and_unknowns_remain(candidate_session
         salary_from=None,
         salary_to=None,
     )
-    await bulk(candidate_sessions, [bad, unknown])
-    async with candidate_sessions() as session:
+    await bulk(db_sessions, [bad, unknown])
+    async with db_sessions() as session:
         result = await retrieve_candidates(
             VacancyRepository(session), profile, parameters=RetrievalParameters(k=1)
         )
         assert [v.id for v in result.items] == [unknown.id]
 
 
-async def test_explicit_work_format_unknown_is_handled_by_existing_policy(
-    candidate_sessions, vacancy
-):
+async def test_explicit_work_format_unknown_is_handled_by_existing_policy(db_sessions, vacancy):
     profile = candidate(preferences={"remote": "required"})
     unknown = job(vacancy, remote=None)
     remote = job(vacancy, title="Java", remote=True)
-    await bulk(candidate_sessions, [unknown, remote])
-    async with candidate_sessions() as session:
+    await bulk(db_sessions, [unknown, remote])
+    async with db_sessions() as session:
         result = await retrieve_candidates(
             VacancyRepository(session), profile, parameters=RetrievalParameters(k=1)
         )
@@ -299,7 +290,7 @@ def test_translated_role_needs_the_whole_phrase_and_keeps_other_qualifiers():
 
 
 async def test_title_alias_hits_existing_index_and_does_not_promote_body_mentions(
-    candidate_sessions, vacancy
+    db_sessions, vacancy
 ):
     now = datetime.now(UTC)
     profile = CandidateProfile(preferences={"positions": ["Аналитик данных"]})
@@ -333,10 +324,10 @@ async def test_title_alias_hits_existing_index_and_does_not_promote_body_mention
             published_at=now - timedelta(days=10),
         ),
     ]
-    await bulk(candidate_sessions, cards)
+    await bulk(db_sessions, cards)
     for backend in ("sql", "compact"):
         params = RetrievalParameters(k=3, backend=backend)
-        async with candidate_sessions() as session:
+        async with db_sessions() as session:
             result = await retrieve_candidates(
                 VacancyRepository(session), profile, parameters=params
             )
@@ -349,7 +340,7 @@ async def test_title_alias_hits_existing_index_and_does_not_promote_body_mention
         assert 0 < result.evidence[cards[1].id].lexical_score < 0.60
 
 
-async def test_description_search_and_sql_equivalence(candidate_sessions, vacancy):
+async def test_description_search_and_sql_equivalence(db_sessions, vacancy):
     cards = [
         job(
             vacancy, title="Специалист", skills=[], description="Разработка сервисов на Java Spring"
@@ -359,10 +350,10 @@ async def test_description_search_and_sql_equivalence(candidate_sessions, vacanc
             vacancy, title="Java стажировка", description="Без опыта работы. Java", skills=["Java"]
         ),
     ]
-    await bulk(candidate_sessions, cards)
+    await bulk(db_sessions, cards)
     for k in (1, 2, 5):
         params = RetrievalParameters(k=k)
-        async with candidate_sessions() as session:
+        async with db_sessions() as session:
             actual = await retrieve_candidates(
                 VacancyRepository(session), candidate(), parameters=params
             )
@@ -373,14 +364,14 @@ async def test_description_search_and_sql_equivalence(candidate_sessions, vacanc
         assert actual.evidence == reference.evidence
 
 
-async def test_duplicates_and_exclusions_do_not_consume_k(candidate_sessions, vacancy):
+async def test_duplicates_and_exclusions_do_not_consume_k(db_sessions, vacancy):
     first = job(vacancy)
     copies = [job(first) for _ in range(70)]
     other = job(
         vacancy, title="Java junior", description="Другой работодатель Java", company="Другой"
     )
-    await bulk(candidate_sessions, [first, *copies, other])
-    async with candidate_sessions() as session:
+    await bulk(db_sessions, [first, *copies, other])
+    async with db_sessions() as session:
         selection = await retrieve_candidates(
             VacancyRepository(session), candidate(), parameters=RetrievalParameters(k=2)
         )
@@ -394,9 +385,9 @@ async def test_duplicates_and_exclusions_do_not_consume_k(candidate_sessions, va
         assert [v.id for v in selection.items] == [other.id]
 
 
-async def test_index_refresh_and_unindexed_compatibility(candidate_sessions, vacancy):
+async def test_index_refresh_and_unindexed_compatibility(db_sessions, vacancy):
     v = job(vacancy, title="Java", skills=["Java"], description="Java")
-    async with candidate_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await VacancyRepository(session).save(v)
         changed = job(
             v,
@@ -406,7 +397,7 @@ async def test_index_refresh_and_unindexed_compatibility(candidate_sessions, vac
             description="JavaScript",
         )
         await VacancyRepository(session).save(changed)
-    async with candidate_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         row = await session.get(VacancyModel, v.id)
         assert "javascript" in row.search_terms and "java" not in row.search_terms
         await session.execute(
@@ -414,7 +405,7 @@ async def test_index_refresh_and_unindexed_compatibility(candidate_sessions, vac
             .where(VacancyModel.id == v.id)
             .values(search_version=None, search_document=None, search_terms=None)
         )
-    async with candidate_sessions() as session:
+    async with db_sessions() as session:
         result = await retrieve_candidates(
             VacancyRepository(session),
             CandidateProfile(skills={"javascript": {}}),
@@ -423,7 +414,7 @@ async def test_index_refresh_and_unindexed_compatibility(candidate_sessions, vac
         assert result.items[0].id == v.id and result.evidence[v.id].strategy == "lexical"
 
 
-async def test_revision_fences_old_process_index_and_next_save_repairs(candidate_sessions, vacancy):
+async def test_revision_fences_old_process_index_and_next_save_repairs(db_sessions, vacancy):
     original = job(
         vacancy,
         title="Python",
@@ -432,7 +423,7 @@ async def test_revision_fences_old_process_index_and_next_save_repairs(candidate
         published_at=datetime.now(UTC) - timedelta(days=200),
     )
     await bulk(
-        candidate_sessions,
+        db_sessions,
         [
             original,
             job(vacancy, title="JavaScript", skills=["JavaScript"], description="JavaScript"),
@@ -441,7 +432,7 @@ async def test_revision_fences_old_process_index_and_next_save_repairs(candidate
     changed = original.model_copy(
         update={"title": "Java", "skills": ["Java"], "description": "Java"}
     )
-    async with candidate_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await session.execute(
             update(VacancyModel)
             .where(VacancyModel.id == original.id)
@@ -452,33 +443,33 @@ async def test_revision_fences_old_process_index_and_next_save_repairs(candidate
                 content_revision=analysis_input_hash(changed),
             )
         )
-    async with candidate_sessions() as session:
+    async with db_sessions() as session:
         result = await retrieve_candidates(
             VacancyRepository(session),
             CandidateProfile(skills={"java": {}}),
             parameters=RetrievalParameters(k=1),
         )
         assert result.items[0].id == original.id
-    async with candidate_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await VacancyRepository(session).save(changed)
-    async with candidate_sessions() as session:
+    async with db_sessions() as session:
         row = await session.get(VacancyModel, original.id)
         assert row.search_revision == row.content_revision == analysis_input_hash(changed)
         assert "java" in row.search_terms and "python" not in row.search_terms
 
 
-async def test_ranking_does_not_read_raw_html_and_keeps_source_hash(candidate_sessions, vacancy):
+async def test_ranking_does_not_read_raw_html_and_keeps_source_hash(db_sessions, vacancy):
     v = job(vacancy)
-    await bulk(candidate_sessions, [v])
+    await bulk(db_sessions, [v])
     queries = []
-    engine = candidate_sessions.kw["bind"].sync_engine
+    engine = db_sessions.kw["bind"].sync_engine
 
     def capture(conn, cursor, statement, parameters, context, executemany):
         queries.append(statement)
 
     event.listen(engine, "before_cursor_execute", capture)
     try:
-        async with candidate_sessions() as session:
+        async with db_sessions() as session:
             actual = await rank_recent(VacancyRepository(session), candidate())
         assert len(actual) == 1 and actual[0][1].retrieval
         assert not any(
@@ -490,10 +481,10 @@ async def test_ranking_does_not_read_raw_html_and_keeps_source_hash(candidate_se
         event.remove(engine, "before_cursor_execute", capture)
 
 
-async def test_fallback_and_diagnostic_mode(candidate_sessions, vacancy):
+async def test_fallback_and_diagnostic_mode(db_sessions, vacancy):
     v = job(vacancy, title="Senior Java Developer", experience="6+", description="Java")
-    await bulk(candidate_sessions, [v])
-    async with candidate_sessions() as session:
+    await bulk(db_sessions, [v])
+    async with db_sessions() as session:
         repo = VacancyRepository(session)
         assert await rank_recent(repo, candidate(experience_years=0)) == []
         assert (await rank_recent(repo, candidate(experience_years=0), include_ineligible=True))[0][
@@ -509,13 +500,13 @@ def test_parameters_are_versioned_and_bounded():
             RetrievalParameters(**values)
 
 
-async def test_index_does_not_confuse_technology_tokens_in_sql(candidate_sessions, vacancy):
+async def test_index_does_not_confuse_technology_tokens_in_sql(db_sessions, vacancy):
     cards = [
         job(vacancy, title=value, skills=[value], description=value)
         for value in ("Java", "JavaScript", "C", "C++", "C#")
     ]
-    await bulk(candidate_sessions, cards)
-    async with candidate_sessions() as session:
+    await bulk(db_sessions, cards)
+    async with db_sessions() as session:
         for card in cards:
             profile = CandidateProfile(skills={card.title: {}})
             result = await retrieve_candidates(
@@ -524,7 +515,7 @@ async def test_index_does_not_confuse_technology_tokens_in_sql(candidate_session
             assert result.items[0].id == card.id
 
 
-async def test_history_precedes_k_and_other_users_are_independent(candidate_sessions, vacancy):
+async def test_history_precedes_k_and_other_users_are_independent(db_sessions, vacancy):
     now = datetime.now(UTC)
     cards = [
         job(
@@ -534,28 +525,24 @@ async def test_history_precedes_k_and_other_users_are_independent(candidate_sess
         )
         for n in range(70)
     ]
-    await bulk(candidate_sessions, cards)
-    async with candidate_sessions.begin() as session:
+    await bulk(db_sessions, cards)
+    async with db_sessions.begin() as session:
         repo = NotificationRepository(session)
         for card in cards[:64]:
             token = await repo.claim(42, card.id)
             await repo.finish(42, card.id, token, "sent", message_id=1)
-    first = await NotificationService(
-        candidate_sessions, candidate(), chat_id=42, min_score=0
-    ).pending()
-    second = await NotificationService(
-        candidate_sessions, candidate(), chat_id=43, min_score=0
-    ).pending()
+    first = await NotificationService(db_sessions, candidate(), chat_id=42, min_score=0).pending()
+    second = await NotificationService(db_sessions, candidate(), chat_id=43, min_score=0).pending()
     assert len(first) == len(second) == 5
     assert {v.id for v, _ in first} <= {v.id for v in cards[64:]}
     assert any(v.id in {c.id for c in cards[:64]} for v, _ in second)
 
 
-async def test_explicit_days_and_profiles_do_not_share_selection(candidate_sessions, vacancy):
+async def test_explicit_days_and_profiles_do_not_share_selection(db_sessions, vacancy):
     old = job(vacancy, published_at=datetime.now(UTC) - timedelta(days=100))
     python = job(vacancy, title="Python", skills=["Python"], description="Python")
-    await bulk(candidate_sessions, [old, python])
-    async with candidate_sessions() as session:
+    await bulk(db_sessions, [old, python])
+    async with db_sessions() as session:
         repo = VacancyRepository(session)
         java = await rank_recent(repo, candidate(), limit=1)
         other = await rank_recent(repo, CandidateProfile(skills={"python": {}}), limit=1)

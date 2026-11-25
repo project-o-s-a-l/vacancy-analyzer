@@ -31,7 +31,7 @@
       "title": "Alternative",
       "type": "object"
     },
-    "Claim_Annotated_float__FieldInfo_annotation_NoneType__required_True__metadata__Ge_ge_0____PydanticGeneralMetadata_allow_inf_nan_False_____": {
+    "Claim_ExperienceYears_": {
       "additionalProperties": false,
       "properties": {
         "status": {
@@ -49,15 +49,13 @@
         "value": {
           "anyOf": [
             {
-              "minimum": 0,
-              "type": "number"
+              "$ref": "#/$defs/ExperienceYears"
             },
             {
               "type": "null"
             }
           ],
-          "default": null,
-          "title": "Value"
+          "default": null
         },
         "origin": {
           "default": "legacy_unknown",
@@ -79,8 +77,7 @@
         },
         "alternatives": {
           "items": {
-            "minimum": 0,
-            "type": "number"
+            "$ref": "#/$defs/ExperienceYears"
           },
           "title": "Alternatives",
           "type": "array"
@@ -90,7 +87,7 @@
           "default": null
         }
       },
-      "title": "Claim[Annotated[float, FieldInfo(annotation=NoneType, required=True, metadata=[Ge(ge=0), _PydanticGeneralMetadata(allow_inf_nan=False)])]]",
+      "title": "Claim[ExperienceYears]",
       "type": "object"
     },
     "Claim_JsonValue_": {
@@ -699,6 +696,10 @@
       "title": "ExperienceEpisode",
       "type": "object"
     },
+    "ExperienceYears": {
+      "minimum": 0,
+      "type": "number"
+    },
     "JsonValue": {},
     "LexicalObservation": {
       "additionalProperties": false,
@@ -816,7 +817,7 @@
           "$ref": "#/$defs/Claim_Literal__required____preferred____context____not_required___"
         },
         "years_min": {
-          "$ref": "#/$defs/Claim_Annotated_float__FieldInfo_annotation_NoneType__required_True__metadata__Ge_ge_0____PydanticGeneralMetadata_allow_inf_nan_False_____"
+          "$ref": "#/$defs/Claim_ExperienceYears_"
         },
         "evidence": {
           "items": {
@@ -904,7 +905,7 @@
           "$ref": "#/$defs/Claim_Literal__beginner____intermediate____advanced___"
         },
         "years": {
-          "$ref": "#/$defs/Claim_Annotated_float__FieldInfo_annotation_NoneType__required_True__metadata__Ge_ge_0____PydanticGeneralMetadata_allow_inf_nan_False_____"
+          "$ref": "#/$defs/Claim_ExperienceYears_"
         },
         "last_used": {
           "$ref": "#/$defs/Claim_date_"

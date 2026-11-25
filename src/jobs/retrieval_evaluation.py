@@ -9,6 +9,7 @@ import tracemalloc
 from collections import defaultdict
 from pathlib import Path
 
+from domain.contracts import source_file_hash
 from domain.exchange_rates import current_rates
 from domain.retrieval import RetrievalParameters
 from domain.vacancy_analysis import analysis_input_hash, is_fresh
@@ -297,14 +298,10 @@ async def evaluate_retrieval(bundle: Path, *, ks=(16, 32, 64, 128, 200, 500)):
         "implementation_hash": payload_hash(
             {
                 "matching": implementation_hash(),
-                "selector": hashlib.sha256(
-                    (Path(__file__).parent / "candidates.py").read_bytes()
-                ).hexdigest(),
-                "sql": hashlib.sha256(
-                    (
-                        Path(__file__).parents[1] / "storage/repositories/candidate_repository.py"
-                    ).read_bytes()
-                ).hexdigest(),
+                "selector": source_file_hash(Path(__file__).parent / "candidates.py"),
+                "sql": source_file_hash(
+                    Path(__file__).parents[1] / "storage/repositories/candidate_repository.py"
+                ),
             }
         ),
         "criteria_status": "engineering targets; independent human acceptance remains pending",

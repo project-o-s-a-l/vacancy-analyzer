@@ -65,7 +65,7 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
             select(VacancyModel.id)
             .where(
                 VacancyModel.source == source_name,
-                VacancyModel.availability.in_(["active", "unknown"]),
+                VacancyModel.availability.in_(["active", "unknown", "out_of_scope"]),
                 VacancyModel.valid_until <= now,
             )
             .order_by(VacancyModel.valid_until, VacancyModel.id)
@@ -93,7 +93,7 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
                     )
                     .where(
                         VacancyModel.source == source_name,
-                        VacancyModel.availability.in_(["active", "unknown"]),
+                        VacancyModel.availability.in_(["active", "unknown", "out_of_scope"]),
                         or_(VacancyModel.valid_until.is_(None), VacancyModel.valid_until > now),
                         or_(
                             VacancyModel.last_checked_at.is_(None),
@@ -163,7 +163,9 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
             row.last_check_attempt_at = now
             checked += 1
             if state is not None:
-                row.availability, row.check_error = state, error
+                if state != "unknown" or row.availability != "out_of_scope":
+                    row.availability = state
+                row.check_error = error
                 row.next_check_at = now + timedelta(hours=1)
                 if state == "closed":
                     row.last_checked_at = now
@@ -184,10 +186,13 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
                 vacancy = vacancy.model_copy(update={"collected_at": now})
                 await VacancyRepository(session).save(vacancy, seen_in_search=False)
                 await session.refresh(row)
+                matches = getattr(source, "matches_catalog", None)
+                if matches and not vacancy.archived and not matches(vacancy):
+                    row.availability = "out_of_scope"
                 row.next_check_at = now + timedelta(seconds=interval)
                 if (
                     analysis_pipeline
-                    and not vacancy.archived
+                    and row.availability == "active"
                     and (vacancy.valid_until is None or vacancy.valid_until > now)
                 ):
                     await schedule_collected(
@@ -198,7 +203,7 @@ async def _check_catalog(source, sessions, *, limit, interval, analysis_pipeline
                     "catalog.checked",
                     source_vacancy_id=source_id,
                     vacancy_id=key,
-                    result="closed" if vacancy.archived else "success",
+                    result=row.availability if row.availability != "active" else "success",
                     code="source_closed" if vacancy.archived else None,
                 )
         if stop:

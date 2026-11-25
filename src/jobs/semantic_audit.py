@@ -57,13 +57,13 @@ def _summary(cases):
 
 
 def _implementation_hash():
+    from domain.contracts import source_file_hash
+
     return payload_hash(
         {
             "features": feature_contract(),
-            "selector": hashlib.sha256(
-                (Path(__file__).parent / "candidates.py").read_bytes()
-            ).hexdigest(),
-            "audit": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "selector": source_file_hash(Path(__file__).parent / "candidates.py"),
+            "audit": source_file_hash(Path(__file__)),
         }
     )
 

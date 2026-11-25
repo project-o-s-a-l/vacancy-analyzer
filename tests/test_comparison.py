@@ -4,7 +4,6 @@ from datetime import date, timedelta
 from uuid import uuid4
 
 import pytest
-from test_saved_selections import selection_sessions  # noqa: F401
 
 from bot.cards import render_card
 from domain import CandidateProfile
@@ -250,12 +249,12 @@ def test_profession_independent_role_exposure(vacancy, now, title):
     assert compare_facts(v, p, now=now).features["role_exposure"] > 0
 
 
-async def test_sql_memory_cli_gap_parity_and_pool_refill(selection_sessions, vacancy, now):  # noqa: F811
+async def test_sql_memory_cli_gap_parity_and_pool_refill(db_sessions, vacancy, now):
     p = person(now, 1)
     p.preferences.positions = ["Разработчик"]
     bad = job(vacancy, now, "Требования: Python обязателен. Опыт с Python от 3 лет.")
     good = job(vacancy, now, "Требования: Python обязателен.")
-    async with selection_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         repo = VacancyRepository(session)
         for v in (bad, good):
             await repo.save(v)

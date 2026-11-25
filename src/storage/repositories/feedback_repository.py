@@ -3,7 +3,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domain import Vacancy
@@ -180,7 +180,7 @@ class FeedbackRepository:
                 vacancy_id=vacancy_id,
                 action=action,
                 reason=reason,
-                exposure_context=deepcopy(snapshot.context),
+                snapshot_id=snapshot.id,
                 action_context=deepcopy(action_context),
                 created_at=now,
             )
@@ -207,16 +207,6 @@ class FeedbackRepository:
             result="success",
         )
         return replace(_state(vacancy_id, row), advance_feed=advance)
-
-    async def suppressed_ids(self, user_id: int) -> set[UUID]:
-        return set(
-            await self.session.scalars(
-                select(FeedbackModel.vacancy_id).where(
-                    FeedbackModel.user_id == user_id,
-                    or_(FeedbackModel.interest == "dislike", FeedbackModel.applied.is_(True)),
-                )
-            )
-        )
 
     async def counts(self, user_id: int) -> dict[str, int]:
         row = (

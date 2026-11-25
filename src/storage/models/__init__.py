@@ -3,6 +3,7 @@ from sqlalchemy import event
 from storage.models.collection import CollectionBudget, CollectionDirection, CollectionObservation
 from storage.models.exposure import ExposureModel
 from storage.models.feedback import FeedbackEventModel, FeedbackModel
+from storage.models.inbox import TelegramUpdate
 from storage.models.inference import ExtractionCache, InferenceGate
 from storage.models.job import BackgroundJob
 from storage.models.learning import LearningAccess, LearningArtifact, SelectionObservation
@@ -20,6 +21,7 @@ event.listen(Base.metadata, "before_create", install_metadata)
 event.listen(Base.metadata, "after_create", install_serving)
 
 __all__ = [
+    "TelegramUpdate",
     "ProfileEditModel",
     "LearningAccess",
     "LearningArtifact",

@@ -52,6 +52,8 @@ async def retrieve_candidates(
     days=None,
     category=None,
     include_ineligible=False,
+    history_owner=None,
+    release_read=None,
     excluded_ids=(),
     excluded_keys=(),
     candidate_source=None,
@@ -79,6 +81,8 @@ async def retrieve_candidates(
         excluded_ids=set(excluded_ids),
         excluded_keys=set(excluded_keys),
     )
+    if history_owner is not None:
+        options["history_owner"] = history_owner
     stats = dict(
         scanned_count=0,
         required_excluded=0,
@@ -101,6 +105,10 @@ async def retrieve_candidates(
         residual_ms=0.0,
         repair_ms=0.0,
     )
+    if history_owner is not None:
+        # IDs stay in SQL. Their full count would require scanning the owner's history.
+        stats.pop("history_ids")
+        stats.pop("history_groups")
     if catalog_diagnostics:
         stats.update(await source.diagnostic_counts(profile, **options))
 
@@ -121,6 +129,8 @@ async def retrieve_candidates(
                 lexical_score=evidence.lexical_score, copy_count=1
             )
 
+    if release_read is not None:
+        await release_read()
     await compute(repair)
     stats["repair_count"] = len(repairs)
     stats["detail_count"] += len(repairs)
@@ -235,6 +245,8 @@ async def retrieve_candidates(
                     if len(result.items) >= params.k:
                         break
 
+            if release_read is not None:
+                await release_read()
             await compute(residual)
             stats["residual_ms"] += (perf_counter() - started) * 1000
     result.items.sort(key=lambda v: selected_orders[v.id])

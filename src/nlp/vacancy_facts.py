@@ -20,7 +20,7 @@ from domain.professional import (
 from domain.requirements import RequirementEvidence, SkillRequirement
 from nlp.analysis_identity import current_vacancy_analysis
 from nlp.experience import experience_bounds, experience_from_quote
-from nlp.experience_requirement import _EMPLOYER, EXPERIENCE_MINIMUM
+from nlp.experience_requirement import _EMPLOYER, source_minimum
 from nlp.extraction import canonical_skill, extract_skills, skill_key
 from nlp.professional_facts import _assert, _identity, vacancy_fact_input_revision
 from nlp.qualifications import compare_qualifications, is_qualification
@@ -313,7 +313,7 @@ def extract_vacancy_facts(vacancy, *, legacy=False):
                 entry = experience.setdefault((target, status), {"values": set(), "evidence": []})
                 entry["values"].update(experience_bounds(line))
                 entry["evidence"].append(evidence("description", line))
-    hh = EXPERIENCE_MINIMUM.get(vacancy.experience or "")
+    hh = source_minimum(vacancy.experience)
     if hh is not None:
         reqs.append(
             Requirement(

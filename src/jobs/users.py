@@ -3,6 +3,7 @@ from dataclasses import replace
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from jobs.catalog_freshness import RECHECK_AFTER
 from jobs.feedback import FeedbackService
 from jobs.notify import NotificationService
 from jobs.profile_editor import ProfileEditor
@@ -35,9 +36,11 @@ from storage.models import (
     SearchPlanModel,
     SelectionObservation,
     ServingRevisionModel,
+    TelegramUpdate,
     TelegramUserModel,
     VacancyModel,
 )
+from storage.models.selection import RecommendationLease
 from storage.repositories import VacancyRepository
 from storage.repositories.user_repository import RegisteredUser, UserRepository
 
@@ -50,6 +53,7 @@ class UserService:
         top: int = 5,
         min_score: float = 50,
         fresh_days: int | None = None,
+        check_interval=RECHECK_AFTER,
         resume_analyzer: OllamaResumeAnalyzer | None = None,
         queued_resumes: bool = False,
         resume_model: str = "rules",
@@ -61,6 +65,7 @@ class UserService:
         self.top = top
         self.min_score = min_score
         self.fresh_days = fresh_days
+        self.check_interval = check_interval
         self.ranker_policy = ranker_policy
         self.saved_selections_enabled = saved_selections_enabled
         self.feedback = FeedbackService(sessions)
@@ -90,6 +95,8 @@ class UserService:
                     VacancyModel.facts_input_revision,
                     VacancyModel.projection_revision,
                     VacancyModel.projection_contract,
+                    VacancyModel.locations,
+                    VacancyModel.source_observed_at,
                 ).limit(1)
             )
             await session.execute(select(FactRevisionModel.revision).limit(1))
@@ -103,11 +110,15 @@ class UserService:
                 ).limit(1)
             )
             await session.execute(select(ServingRevisionModel.revision).limit(1))
+            await session.execute(select(TelegramUpdate.update_id).limit(1))
+            await session.execute(select(RecommendationLease.owner_id).limit(1))
             await session.execute(select(ExposureModel.id).limit(1))
             await session.execute(select(TelegramUserModel.user_id).limit(1))
             await session.execute(select(TelegramUserModel.history_reset_token).limit(1))
             await session.execute(select(FeedbackModel.user_id).limit(1))
-            await session.execute(select(FeedbackEventModel.action_context).limit(1))
+            await session.execute(
+                select(FeedbackEventModel.action_context, FeedbackEventModel.snapshot_id).limit(1)
+            )
             await session.execute(select(NotificationModel.exposure_context).limit(1))
             await session.execute(
                 select(NotificationModel.history_reset_at, NotificationModel.awaiting_rating).limit(
@@ -236,6 +247,7 @@ class UserService:
             wait_for_rating=wait_for_rating,
             min_score=self.min_score,
             fresh_days=self.fresh_days,
+            check_interval=self.check_interval,
             ranker_policy=self.ranker_policy,
             saved_selections_enabled=self.saved_selections_enabled,
             expected_profile_revision=user.revision,
@@ -247,4 +259,6 @@ class UserService:
         if user is None:
             raise ValueError("Сначала зарегистрируйтесь командой /start")
         async with self.sessions() as session:
-            return await analyze_skill_gap(VacancyRepository(session), profile=user.profile)
+            return await analyze_skill_gap(
+                VacancyRepository(session), profile=user.profile, release_read=True
+            )

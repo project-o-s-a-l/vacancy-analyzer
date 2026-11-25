@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from datetime import timedelta
 
 from aiogram import Bot
 from aiogram.client.session.aiohttp import AiohttpSession
@@ -73,6 +74,7 @@ async def _run_bot(settings: Settings) -> None:
             sessions,
             top=settings.telegram_top,
             min_score=settings.telegram_min_score,
+            check_interval=timedelta(seconds=settings.hh_check_interval),
             queued_resumes=True,
             profile_editor_enabled=getattr(settings, "profile_editor_enabled", True),
             ranker_policy=RankerPolicy.from_settings(settings),

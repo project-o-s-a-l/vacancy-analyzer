@@ -45,6 +45,7 @@ async def backfill_vacancies(sessions, *, batch_size=100, restart=False, model=N
             as_of = datetime.fromisoformat(cursor["as_of"])
             active = and_(
                 V.archived.is_(False),
+                V.availability.in_(("active", "unknown")),
                 V.published_at <= as_of,
                 or_(V.valid_until.is_(None), V.valid_until > as_of),
             )

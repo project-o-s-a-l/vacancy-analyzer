@@ -8,49 +8,33 @@ import pytest
 from jobs.cli import parser
 
 
-@pytest.mark.parametrize(
-    "relative",
-    [
-        "jobs/users.py",
-        "jobs/profiles.py",
-        "jobs/collect.py",
-        "jobs/collection_scheduler.py",
-        "jobs/collection_runtime.py",
-        "jobs/vacancy_analysis.py",
-        "nlp/ollama.py",
-        "jobs/notify.py",
-        "jobs/resumes.py",
-        "jobs/rank.py",
-        "jobs/matching_dataset.py",
-        "jobs/matching_labels.py",
-        "jobs/matching_audit.py",
-        "jobs/ranker_training.py",
-        "scoring/text_features.py",
-        "scoring/linear_ranker.py",
-        "scoring/matching_evaluation.py",
-        "scoring/baseline.py",
-        "domain/matching.py",
-        "domain/matching_dataset.py",
-        "domain/ranker.py",
-    ],
-)
-def test_business_logic_has_no_telegram_dependencies(relative):
-    path = Path(__file__).parents[1] / "src" / relative
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    modules = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
-            modules.append(node.module)
-        elif isinstance(node, ast.Import):
-            modules.extend(alias.name for alias in node.names)
-    assert not any(name.split(".")[0] in {"bot", "aiogram"} for name in modules)
+def test_business_logic_has_no_telegram_dependencies():
+    src = Path(__file__).parents[1] / "src"
+    cli_adapters = {src / "jobs/cli.py", src / "jobs/resume_cli.py"}
+    violations = []
+    for package in ("domain", "jobs", "nlp", "scoring"):
+        for path in sorted((src / package).rglob("*.py")):
+            if path in cli_adapters:
+                continue
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    modules = [node.module]
+                elif isinstance(node, ast.Import):
+                    modules = [alias.name for alias in node.names]
+                else:
+                    continue
+                for module in modules:
+                    if module.split(".")[0] in {"bot", "aiogram"}:
+                        violations.append(f"{path.relative_to(src)}:{node.lineno} imports {module}")
+    assert not violations, violations
 
 
-def test_market_and_chart_commands_are_removed():
-    choices = parser()._subparsers._group_actions[0].choices
-    assert "market" not in choices
-    with pytest.raises(SystemExit):
-        parser().parse_args(["market", "--html", "report.html"])
+def test_retired_cli_commands_are_rejected():
+    cli = parser()
+    for command in ("market", "demo", "telegram-preview"):
+        with pytest.raises(SystemExit) as error:
+            cli.parse_args([command])
+        assert error.value.code == 2, command
 
 
 def test_normal_cli_does_not_load_ml_dependencies():

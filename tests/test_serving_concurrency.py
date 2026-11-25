@@ -6,74 +6,60 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bot.rate_limits import TelegramLimits
-from jobs.owner_queue import OwnerQueue, QueueFull
 from jobs.serving_compute import compute
 
 
-async def test_owner_fifo_fairness_and_bounded_mailboxes():
-    queue = OwnerQueue(workers=2, capacity=5, per_owner=3)
-    entered, release = asyncio.Event(), asyncio.Event()
-    order = []
+async def test_committed_updates_survive_restart_preserve_order_and_expire_private_data(
+    db_sessions,
+):
+    from datetime import UTC, datetime, timedelta
 
-    async def slow():
-        entered.set()
-        await release.wait()
-        order.append("upload")
+    from test_bot import command_update
 
-    async def command(name):
-        order.append(name)
+    from bot.update_inbox import UpdateInbox
+    from storage.models import TelegramUpdate
 
-    first = queue.submit(1, slow)
-    await entered.wait()
-    second = queue.submit(1, lambda: command("confirm"))
-    third = queue.submit(1, lambda: command("latest"))
-    with pytest.raises(QueueFull):
-        queue.submit(1, lambda: command("overflow"))
-    other = queue.submit(2, lambda: command("other"))
-    await asyncio.wait_for(other, 1)
-    assert order == ["other"] and not second.done()
-    release.set()
-    await asyncio.gather(first, second, third)
-    await queue.close()
-    assert order == ["other", "upload", "confirm", "latest"]
-    assert not queue.owners and queue.count == 0
+    inbox = UpdateInbox(db_sessions, 19)
+    event = command_update("/start")
+    assert await inbox.receive(42, event) == "accepted"
+    assert await inbox.receive(42, event) == "duplicate"
+    for key in range(2, 9):
+        assert await inbox.receive(42, event.model_copy(update={"update_id": key})) == "accepted"
+    assert await inbox.receive(42, event.model_copy(update={"update_id": 9})) == "overflow"
+    other = command_update("/start", user_id=99, chat_id=99).model_copy(update={"update_id": 10})
+    assert await inbox.receive(99, other) == "accepted"
 
+    restarted = UpdateInbox(db_sessions, 19)
+    first = await restarted.claim()
+    second = await restarted.claim()
+    async with db_sessions() as session:
+        claimed = await session.get(TelegramUpdate, (19, 1))
+        assert claimed.payload is None and claimed.owner_id == 42
+    assert (first[0], second[0]) == (1, 10) and await restarted.claim() is None
+    assert await restarted.change(1, first[3], ready_at=datetime.now(UTC) - timedelta(seconds=1))
+    interrupted = await restarted.claim()
+    assert interrupted[-1] and interrupted[0] == 1
+    bot = SimpleNamespace(send_message=AsyncMock())
+    dispatcher = SimpleNamespace(feed_update=AsyncMock())
+    await restarted.handle(interrupted, dispatcher, bot, {})
+    dispatcher.feed_update.assert_not_called()
+    bot.send_message.assert_awaited_once()
+    assert await inbox.receive(42, event) == "duplicate"
+    next_job = await restarted.claim()
+    assert next_job[0] == 2
+    # A permanently unreachable chat must not strand the rest of its mailbox.
+    from aiogram.exceptions import TelegramForbiddenError
+    from aiogram.methods import SendMessage
 
-async def test_queue_shutdown_cancels_running_and_never_runs_waiting_commands():
-    queue = OwnerQueue(workers=1)
-    entered, cancelled = asyncio.Event(), asyncio.Event()
-
-    async def slow():
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-
-    running = queue.submit(1, slow)
-    waiting_call = AsyncMock()
-    waiting = queue.submit(1, waiting_call)
-    await entered.wait()
-    await queue.close(grace=0.01)
-    assert cancelled.is_set() and running.cancelled() and waiting.cancelled()
-    waiting_call.assert_not_called()
-    with pytest.raises(QueueFull):
-        queue.submit(2, waiting_call)
-
-
-async def test_cancel_waiting_command_does_not_break_next_command():
-    queue = OwnerQueue(workers=1)
-    release = asyncio.Event()
-    first = queue.submit(1, release.wait)
-    skipped = AsyncMock()
-    second = queue.submit(1, skipped)
-    third = queue.submit(1, AsyncMock(return_value=3))
-    second.cancel()
-    release.set()
-    await first
-    assert await third == 3
-    skipped.assert_not_called()
-    await queue.close()
+    bot.send_message.side_effect = TelegramForbiddenError(
+        method=SendMessage(chat_id=42, text="test"), message="forbidden"
+    )
+    await restarted.change(2, next_job[3], ready_at=datetime.now(UTC) - timedelta(seconds=1))
+    await restarted.handle(await restarted.claim(), dispatcher, bot, {})
+    assert (await restarted.claim())[0] == 3
+    async with db_sessions() as session:
+        done = await session.get(TelegramUpdate, (19, 1))
+        assert done.owner_id is None and done.payload is None
 
 
 async def test_cpu_cancel_keeps_slot_until_real_thread_finishes():

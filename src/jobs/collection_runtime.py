@@ -7,7 +7,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
 import httpx
+from asyncpg.exceptions import CannotConnectNowError, PostgresConnectionError
 from sqlalchemy import text, update
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as PoolTimeout
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from collectors.base import SearchQuery
@@ -238,10 +241,13 @@ def collection_sources(settings, query, selected):
 
 async def _background_worker(settings: Settings, engine: AsyncEngine) -> None:
     with operation("collection"):
-        await _run_background_worker(settings, engine)
+        delay = 5
+        while await _run_background_worker(settings, engine):
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 300)
 
 
-async def _run_background_worker(settings: Settings, engine: AsyncEngine) -> None:
+async def _run_background_worker(settings: Settings, engine: AsyncEngine) -> bool:
     try:
         query = (
             SearchQuery(category="it")
@@ -258,6 +264,42 @@ async def _run_background_worker(settings: Settings, engine: AsyncEngine) -> Non
             code="already_running",
             result="skipped",
         )
+        return True
+    except (
+        PostgresConnectionError,
+        CannotConnectNowError,
+        DBAPIError,
+        PoolTimeout,
+        ConnectionError,
+        TimeoutError,
+        OSError,
+    ) as exc:
+        if isinstance(exc, DBAPIError):
+            code = getattr(exc.orig, "sqlstate", "") or ""
+            transient = (
+                exc.connection_invalidated
+                or code.startswith(("08", "40", "53"))
+                or code in {"55P03", "57P01", "57P02", "57P03"}
+            )
+            if code and not transient:
+                emit_event(
+                    logger,
+                    "collection.stopped",
+                    level=logging.ERROR,
+                    error=exc,
+                    code="unexpected_error",
+                    result="stopped",
+                )
+                return False
+        emit_event(
+            logger,
+            "collection.stopped",
+            level=logging.WARNING,
+            error=exc,
+            code="infrastructure_unavailable",
+            result="deferred",
+        )
+        return True
     except (CollectionStopped, VacancyParseError) as exc:
         emit_event(
             logger,
@@ -291,6 +333,8 @@ async def _run_background_worker(settings: Settings, engine: AsyncEngine) -> Non
             code="unexpected_error",
             result="stopped",
         )
+
+    return False
 
 
 @asynccontextmanager

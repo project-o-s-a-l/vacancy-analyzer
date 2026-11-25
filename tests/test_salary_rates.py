@@ -63,15 +63,10 @@ def test_official_quotes_cached_after_restart_and_during_outage(tmp_path, monkey
     assert RateCache(tmp_path / "empty.xml").load().convert(1, "EUR", "RUB") is None
 
 
-@pytest.fixture(params=["sessions", pytest.param("postgres_sessions", marks=pytest.mark.postgres)])
-def salary_sessions(request):
-    return request.getfixturevalue(request.param)
-
-
 async def test_conversion_in_shortlist_cache_and_final_delivery(
-    salary_sessions, vacancy, profile, tmp_path, monkeypatch
+    db_sessions, vacancy, profile, tmp_path, monkeypatch
 ):
-    sessions = salary_sessions
+    sessions = db_sessions
     profile.preferences.currency = "EUR"
     profile.preferences.salary_min = 1000
     profile.preferences.salary_required = True

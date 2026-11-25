@@ -82,7 +82,8 @@ async def test_sample_filters_before_limit_and_does_not_select_raw(session, vaca
     assert truncated
     assert sample[0].published_at.tzinfo is not None
     assert "vacancies.raw_payload," not in queries[0]
-    assert "professional_facts" in queries[0]  # Same residual facts as ranking.
+    assert any("professional_facts" in sql for sql in queries[1:])
+    assert all("vacancies.raw_payload," not in sql for sql in queries)
     sample, truncated = await repo.skill_gap_sample(
         since=now - timedelta(days=30), until=now, limit=2
     )
@@ -184,14 +185,13 @@ async def test_unknown_skills_and_empty_selection_do_not_count_as_covered(sessio
     assert "недостаточно" in render_skill_gap(empty)
 
 
-async def test_global_sample_truncation_is_visible(session, vacancy, now):
+async def test_direction_precedes_sample_limit(session, vacancy, now):
     repo = VacancyRepository(session)
     await seed(repo, vacancy, now, title="Бухгалтер", published_at=now - timedelta(days=2))
     await seed(repo, vacancy, now, title="Водитель")
     report = await analyze_skill_gap(repo, now=now, profile=candidate(), limit=1)
-    assert report.scope.truncated and report.scope.examined == 1
-    assert report.scope.vacancies == 0
-    assert "ограничена" in render_skill_gap(report)
+    assert not report.scope.truncated and report.scope.examined == 1
+    assert report.scope.vacancies == 1
 
 
 @pytest.mark.parametrize(
@@ -274,3 +274,19 @@ async def test_postgres_analysis_projection_and_gap(postgres_sessions, vacancy, 
         report = await analyze_skill_gap(VacancyRepository(session), now=now, profile=candidate())
     assert report.scope.vacancies == 1
     assert report.opportunities[0].skill == "расчёт зарплат"
+
+
+async def test_direction_unites_translated_titles_and_cross_source_copies(session, vacancy, now):
+    repo = VacancyRepository(session)
+    one = await seed(
+        repo,
+        vacancy,
+        now,
+        title="Инженер по тестированию",
+        company="Testing LLC",
+        description="Тестирование пользовательских сценариев и интеграций.",
+    )
+    other = one.model_copy(update={"id": uuid4(), "source": "habr_career", "source_id": "copy"})
+    await repo.save(other)
+    report = await analyze_skill_gap(repo, now=now, profile=candidate("QA Engineer"))
+    assert report.scope.examined == report.scope.vacancies == 1

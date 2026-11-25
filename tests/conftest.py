@@ -71,6 +71,16 @@ async def session(sessions):
         yield session
 
 
+@pytest.fixture(
+    params=[
+        pytest.param("sessions", id="sqlite"),
+        pytest.param("postgres_sessions", id="postgres", marks=pytest.mark.postgres),
+    ]
+)
+def db_sessions(request):
+    return request.getfixturevalue(request.param)
+
+
 @pytest.fixture
 async def postgres_sessions():
     database_url = os.environ.get("TEST_DATABASE_URL")

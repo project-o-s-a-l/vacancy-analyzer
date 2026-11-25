@@ -25,6 +25,6 @@ def build_dispatcher(service: UserService) -> Dispatcher:
     async def fallback(message: Message) -> None:
         await message.answer(HELP, reply_markup=main_keyboard(), parse_mode=None)
 
-    dispatcher = OrderedDispatcher()
+    dispatcher = OrderedDispatcher(service.sessions)
     dispatcher.include_router(router)
     return dispatcher

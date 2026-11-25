@@ -28,6 +28,7 @@ from observability.repeats import RepeatLimiter
 
 MAX_RECORD_BYTES = 4096
 EVENTS = {
+    "serving.inbox_unavailable": "Очередь команд временно недоступна",
     "serving.command_finished": "Команда обработана",
     "serving.loop_health": "Задержка цикла событий",
     "delivery.http_finished": "Сетевой запрос Telegram завершён",
@@ -314,6 +315,8 @@ def _fields(values):
         "catalog_counts_sampled",
         "history_ids",
         "history_groups",
+        "history_has_entries",
+        "freshness_checks_requested",
         "candidate_cache_hit",
     ):
         value = values.get(key)

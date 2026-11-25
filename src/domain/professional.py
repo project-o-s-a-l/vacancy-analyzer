@@ -13,6 +13,7 @@ FACT_POLICY = "facts-conservative-v1"
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Name = Annotated[str, Field(min_length=1, max_length=1000)]
 Origin = Literal["user_confirmed", "machine_proposed", "source", "legacy_unknown"]
+type ExperienceYears = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
 def digest(value) -> str:
@@ -93,7 +94,7 @@ class NamedFact(StrictModel):
 class SkillFact(NamedFact):
     kind: Literal["skill"] = "skill"
     level: Claim[Literal["beginner", "intermediate", "advanced"]] = Field(default_factory=Claim)
-    years: Claim[Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(default_factory=Claim)
+    years: Claim[ExperienceYears] = Field(default_factory=Claim)
     last_used: Claim[date] = Field(default_factory=Claim)
 
     model_config = ConfigDict(extra="forbid", validate_default=True)
@@ -163,9 +164,7 @@ class Requirement(StrictModel):
     importance: Claim[Literal["required", "preferred", "context", "not_required"]] = Field(
         default_factory=Claim
     )
-    years_min: Claim[Annotated[float, Field(ge=0, allow_inf_nan=False)]] = Field(
-        default_factory=Claim
-    )
+    years_min: Claim[ExperienceYears] = Field(default_factory=Claim)
     evidence: list[Evidence] = Field(default_factory=list)
 
     @model_validator(mode="after")

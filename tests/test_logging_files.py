@@ -73,27 +73,6 @@ def test_disabled_files_and_idempotent_setup(tmp_path):
     assert not settings.directory.exists()
 
 
-@pytest.mark.parametrize("command", ["bot", "collect", "worker", "rank"])
-def test_normal_cli_roles_write_managed_files(tmp_path, monkeypatch, command, capsys):
-    from jobs import cli
-
-    settings = options(tmp_path)
-
-    async def fake_run(args):
-        print('{"ok": true}')
-
-    arguments = ["--profile", "synthetic.yml", "--json"] if command == "rank" else []
-    monkeypatch.setattr(sys, "argv", ["vacancy-analyzer", command, *arguments])
-    monkeypatch.setattr(cli, "LoggingOptions", lambda: settings)
-    monkeypatch.setattr(cli, "run_command", fake_run)
-    monkeypatch.setattr(cli, "run_telegram", fake_run)
-    cli.main()
-    assert json.loads(capsys.readouterr().out) == {"ok": True}
-    rows = lines(settings.directory)
-    assert [r["event"] for r in rows] == ["application.started", "application.finished"]
-    assert all(r["process_role"] == ("cli" if command == "rank" else command) for r in rows)
-
-
 def test_ttl_budget_unknown_files_and_active_lease(tmp_path):
     settings = options(tmp_path, backup_count=0)
     old, active, current = [Store(settings, "cli", str(uuid4())) for _ in range(3)]

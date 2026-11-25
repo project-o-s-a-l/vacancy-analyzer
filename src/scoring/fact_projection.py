@@ -4,7 +4,7 @@ from domain.professional import digest
 from nlp.professional_facts import vacancy_fact_input_revision
 from scoring.retrieval import tokens
 
-PROJECTION_VERSION = "fact-lexical-v3"
+PROJECTION_VERSION = "fact-lexical-v4"
 
 
 def projection_contract():
@@ -34,7 +34,7 @@ def fact_projection(vacancy, facts):
     # Preserve lexical-v1 wire shape/weights. Independent projection identity binds facts.
     from domain.retrieval import RETRIEVAL_VERSION
     from nlp.vacancy_document import professional_text
-    from scoring.eligibility import location_key
+    from scoring.eligibility import vacancy_location_keys
 
     names = [f.name for f in facts.facts if f.kind == "skill" and f.assertion.status == "present"]
     work = [
@@ -44,7 +44,7 @@ def fact_projection(vacancy, facts):
     ]
     return dict(
         version=RETRIEVAL_VERSION,
-        location_key=location_key(vacancy.location) if vacancy.location else None,
+        location_keys=sorted(vacancy_location_keys(vacancy)),
         title=sorted(tokens(vacancy.title)),
         skills=sorted({term for name in names for term in tokens(name)}),
         body=sorted(

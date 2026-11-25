@@ -199,6 +199,6 @@ async def test_review_slot_recovers_without_losing_delivery_history(sessions, va
         else:
             await repo.finish(42, vacancy.id, token, outcome)
         assert await repo.pending_review(42) is None
-        assert (vacancy.id in await repo.blocked_ids(42)) == (
+        assert (await session.scalar(repo.blocked_vacancies(42)) == vacancy.id) == (
             outcome in {"uncertain", "interrupted"}
         )

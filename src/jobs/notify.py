@@ -16,13 +16,18 @@ from domain.exchange_rates import use_rates
 from domain.matching import MatchResult
 from domain.serving_ranker import RankerPolicy
 from domain.vacancy_duplicates import vacancy_duplicate_key
-from jobs.catalog_freshness import available_for_delivery
+from jobs.catalog_freshness import RECHECK_AFTER, available_for_delivery
 from jobs.exchange_rates import rates_for
 from jobs.feedback_context import delivery_context
 from jobs.rank import rank_recent
 from jobs.recommendations import recommend
 from jobs.saved_selections import vacancy_revision
-from jobs.serving_compute import RecommendationBusy, bounded_recommendations, compute
+from jobs.serving_compute import (
+    RecommendationBusy,
+    bounded_recommendations,
+    compute,
+    owner_selection,
+)
 from observability import bind_context, emit_event, operation
 from observability.actions import observed
 from scoring.retrieval import retrieval_eligibility
@@ -70,6 +75,7 @@ class NotificationService:
         wait_for_rating: bool = False,
         min_score: float = 50,
         fresh_days: int | None = None,
+        check_interval=RECHECK_AFTER,
         ranker_policy: RankerPolicy | None = None,
         saved_selections_enabled: bool = True,
         expected_profile_revision: int | None = None,
@@ -86,6 +92,7 @@ class NotificationService:
         if fresh_days is not None and fresh_days < 1:
             raise ValueError("Invalid freshness window")
         self.fresh_days = fresh_days
+        self.check_interval = check_interval
         self.ranker_policy = ranker_policy or RankerPolicy()
         self.saved_selections_enabled = saved_selections_enabled
         self.expected_profile_revision = expected_profile_revision
@@ -132,40 +139,19 @@ class NotificationService:
     async def _select(self) -> tuple[list[tuple[Vacancy, MatchResult]], str | None]:
         started = time.monotonic()
         diagnostics = {}
-        async with self.sessions.begin() as session:
-            if session.get_bind().dialect.name == "postgresql":
-                from sqlalchemy import text
-
-                if not await session.scalar(
-                    text(
-                        "SELECT pg_try_advisory_xact_lock(hashtextextended("
-                        "current_schema() || ':recommend:' || :owner, 0))"
-                    ),
-                    {"owner": str(self.chat_id)},
-                ):
-                    raise RecommendationBusy()
+        async with owner_selection(self.sessions, self.chat_id), self.sessions() as session:
             current_user = await session.get(
                 TelegramUserModel, self.chat_id, populate_existing=True
             )
             if not await self._profile_current(session, current_user):
                 return [], "Профиль изменился во время подбора. Запустите /latest ещё раз."
-            blocked = await NotificationRepository(session).blocked_ids(self.chat_id)
-            blocked.update(await FeedbackRepository(session).suppressed_ids(self.chat_id))
-            blocked_keys = await NotificationRepository(session).blocked_duplicate_keys(
-                self.chat_id
-            )
-            if blocked:
-                from storage.repositories.candidate_repository import CandidateRepository
-
-                blocked_keys.update(
-                    await CandidateRepository(session).duplicate_keys_for_ids(blocked)
-                )
+            await session.commit()
             recommendation = await recommend(
                 VacancyRepository(session),
                 self.profile,
                 days=self.fresh_days,
-                excluded_ids=blocked,
-                excluded_keys=blocked_keys,
+                history_owner=self.chat_id,
+                release_read=session.commit,
                 ranker_policy=self.ranker_policy,
                 cache_owner=self.chat_id if self.saved_selections_enabled else None,
                 diagnostics=diagnostics,
@@ -176,13 +162,23 @@ class NotificationService:
             # A diagnostic-only lookup distinguishes "already sent" from no
             # suitable active candidates, without letting history consume Top-K.
             had_blocked = False
-            if not ranking and (blocked or blocked_keys):
+            if not ranking:
+                history = CandidateRepository.owner_history(self.chat_id)
+                has_history = await session.scalar(
+                    select(history[0].exists() | history[1].exists())
+                )
+                diagnostics["history_has_entries"] = int(has_history)
+            if not ranking and has_history:
                 if diagnostics.get("blocked_probe_known"):
                     had_blocked = bool(diagnostics["blocked_probe_has_candidate"])
                 else:
                     with bind_context(stage="blocked_probe"):
                         probe = await rank_recent(
-                            VacancyRepository(session), self.profile, days=self.fresh_days, limit=1
+                            VacancyRepository(session),
+                            self.profile,
+                            days=self.fresh_days,
+                            limit=1,
+                            release_read=session.commit,
                         )
                     had_blocked = bool(probe)
                     if self.saved_selections_enabled:
@@ -191,6 +187,7 @@ class NotificationService:
                         await remember_blocked_probe(
                             session, self.chat_id, probe, days=self.fresh_days
                         )
+            await session.commit()
         unseen, selected, displayed = (
             recommendation.unseen,
             recommendation.admitted,
@@ -201,7 +198,14 @@ class NotificationService:
             user = await session.get(TelegramUserModel, self.chat_id, populate_existing=True)
             if not await self._profile_current(session, user):
                 return [], "Профиль изменился во время подбора. Запустите /latest ещё раз."
-            available = await available_for_delivery(session, [v.id for v, _ in displayed])
+            overdue = set()
+            available = await available_for_delivery(
+                session,
+                [v.id for v, _ in displayed],
+                interval=self.check_interval,
+                overdue=overdue,
+                history_owner=self.chat_id,
+            )
             await VacancyRepository(session).attach_source_links([v for v, _ in displayed])
         changed = any(v.id not in available for v, _ in displayed)
         displayed = [(v, m) for v, m in displayed if v.id in available]
@@ -233,6 +237,7 @@ class NotificationService:
             epoch=self.expected_owner_epoch,
             ranking=ranking,
             displayed=displayed,
+            overdue_count=len(overdue),
             code=code,
             latency_ms=(time.monotonic() - started) * 1000,
         )
@@ -242,6 +247,7 @@ class NotificationService:
             result="success" if displayed else "skipped",
             code=code,
             **diagnostics,
+            freshness_checks_requested=len(overdue),
             skipped_count=post_excluded,
             below_threshold_count=len(unseen) - len(selected),
             selected_count=len(displayed),
@@ -405,8 +411,16 @@ class NotificationService:
         def skip(code):
             emit_event(logger, "delivery.skipped", result="skipped", code=code)
 
+        # These inputs are immutable for this selection. Revalidate their revisions
+        # under the owner lock before recording a claim.
+        checked_at = datetime.now(UTC)
+        eligible = await compute(retrieval_eligibility, vacancy, self.profile, checked_at)
+        if not eligible.eligible:
+            skip("candidate_changed")
+            return "skipped"
+        ranking_context = await compute(shown_context, vacancy, self.profile, match, rank)
+        selected_revision = vacancy_revision(vacancy)
         async with self.sessions.begin() as session:
-            # Same owner lock and short transaction as before; no network under a DB lock.
             user = await session.get(
                 TelegramUserModel, self.chat_id, with_for_update=True, populate_existing=True
             )
@@ -422,30 +436,23 @@ class NotificationService:
                 return "skipped"
             current = CandidateRepository.vacancy(rows[0])
             now = datetime.now(UTC)
-            if current.id not in await available_for_delivery(session, [current.id], now=now):
+            if current.id not in await available_for_delivery(
+                session, [current.id], now=now, interval=self.check_interval
+            ):
                 skip("candidate_changed")
                 return "skipped"
             from domain.vacancy_analysis import is_fresh
 
             if (
-                vacancy_revision(current) != vacancy_revision(vacancy)
+                vacancy_revision(current) != selected_revision
+                or checked_at.date() != now.date()
                 or not is_fresh(current, now=now, days=self.fresh_days)
-                or not (await compute(retrieval_eligibility, current, self.profile, now)).eligible
             ):
                 skip("candidate_changed")
                 return "skipped"
-            suppressed = await FeedbackRepository(session).suppressed_ids(self.chat_id)
-            if current.id in suppressed:
-                skip("feedback_blocked")
-                return "skipped"
-            key = vacancy_duplicate_key(current)
-            if (
-                key
-                and suppressed
-                and await session.scalar(
-                    select(VacancyModel.id)
-                    .where(VacancyModel.id.in_(suppressed), VacancyModel.duplicate_key == key)
-                    .limit(1)
+            if await session.scalar(
+                select(VacancyModel.id).where(
+                    VacancyModel.id == current.id, CandidateRepository.owner_blocked(self.chat_id)
                 )
             ):
                 skip("feedback_blocked")
@@ -454,7 +461,6 @@ class NotificationService:
             await VacancyRepository(session).attach_source_links([vacancy])
             if match.retrieval:
                 match.retrieval.source_payload_hash = rows[0]["source_payload_hash"]
-            ranking_context = await compute(shown_context, vacancy, self.profile, match, rank)
             source_hash = match.retrieval.source_payload_hash if match.retrieval else None
             if source_hash is None:
                 raw = await session.scalar(

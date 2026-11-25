@@ -1,22 +1,30 @@
 """Request-local reuse only; ContextVar isolates concurrent users and resets on cancellation."""
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 
 _current = ContextVar("comparison_request", default=None)
 
 
+@contextmanager
+def prepared_profile(profile):
+    current = _current.get()
+    if current is not None and current[0] is profile:
+        yield
+        return
+    token = _current.set((profile, {}))
+    try:
+        yield
+    finally:
+        _current.reset(token)
+
+
 def prepared_profile_request(function):
     @wraps(function)
     async def wrapped(repository, profile, *args, **kwargs):
-        current = _current.get()
-        if current is not None and current[0] is profile:
+        with prepared_profile(profile):
             return await function(repository, profile, *args, **kwargs)
-        token = _current.set((profile, {}))
-        try:
-            return await function(repository, profile, *args, **kwargs)
-        finally:
-            _current.reset(token)
 
     return wrapped
 

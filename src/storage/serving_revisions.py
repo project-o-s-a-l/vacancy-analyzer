@@ -19,7 +19,12 @@ TABLES = {
 SCHEDULING_COLUMNS = ("last_recommended_at", "next_check_at", "check_requested_at")
 
 
-def install(connection, *, scheduling_is_content=False):
+def install(connection, *, scheduling_is_content=False, seen_is_content=False):
+    ignored_columns = (
+        SCHEDULING_COLUMNS
+        if seen_is_content
+        else (*SCHEDULING_COLUMNS, "last_seen_at", "source_observed_at")
+    )
     # Names are constants from our schema, never user input.
     from sqlalchemy import inspect
 
@@ -53,7 +58,7 @@ def install(connection, *, scheduling_is_content=False):
                 )
                 level = "ROW"
             else:
-                ignored = ",".join(f"'{column}'" for column in SCHEDULING_COLUMNS)
+                ignored = ",".join(f"'{column}'" for column in ignored_columns)
                 guard = (
                     ""
                     if scheduling_is_content
@@ -122,7 +127,7 @@ def install(connection, *, scheduling_is_content=False):
                     columns = [
                         c["name"]
                         for c in inspect(connection).get_columns(table)
-                        if c["name"] not in SCHEDULING_COLUMNS
+                        if c["name"] not in ignored_columns
                     ]
                     condition = "WHEN " + " OR ".join(
                         f'NEW."{c}" IS NOT OLD."{c}"' for c in columns

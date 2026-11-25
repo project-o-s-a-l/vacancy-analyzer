@@ -79,6 +79,7 @@ async def enqueue_catalog(sessions, *, model, limit=500, force=False, missing_on
             statement = statement.where(
                 ~known,
                 VacancyModel.archived.is_(False),
+                VacancyModel.availability.in_(("active", "unknown")),
                 VacancyModel.published_at <= now,
                 or_(VacancyModel.valid_until.is_(None), VacancyModel.valid_until > now),
             )
@@ -108,6 +109,7 @@ async def enqueue_catalog(sessions, *, model, limit=500, force=False, missing_on
                 .where(
                     VacancyModel.id == key,
                     VacancyModel.archived.is_(False),
+                    VacancyModel.availability.in_(("active", "unknown")),
                     VacancyModel.published_at <= now,
                     or_(VacancyModel.valid_until.is_(None), VacancyModel.valid_until > now),
                 )

@@ -3,23 +3,17 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from test_resumes import docx
 
 from jobs.matching_audit import AuditCases, audit_cases, catalog_snapshot, load_audit_cases
 from nlp.resume import extract_resume
-from processing.resume import read_resume
 
 CASES_PATH = Path(__file__).parents[1] / "config/evaluation/multirole.yaml"
 CASES = load_audit_cases(CASES_PATH).cases
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case.id)
-@pytest.mark.parametrize("kind", ["txt", "docx"])
-def test_resume_acceptance_cases_cover_six_professions(case, kind):
-    data = case.text.encode("utf-8") if kind == "txt" else docx(case.text)
-    text, actual_kind = read_resume(data, "resume." + kind)
-    assert actual_kind == kind
-    actual = extract_resume(text).model_dump(exclude={"notes"})
+def test_resume_acceptance_cases_cover_six_professions(case):
+    actual = extract_resume(case.text).model_dump(exclude={"notes"})
     assert actual == case.expected.model_dump(exclude={"notes"})
 
 

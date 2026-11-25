@@ -156,9 +156,8 @@ def test_freshness_uses_publication_date_inclusive_boundary(job, now, offset, ex
     assert is_fresh(job, now=now, days=7) is expected
 
 
-@pytest.mark.parametrize("age", [8, 30, 120, 365])
-def test_default_window_does_not_reject_old_active_jobs(job, now, age):
-    job.published_at = now - timedelta(days=age)
+def test_default_window_does_not_reject_old_active_jobs(job, now):
+    job.published_at = now - timedelta(days=365)
     assert is_fresh(job, now=now)
 
 

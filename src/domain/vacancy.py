@@ -57,6 +57,7 @@ class Vacancy(BaseModel):
     work_format: str | None = None
     working_hours: str | None = None
     location: str | None = None
+    locations: list[NonEmpty] | None = Field(default=None, exclude_if=lambda value: value is None)
     address: str | None = None
     remote: bool | None = None
     archived: bool = False

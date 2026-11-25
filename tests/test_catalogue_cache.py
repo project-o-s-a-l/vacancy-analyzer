@@ -11,15 +11,10 @@ from storage.repositories.candidate_repository import CandidateRepository
 from storage.repositories.user_repository import RegisteredUser, UserRepository
 
 
-@pytest.fixture(params=["sessions", pytest.param("postgres_sessions", marks=pytest.mark.postgres)])
-def cache_store(request):
-    return request.getfixturevalue(request.param)
-
-
 async def test_service_metadata_preserves_cache_but_content_and_freshness_still_fence(
-    cache_store, vacancy, monkeypatch
+    db_sessions, vacancy, monkeypatch
 ):
-    sessions = cache_store
+    sessions = db_sessions
     await seed(sessions, vacancy, n=2)
     users = UserService(sessions, min_score=0)
     await users.register(42)
@@ -42,6 +37,8 @@ async def test_service_metadata_preserves_cache_but_content_and_freshness_still_
     async with sessions() as session:
         epoch = await session.get(ServingRevisionModel, "catalogue")
         revision = epoch.revision
+    async with sessions.begin() as session:
+        await session.execute(update(VacancyModel).values(last_seen_at=datetime.now(UTC)))
     second, message = await (await users.notifications(42))._selection()
     assert [v.id for v, _ in second] == [v.id for v, _ in first]
     assert not message and len(calls) == count

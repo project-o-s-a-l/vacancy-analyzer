@@ -4,17 +4,28 @@ from domain import CandidateProfile, Vacancy
 from domain.candidate import Skill
 from domain.skill_gap import SampleScope, SkillGapReport, SkillOpportunity
 from nlp.extraction import canonical_skill, skill_key
-from nlp.titles import title_tokens
 from scoring.comparison import compare_facts
 from scoring.eligibility import check_eligibility
+from scoring.request_context import prepared_profile
+from scoring.retrieval import tokens
+from scoring.serving_cache import cache_scope
+from scoring.title_aliases import title_variants
+
+
+def direction_terms(positions):
+    return tuple(
+        {
+            form.terms
+            for position in positions
+            for form in title_variants(position, tokens)
+            if form.terms
+        }
+    )
 
 
 def in_direction(vacancy: Vacancy, positions: list[str]) -> bool:
-    """Any requested position must match all its normalized title words."""
-    words = title_tokens(vacancy.title)
-    return not positions or any(
-        bool(tokens := title_tokens(position)) and tokens <= words for position in positions
-    )
+    words = tokens(vacancy.title)
+    return not positions or any(form <= words for form in direction_terms(positions))
 
 
 def _skill_items(comparison):
@@ -28,11 +39,12 @@ def _coverage(items):
 def skill_gap_report(
     vacancies: list[Vacancy], scope: SampleScope, profile: CandidateProfile
 ) -> SkillGapReport:
-    comparisons = {v.id: compare_facts(v, profile, now=scope.until) for v in vacancies}
-    eligibility = {
-        v.id: check_eligibility(v, profile, now=scope.until, comparison=comparisons[v.id])
-        for v in vacancies
-    }
+    with cache_scope(None), prepared_profile(profile):
+        comparisons = {v.id: compare_facts(v, profile, now=scope.until) for v in vacancies}
+        eligibility = {
+            v.id: check_eligibility(v, profile, now=scope.until, comparison=comparisons[v.id])
+            for v in vacancies
+        }
     selected = [v for v in vacancies if eligibility[v.id].eligible]
     items = {v.id: _skill_items(comparisons[v.id]) for v in selected}
     recorded = [v for v in selected if items[v.id]]
@@ -54,13 +66,16 @@ def skill_gap_report(
                 if fact.kind == "skill" and skill_key(fact.name) == key:
                     fact.assertion = type(fact.assertion)(status="present", value=True)
         gains, newly_covered = [], 0
-        for vacancy in relevant.values():
-            before = _coverage(items[vacancy.id])
-            after = _coverage(_skill_items(compare_facts(vacancy, hypothetical, now=scope.until)))
-            gain = (after or 0) - (before or 0)
-            if gain > 0:
-                gains.append(gain)
-                newly_covered += after == 1 and before != 1
+        with cache_scope(None), prepared_profile(hypothetical):
+            for vacancy in relevant.values():
+                before = _coverage(items[vacancy.id])
+                after = _coverage(
+                    _skill_items(compare_facts(vacancy, hypothetical, now=scope.until))
+                )
+                gain = (after or 0) - (before or 0)
+                if gain > 0:
+                    gains.append(gain)
+                    newly_covered += after == 1 and before != 1
         if gains:
             opportunities.append(
                 SkillOpportunity(
@@ -116,7 +131,7 @@ def _scope_lines(scope: SampleScope) -> list[str]:
         f"В выборке: {scope.vacancies}; с указанными навыками: {scope.with_skills}.",
     ]
     if scope.truncated:
-        lines.append(f"Выборка ограничена: проверены {scope.examined} последних вакансий каталога.")
+        lines.append(f"Выборка ограничена. Учтены последние {scope.examined} вакансий направления.")
     return lines
 
 

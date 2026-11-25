@@ -77,13 +77,8 @@ def test_remote_explicit_import(suffix, expected):
     assert result.preferences[0].values.remote == expected
 
 
-@pytest.fixture(params=["sessions", pytest.param("postgres_sessions", marks=pytest.mark.postgres)])
-def preference_store(request):
-    return request.getfixturevalue(request.param)
-
-
-async def test_import_review_confirmation_edit_and_owner_isolation(preference_store):
-    sessions = preference_store
+async def test_import_review_confirmation_edit_and_owner_isolation(db_sessions):
+    sessions = db_sessions
     users = UserService(sessions)
     await users.register(42)
     await users.register(43)

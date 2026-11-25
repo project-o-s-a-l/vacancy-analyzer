@@ -15,7 +15,17 @@ RETENTION_DAYS = 30
 
 
 async def record_selection(
-    sessions, owner, profile, *, revision, epoch, ranking, displayed, code, latency_ms
+    sessions,
+    owner,
+    profile,
+    *,
+    revision,
+    epoch,
+    ranking,
+    displayed,
+    code,
+    latency_ms,
+    overdue_count=0,
 ):
     if revision is None:
         return
@@ -40,7 +50,7 @@ async def record_selection(
                     "empty": not displayed,
                     "reason": code,
                     "latency_ms": latency_ms,
-                    "freshness_deferred": code == "freshness_deferred",
+                    "freshness_checks_requested": overdue_count,
                     "model_fallbacks": sum(
                         bool(m.ranking and m.ranking.fallback_reason) for _, m in ranking
                     ),
@@ -203,7 +213,16 @@ async def window(session, owner, start, end):
             sum(r.metrics["ranked"] for r in selections),
         ),
         "freshness_deferred_rate": rate(
-            sum(r.metrics["freshness_deferred"] for r in selections), n
+            sum(r.metrics.get("freshness_deferred", False) for r in selections),
+            sum("freshness_deferred" in r.metrics for r in selections),
+        ),
+        "freshness_check_requested_rate": rate(
+            sum(r.metrics.get("freshness_checks_requested", 0) for r in selections),
+            sum(
+                r.metrics["displayable"]
+                for r in selections
+                if "freshness_checks_requested" in r.metrics
+            ),
         ),
         "negative_signal_rate": rate(
             sum(e.action in {"dislike", "reason"} for e in terminal.values()), len(shows)
@@ -238,6 +257,7 @@ async def monitor(sessions, owner, *, start, boundary, end):
         "missing_task_rate",
         "partial_extraction_rate",
         "freshness_deferred_rate",
+        "freshness_check_requested_rate",
         "negative_signal_rate",
     ):
         a, b = old[name]["value"], new[name]["value"]

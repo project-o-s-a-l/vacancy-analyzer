@@ -94,13 +94,6 @@ def isolated_worker(monkeypatch):
     shutdown_logging()
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def acceptance_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 @pytest.mark.parametrize("level", ["INFO", "DEBUG"])
 def test_secret_matrix_cannot_forge_console_or_file_events(tmp_path, capsys, level):
     class Input(BaseModel):
@@ -170,9 +163,9 @@ def test_secret_matrix_cannot_forge_console_or_file_events(tmp_path, capsys, lev
 
 
 async def test_collect_retry_restart_lease_cancel_and_delivery(
-    acceptance_sessions, vacancy, profile, tmp_path, capsys
+    db_sessions, vacancy, profile, tmp_path, capsys
 ):
-    sessions = acceptance_sessions
+    sessions = db_sessions
     vacancy = vacancy.model_copy(
         update={
             "published_at": datetime.now(UTC),

@@ -25,13 +25,6 @@ from storage.models import BackgroundJob, FactBackfillModel, VacancyModel
 from storage.repositories import VacancyRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def lifecycle_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 def sample(vacancy, text, **kwargs):
     return vacancy.model_copy(
         update=dict(
@@ -159,9 +152,9 @@ async def test_long_partial_model_keeps_full_rules_and_new_skill(vacancy):
     assert "sql" in matching_requirements(v).names("required")
 
 
-async def test_analysis_projection_archive_and_repair(lifecycle_sessions, vacancy):
+async def test_analysis_projection_archive_and_repair(db_sessions, vacancy):
     v = sample(vacancy, "Требования: работа с измерением сигналов.")
-    async with lifecycle_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         repo = VacancyRepository(session)
         await repo.save(v)
         before = await repo.projection_state(v.id)
@@ -190,18 +183,18 @@ async def test_analysis_projection_archive_and_repair(lifecycle_sessions, vacanc
         assert candidates.items[0].id == v.id
         job = await enqueue_projection(session, v.id)
         assert (await enqueue_projection(session, v.id)).id == job.id
-    worker = AnalysisWorker(lifecycle_sessions, allow_resumes=False)
+    worker = AnalysisWorker(db_sessions, allow_resumes=False)
     assert await worker.run_once(job_id=job.id) == "projected"
     assert await worker.run_once(job_id=job.id) is None
-    async with lifecycle_sessions() as session:
+    async with db_sessions() as session:
         repo = VacancyRepository(session)
         assert (await repo.projection_state(v.id))["status"] == "ready"
         assert (await session.get(BackgroundJob, job.id)).state == "succeeded"
 
 
-async def test_backfill_bounded_active_first_resume_and_rollback(lifecycle_sessions, vacancy):
+async def test_backfill_bounded_active_first_resume_and_rollback(db_sessions, vacancy):
     keys = []
-    async with lifecycle_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         for index in range(5):
             v = sample(
                 vacancy,
@@ -215,30 +208,28 @@ async def test_backfill_bounded_active_first_resume_and_rollback(lifecycle_sessi
         await session.execute(
             update(VacancyModel).values(facts_revision=None, projection_facts_revision=None)
         )
-    first = await backfill_vacancies(lifecycle_sessions, batch_size=2)
+    first = await backfill_vacancies(db_sessions, batch_size=2)
     assert first["visited"] == first["refreshed"] == 2
-    async with lifecycle_sessions() as session:
+    async with db_sessions() as session:
         assert (await session.get(VacancyModel, keys[0])).facts_revision is None
         checkpoint = (await session.scalar(select(FactBackfillModel))).cursor
     with patch.object(VacancyRepository, "refresh_facts", side_effect=RuntimeError("interrupted")):
         with pytest.raises(RuntimeError):
-            await backfill_vacancies(lifecycle_sessions, batch_size=2)
-    async with lifecycle_sessions() as session:
+            await backfill_vacancies(db_sessions, batch_size=2)
+    async with db_sessions() as session:
         assert (await session.scalar(select(FactBackfillModel))).cursor == checkpoint
     counts = first["visited"]
     for _ in range(10):
-        result = await backfill_vacancies(lifecycle_sessions, batch_size=2)
+        result = await backfill_vacancies(db_sessions, batch_size=2)
         counts += result["visited"]
         if result["done"]:
             break
     assert result["done"] and counts == 5
-    assert (await backfill_vacancies(lifecycle_sessions))["visited"] == 0
-    assert (await backfill_vacancies(lifecycle_sessions, restart=True, batch_size=5))[
-        "unchanged"
-    ] == 4
+    assert (await backfill_vacancies(db_sessions))["visited"] == 0
+    assert (await backfill_vacancies(db_sessions, restart=True, batch_size=5))["unchanged"] == 4
 
 
-async def test_inflight_result_does_not_replace_new_facts_or_source(lifecycle_sessions, vacancy):
+async def test_inflight_result_does_not_replace_new_facts_or_source(db_sessions, vacancy):
     v = sample(vacancy, "Требования: измерять сигналы.")
     started, release = asyncio.Event(), asyncio.Event()
 
@@ -256,18 +247,18 @@ async def test_inflight_result_does_not_replace_new_facts_or_source(lifecycle_se
             await release.wait()
             return output(vacancy, "oldskill")
 
-    async with lifecycle_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await VacancyRepository(session).save(v)
         job = await enqueue_vacancy(session, v, pipeline=pipeline_hash("vacancy_analysis", "fake"))
     task = asyncio.create_task(
-        AnalysisWorker(lifecycle_sessions, vacancy_analyzer=Analyzer()).run_once(job_id=job.id)
+        AnalysisWorker(db_sessions, vacancy_analyzer=Analyzer()).run_once(job_id=job.id)
     )
     await asyncio.wait_for(started.wait(), timeout=5)
-    async with lifecycle_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         assert await VacancyRepository(session).set_analysis(v.id, output(v, "newskill"))
     release.set()
     await task
-    async with lifecycle_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         repo = VacancyRepository(session)
         saved = await repo.get_by_id(v.id)
         assert saved.analysis.extraction.skills[0].name == "newskill"
@@ -289,17 +280,17 @@ def test_required_constraint_inside_conditions_and_full_long_evidence(vacancy):
     assert len(req.evidence[0].quote) > 280
 
 
-async def test_obsolete_projection_job_requeues_current_revision(lifecycle_sessions, vacancy):
+async def test_obsolete_projection_job_requeues_current_revision(db_sessions, vacancy):
     v = sample(vacancy, "Требования: Python")
-    async with lifecycle_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         repo = VacancyRepository(session)
         await repo.save(v)
         old = await enqueue_projection(session, v.id)
         await repo.save(v.model_copy(update={"description": "Требования: Java"}))
-    worker = AnalysisWorker(lifecycle_sessions, allow_resumes=False)
+    worker = AnalysisWorker(db_sessions, allow_resumes=False)
     assert await worker.run_once(job_id=old.id) == "changed"
     assert await worker.run_once() == "projected"
-    async with lifecycle_sessions() as session:
+    async with db_sessions() as session:
         assert (await session.get(BackgroundJob, old.id)).state == "superseded"
         current = await VacancyRepository(session).projection_state(v.id)
         assert current["status"] == "ready"

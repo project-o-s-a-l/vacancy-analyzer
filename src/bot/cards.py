@@ -223,7 +223,7 @@ def _match_summary(vacancy: Vacancy, match: MatchResult) -> list[str]:
     return lines[:4]
 
 
-def format_card(vacancy: Vacancy, match: MatchResult) -> Text:
+def format_card(vacancy: Vacancy, match: MatchResult, *, check_interval=RECHECK_AFTER) -> Text:
     """Native Telegram entities keep employer-supplied text literal."""
     heading = as_list(Bold(_short(vacancy.title, 180)), _short(vacancy.company, 120))
     conditions = [_short(_salary(vacancy), 180)]
@@ -260,7 +260,7 @@ def format_card(vacancy: Vacancy, match: MatchResult) -> Text:
         source = SOURCE_NAMES.get(vacancy.source, vacancy.source)
         if vacancy.last_checked_at is None:
             footer += f"\nДоступность вакансии на {source} ещё не проверена."
-        elif vacancy.last_checked_at <= datetime.now(UTC) - RECHECK_AFTER:
+        elif vacancy.last_checked_at <= datetime.now(UTC) - check_interval:
             footer += f"\nПоследняя проверка на {source} — {vacancy.last_checked_at:%d.%m.%Y}."
     return as_list(*sections, footer, sep="\n\n")
 

@@ -122,7 +122,7 @@ async def test_uncertain_and_in_flight_deliveries_are_not_released(sessions, vac
     await feedback.confirm_history_reset(42, draft.token)
     async with sessions.begin() as session:
         repository = NotificationRepository(session)
-        blocked = await repository.blocked_ids(42)
+        blocked = set(await session.scalars(repository.blocked_vacancies(42)))
         assert blocked == {unknown.id, in_flight.id}
         assert await repository.claim(42, unknown.id) is None
         assert await repository.claim(42, in_flight.id) is None

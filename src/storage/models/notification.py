@@ -19,6 +19,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
+from storage.models.exposure import confirmed_context
 from storage.models.vacancy import Base
 
 
@@ -42,7 +43,7 @@ class NotificationModel(Base):
     vacancy_id: Mapped[UUID] = mapped_column(
         ForeignKey("vacancies.id", ondelete="CASCADE"), primary_key=True
     )
-    claim_token: Mapped[UUID]
+    claim_token: Mapped[UUID] = mapped_column()
     status: Mapped[str] = mapped_column(String(20))
     awaiting_rating: Mapped[bool] = mapped_column(Boolean, server_default=false())
     attempted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
@@ -52,6 +53,8 @@ class NotificationModel(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=1)
     error_kind: Mapped[str | None] = mapped_column(String(100))
     duplicate_key: Mapped[str | None] = mapped_column(String(64))
-    exposure_context: Mapped[dict | None] = mapped_column(
-        JSON().with_variant(JSONB(), "postgresql")
+    pending_context: Mapped[dict | None] = mapped_column(
+        "exposure_context",
+        JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql"),
     )
+    exposure_context = confirmed_context(pending_context, claim_token, chat_id, vacancy_id)

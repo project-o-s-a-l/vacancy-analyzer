@@ -70,7 +70,7 @@ def register_profiles(router: Router, service: UserService) -> None:
             )
 
     @router.callback_query(F.data.startswith("profile:"))
-    async def edit(query: CallbackQuery, user_id: int) -> None:
+    async def edit(query: CallbackQuery) -> None:
         await query.answer("Кнопка старой анкеты. Откройте /profile.", show_alert=True)
 
     @router.callback_query(F.data.startswith("answer:"))

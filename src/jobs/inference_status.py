@@ -49,6 +49,7 @@ async def inference_status(sessions, settings):
             .where(
                 ~known,
                 VacancyModel.archived.is_(False),
+                VacancyModel.availability.in_(("active", "unknown")),
                 VacancyModel.published_at <= datetime.now(UTC),
                 or_(
                     VacancyModel.valid_until.is_(None), VacancyModel.valid_until > datetime.now(UTC)

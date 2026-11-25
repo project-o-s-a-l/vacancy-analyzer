@@ -36,18 +36,11 @@ def facts(rows, name):
     return [row for row in rows if row["event"] == name]
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def log_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 async def test_six_copies_reset_one_repeat_and_separate_users(
-    log_sessions, vacancy, profile, capsys
+    db_sessions, vacancy, profile, capsys
 ):
-    await seed(log_sessions, vacancy, profile)
-    service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
+    await seed(db_sessions, vacancy, profile)
+    service = NotificationService(db_sessions, profile, chat_id=42, min_score=0)
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=17))
     with logging_session(console_format="json"):
         assert (await service.deliver(sender)).sent == 1
@@ -81,15 +74,15 @@ async def test_six_copies_reset_one_repeat_and_separate_users(
         assert all(r["parent_operation_id"] == selection["operation_id"] for r in delivery)
         assert (await service.deliver(sender)).sent == 0
         blocked = facts(logs(capsys), "selection.finished")[0]
-        assert blocked["history_ids"] >= 1 and blocked["scanned_count"] == 0
+        assert blocked["history_has_entries"] == 1 and blocked["scanned_count"] == 0
         assert blocked["code"] == "history_feedback_blocked"
         assert (
-            len(await NotificationService(log_sessions, profile, chat_id=99, min_score=0).pending())
+            len(await NotificationService(db_sessions, profile, chat_id=99, min_score=0).pending())
             == 1
         )
         other = facts(logs(capsys), "selection.finished")[0]
-        assert other["history_ids"] == 0
-        feedback = FeedbackService(log_sessions)
+        assert other["selected_count"] == 1
+        feedback = FeedbackService(db_sessions)
         request = await feedback.request_history_reset(42)
         assert await feedback.confirm_history_reset(42, request.token) == 1
         assert (await service.deliver(sender)).sent == 1
@@ -101,13 +94,13 @@ async def test_six_copies_reset_one_repeat_and_separate_users(
 
 
 @pytest.mark.parametrize("status", ["failed", "uncertain", "sent"])
-async def test_transport_and_persistence_outcomes(log_sessions, vacancy, profile, capsys, status):
-    await seed(log_sessions, vacancy, profile)
+async def test_transport_and_persistence_outcomes(db_sessions, vacancy, profile, capsys, status):
+    await seed(db_sessions, vacancy, profile)
     failure = (
         None if status == "sent" else DeliveryFailure(uncertain=status == "uncertain", kind=SECRET)
     )
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=1, side_effect=failure))
-    service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
+    service = NotificationService(db_sessions, profile, chat_id=42, min_score=0)
     with logging_session(console_format="json", level="DEBUG"):
         report = await service.deliver(sender)
         rows = logs(capsys)
@@ -125,10 +118,10 @@ async def test_transport_and_persistence_outcomes(log_sessions, vacancy, profile
 
 
 async def test_failed_commit_after_transport_success_is_never_saved_success(
-    log_sessions, vacancy, profile, capsys
+    db_sessions, vacancy, profile, capsys
 ):
-    await seed(log_sessions, vacancy, profile)
-    service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
+    await seed(db_sessions, vacancy, profile)
+    service = NotificationService(db_sessions, profile, chat_id=42, min_score=0)
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=22))
     original = service._finish
 
@@ -157,20 +150,20 @@ async def test_failed_commit_after_transport_success_is_never_saved_success(
     assert await service.delivery_counts() == {"sending": 1}
 
 
-async def test_claim_and_finish_facts_require_commit(log_sessions, vacancy, profile, capsys):
-    cards = await seed(log_sessions, vacancy, profile)
+async def test_claim_and_finish_facts_require_commit(db_sessions, vacancy, profile, capsys):
+    cards = await seed(db_sessions, vacancy, profile)
     with logging_session(console_format="json"):
-        async with log_sessions() as session:
+        async with db_sessions() as session:
             with pytest.raises(RuntimeError):
                 async with session.begin():
                     await NotificationRepository(session).claim(42, cards[0].id)
                     assert not logs(capsys)
                     raise RuntimeError(SECRET)
             assert not logs(capsys)
-        async with log_sessions.begin() as session:
+        async with db_sessions.begin() as session:
             token = await NotificationRepository(session).claim(42, cards[0].id)
         assert len(facts(logs(capsys), "delivery.claimed")) == 1
-        async with log_sessions() as session:
+        async with db_sessions() as session:
             with pytest.raises(RuntimeError):
                 async with session.begin():
                     await NotificationRepository(session).finish(
@@ -180,9 +173,9 @@ async def test_claim_and_finish_facts_require_commit(log_sessions, vacancy, prof
             assert not facts(logs(capsys), "delivery.persisted")
 
 
-async def test_cancelled_transport_remains_uncertain(log_sessions, vacancy, profile, capsys):
-    await seed(log_sessions, vacancy, profile)
-    service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
+async def test_cancelled_transport_remains_uncertain(db_sessions, vacancy, profile, capsys):
+    await seed(db_sessions, vacancy, profile)
+    service = NotificationService(db_sessions, profile, chat_id=42, min_score=0)
     sender = SimpleNamespace(send_recommendation=AsyncMock(side_effect=asyncio.CancelledError()))
     with logging_session(console_format="json"):
         with pytest.raises(asyncio.CancelledError):
@@ -190,23 +183,23 @@ async def test_cancelled_transport_remains_uncertain(log_sessions, vacancy, prof
         rows = logs(capsys)
         assert facts(rows, "delivery.transport_finished")[0]["result"] == "uncertain"
         assert facts(rows, "delivery.persisted")[0]["result"] == "uncertain"
-        feedback = FeedbackService(log_sessions)
+        feedback = FeedbackService(db_sessions)
         assert await feedback.request_history_reset(42) is None
         assert await service.pending() == []
         logs(capsys)
     assert await service.delivery_counts() == {"uncertain": 1}
 
 
-async def test_profile_change_before_claim_is_a_skip(log_sessions, vacancy, profile, capsys):
-    await seed(log_sessions, vacancy, profile)
-    service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
+async def test_profile_change_before_claim_is_a_skip(db_sessions, vacancy, profile, capsys):
+    await seed(db_sessions, vacancy, profile)
+    service = NotificationService(db_sessions, profile, chat_id=42, min_score=0)
     selection = service._selection
 
     async def change_after_selection():
         result = await selection()
         changed = profile.model_copy(deep=True)
         changed.experience_years = 100
-        async with log_sessions.begin() as session:
+        async with db_sessions.begin() as session:
             await UserRepository(session).save(
                 RegisteredUser(42, changed, None, (await UserRepository(session).get(42)).revision)
             )
@@ -251,13 +244,13 @@ async def test_warning_skips_aggregate_and_preserves_order(
     assert [(v.id, m.score) for v, m in quiet] == [(v.id, m.score) for v, m in reference]
 
 
-async def test_selection_counter_stages(log_sessions, vacancy, profile, capsys):
+async def test_selection_counter_stages(db_sessions, vacancy, profile, capsys):
     # Two active copies, one inactive, one SQL-required exclusion.
     profile = profile.model_copy(deep=True)
     profile.preferences.remote = "required"
     current = vacancy.model_copy(update={"remote": True})
-    cards = await seed(log_sessions, current, profile, copies=2)
-    async with log_sessions.begin() as session:
+    cards = await seed(db_sessions, current, profile, copies=2)
+    async with db_sessions.begin() as session:
         repo = VacancyRepository(session)
         await repo.save(
             cards[0].model_copy(update={"id": uuid4(), "source_id": "3001", "archived": True})
@@ -265,7 +258,7 @@ async def test_selection_counter_stages(log_sessions, vacancy, profile, capsys):
         await repo.save(
             cards[0].model_copy(update={"id": uuid4(), "source_id": "3002", "remote": False})
         )
-    service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
+    service = NotificationService(db_sessions, profile, chat_id=42, min_score=0)
     with logging_session(console_format="json"):
         assert len(await service.pending()) == 1
         summary = facts(logs(capsys), "selection.finished")[0]
@@ -276,26 +269,26 @@ async def test_selection_counter_stages(log_sessions, vacancy, profile, capsys):
 
 
 async def test_empty_reason_is_about_selection_not_entire_catalog(
-    log_sessions, vacancy, profile, capsys
+    db_sessions, vacancy, profile, capsys
 ):
     profile = profile.model_copy(deep=True)
     profile.preferences.remote = "required"
-    await seed(log_sessions, vacancy.model_copy(update={"remote": False}), profile)
+    await seed(db_sessions, vacancy.model_copy(update={"remote": False}), profile)
     with logging_session(console_format="json"):
-        assert await NotificationService(log_sessions, profile, chat_id=42).pending() == []
+        assert await NotificationService(db_sessions, profile, chat_id=42).pending() == []
         summary = facts(logs(capsys), "selection.finished")[0]
     assert "catalog_rows" not in summary and summary["scanned_count"] == 0
     assert summary["code"] == "no_active_candidates"
 
 
-async def test_below_threshold_is_distinct(log_sessions, vacancy, profile, capsys):
+async def test_below_threshold_is_distinct(db_sessions, vacancy, profile, capsys):
     profile = profile.model_copy(deep=True)
     profile.skills = {}
     profile.preferences.positions = ["Другое направление"]
-    await seed(log_sessions, vacancy, profile)
+    await seed(db_sessions, vacancy, profile)
     with logging_session(console_format="json"):
         assert (
-            await NotificationService(log_sessions, profile, chat_id=42, min_score=100).pending()
+            await NotificationService(db_sessions, profile, chat_id=42, min_score=100).pending()
             == []
         )
         summary = facts(logs(capsys), "selection.finished")[0]
@@ -304,14 +297,14 @@ async def test_below_threshold_is_distinct(log_sessions, vacancy, profile, capsy
 
 @pytest.mark.parametrize("action", ["dislike", "apply"])
 async def test_feedback_still_blocks_copies_after_clear(
-    log_sessions, vacancy, profile, capsys, action
+    db_sessions, vacancy, profile, capsys, action
 ):
-    cards = await seed(log_sessions, vacancy, profile)
+    cards = await seed(db_sessions, vacancy, profile)
     sender = SimpleNamespace(send_recommendation=AsyncMock(return_value=1))
-    service = NotificationService(log_sessions, profile, chat_id=42, min_score=0)
+    service = NotificationService(db_sessions, profile, chat_id=42, min_score=0)
     assert (await service.deliver(sender)).sent == 1
-    feedback = FeedbackService(log_sessions)
-    async with log_sessions() as session:
+    feedback = FeedbackService(db_sessions)
+    async with db_sessions() as session:
         sent_id = await session.scalar(select(NotificationModel.vacancy_id))
     with logging_session(console_format="json"):
         await feedback.record(42, sent_id, action, event_key=SECRET)
@@ -324,12 +317,12 @@ async def test_feedback_still_blocks_copies_after_clear(
         rows = logs(capsys)
     assert len(facts(rows, "feedback.changed")) == len(facts(rows, "feedback.reused")) == 1
     assert facts(rows, "feedback.rejected")[0]["code"] == "feedback_not_allowed"
-    assert facts(rows, "selection.finished")[0]["history_ids"] >= 1
+    assert facts(rows, "selection.finished")[0]["history_has_entries"] == 1
 
 
-async def test_resume_and_history_no_tokens_text_or_values(log_sessions, capsys, tmp_path):
-    await UserService(log_sessions).register(42)
-    resumes = ResumeService(log_sessions)
+async def test_resume_and_history_no_tokens_text_or_values(db_sessions, capsys, tmp_path):
+    await UserService(db_sessions).register(42)
+    resumes = ResumeService(db_sessions)
     options = LoggingOptions(_env_file=None, directory=tmp_path / "logs")
     with logging_session(console_format="json", level="DEBUG", file_options=options):
         draft = await resumes.prepare(
@@ -342,7 +335,7 @@ async def test_resume_and_history_no_tokens_text_or_values(log_sessions, capsys,
             42, "Желаемая должность: Java Developer\nНавыки: java\n" + SECRET
         )
         await resumes.cancel(42, new.token)
-        feedback = FeedbackService(log_sessions)
+        feedback = FeedbackService(db_sessions)
         assert await feedback.request_history_reset(42) is None
         with pytest.raises(ValueError):
             await feedback.confirm_history_reset(42, SECRET)
@@ -363,15 +356,15 @@ async def test_resume_and_history_no_tokens_text_or_values(log_sessions, capsys,
     )
 
 
-async def test_profile_stale_resume_is_not_applied(log_sessions, capsys):
-    users = UserService(log_sessions)
+async def test_profile_stale_resume_is_not_applied(db_sessions, capsys):
+    users = UserService(db_sessions)
     await users.register(42)
-    resumes = ResumeService(log_sessions)
+    resumes = ResumeService(db_sessions)
     draft = await resumes.prepare(42, "Желаемая должность: Python Developer\nНавыки: python")
     user = await users.get(42)
     changed = user.profile.model_copy(deep=True)
     changed.experience_years = 100
-    async with log_sessions.begin() as session:
+    async with db_sessions.begin() as session:
         await UserRepository(session).save(
             RegisteredUser(42, changed, None, (await UserRepository(session).get(42)).revision)
         )
@@ -384,12 +377,12 @@ async def test_profile_stale_resume_is_not_applied(log_sessions, capsys):
     assert (await users.get(42)).profile.experience_years == 100
 
 
-async def test_history_cancel_is_committed(log_sessions, vacancy, profile, capsys):
-    await seed(log_sessions, vacancy, profile)
-    await NotificationService(log_sessions, profile, chat_id=42, min_score=0).deliver(
+async def test_history_cancel_is_committed(db_sessions, vacancy, profile, capsys):
+    await seed(db_sessions, vacancy, profile)
+    await NotificationService(db_sessions, profile, chat_id=42, min_score=0).deliver(
         SimpleNamespace(send_recommendation=AsyncMock(return_value=1))
     )
-    feedback = FeedbackService(log_sessions)
+    feedback = FeedbackService(db_sessions)
     request = await feedback.request_history_reset(42)
     with logging_session(console_format="json"):
         await feedback.cancel_history_reset(42, request.token)
@@ -401,7 +394,7 @@ async def test_history_cancel_is_committed(log_sessions, vacancy, profile, capsy
     assert len((await feedback.page(42, "history"))[1]) == 1
     request = await feedback.request_history_reset(42)
     with logging_session(console_format="json"):
-        await UserService(log_sessions).cancel(42)
+        await UserService(db_sessions).cancel(42)
         rows = logs(capsys)
     assert facts(rows, "history.cancelled")[0]["code"] == "user_cancelled"
     with pytest.raises(ValueError):

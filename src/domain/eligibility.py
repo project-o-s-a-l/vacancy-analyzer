@@ -8,7 +8,7 @@ from domain.comparison import State
 
 
 class EligibilityEvidence(BaseModel):
-    source: Literal["hh", "description", "title", "profile"]
+    source: str = Field(min_length=1)
     text: str
 
 
@@ -32,7 +32,7 @@ class EligibilityIssue(BaseModel):
 
 class ExperienceRequirement(BaseModel):
     minimum_years: float | None = Field(default=None, ge=0)
-    minimum_source: Literal["hh", "description"] | None = None
+    minimum_source: str | None = None
     required: bool | None = None
     conflict: bool = False
     evidence: list[EligibilityEvidence] = Field(default_factory=list)

@@ -12,7 +12,13 @@ def test_wheel_layout_keeps_runtime_identity_and_excludes_foreign_dependencies(
     for name in before["files"]:
         target = site_packages / name.removeprefix("src/")
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes((root / name).read_bytes())
+        data = (root / name).read_bytes()
+        target.write_bytes(
+            data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n") if name.endswith(".py") else data
+        )
+    snapshots = site_packages / "collectors/snapshots"
+    snapshots.mkdir()
+    (snapshots / "capture.html").write_text("local observation", encoding="utf-8")
     foreign = site_packages / "foreign_dependency"
     foreign.mkdir()
     (foreign / "__init__.py").write_text("unrelated = True\n", encoding="utf-8")

@@ -525,6 +525,7 @@ async def drain_details(
                 raise ValueError("Source identity mismatch")
             if matches_catalog and not matches_catalog(fetched):
                 state = "filtered"
+                vacancy = fetched if known else None
             else:
                 vacancy = fetched
         except BudgetDeferred:
@@ -581,6 +582,8 @@ async def drain_details(
                 if new_only and getattr(source, "new_limit", None) is not None:
                     await source.record_new(session)
                 row = await session.get(VacancyModel, vid, populate_existing=True)
+                if state == "filtered" and not vacancy.archived:
+                    row.availability = "out_of_scope"
                 row.last_seen_at = last_seen
                 row.search_fingerprint = observation.fingerprint
                 row.next_check_at = checked_at + refresh_after
@@ -588,13 +591,14 @@ async def drain_details(
                     await schedule_collected(
                         session, vacancy.model_copy(update={"id": vid}), pipeline=analysis_pipeline
                     )
-                count += 1
+                if state != "filtered":
+                    count += 1
             elif row and state != "filtered":
                 row.last_check_attempt_at, row.check_error = now, error
                 if state == "closed":
                     row.archived, row.availability, row.last_checked_at = True, "closed", now
                     row.closed_at = row.closed_at or now
-                else:
+                elif row.availability != "out_of_scope":
                     row.availability = "unknown"
             item.pending = error is not None
             if not item.pending:

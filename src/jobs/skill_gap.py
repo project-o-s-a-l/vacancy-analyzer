@@ -4,7 +4,8 @@ from domain import CandidateProfile
 from domain.exchange_rates import use_rates
 from domain.skill_gap import SampleScope, SkillGapReport
 from jobs.exchange_rates import rates_for
-from scoring.skill_gap import in_direction, skill_gap_report
+from jobs.serving_compute import compute
+from scoring.skill_gap import skill_gap_report
 from storage.repositories import VacancyRepository
 
 
@@ -12,6 +13,7 @@ async def analyze_skill_gap(
     repository: VacancyRepository,
     *,
     profile: CandidateProfile | None = None,
+    release_read: bool = False,
     days: int = 30,
     limit: int = 2000,
     now: datetime | None = None,
@@ -25,18 +27,21 @@ async def analyze_skill_gap(
         raise ValueError("Для анализа укажите навыки и желаемую должность в профиле.")
     now = now.astimezone(UTC)
     since = now - timedelta(days=days)
-    sample, truncated = await repository.skill_gap_sample(since=since, until=now, limit=limit)
     directions = profile.preferences.positions
-    selected = [vacancy for vacancy in sample if in_direction(vacancy, directions)]
+    selected, truncated = await repository.skill_gap_sample(
+        since=since, until=now, limit=limit, positions=directions
+    )
+    if release_read:
+        await repository.session.close()
     scope = SampleScope(
         since=since,
         until=now,
         limit=limit,
-        examined=len(sample),
+        examined=len(selected),
         truncated=truncated,
         positions=directions,
         vacancies=len(selected),
         with_skills=0,
     )
     with use_rates(await rates_for(profile)):
-        return skill_gap_report(selected, scope, profile)
+        return await compute(skill_gap_report, selected, scope, profile)

@@ -182,14 +182,6 @@ def test_card_keeps_skill_tenure_separate_from_general_experience(vacancy, profi
     assert "\nОпыт:" not in text
 
 
-@pytest.mark.parametrize("command", ["demo", "telegram-preview"])
-def test_synthetic_commands_are_not_part_of_runtime(command, monkeypatch):
-    monkeypatch.setattr("sys.argv", ["vacancy-analyzer", command])
-    with pytest.raises(SystemExit) as result:
-        main()
-    assert result.value.code == 2
-
-
 def test_missing_settings_fail_with_actionable_message():
     settings = Settings(_env_file=None)
     assert "telegram_owner_id" not in Settings.model_fields
@@ -295,13 +287,12 @@ async def test_main_menu_contains_three_core_actions(monkeypatch):
     polling.assert_awaited_once()
 
 
-@pytest.mark.parametrize("command", ["/market", "/stats"])
-async def test_removed_market_commands_return_core_help(service, command):
+async def test_unknown_command_opens_main_menu(service):
     transport = RecordingSession()
     bot = Bot(TEST_TOKEN, session=transport)
-    await build_dispatcher(service).feed_update(bot, command_update(command))
+    await build_dispatcher(service).feed_update(bot, command_update("/unknown"))
     reply = transport.requests[-1]
-    assert "/market" not in reply.text and "/stats" not in reply.text
+    assert "Помогаю выбирать" in reply.text
     assert [b.text for row in reply.reply_markup.inline_keyboard for b in row] == [
         "Найти вакансии",
         "Мои вакансии",

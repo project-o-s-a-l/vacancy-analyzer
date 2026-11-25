@@ -10,13 +10,14 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+from aiogram.types import Update
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from bot.rate_limits import TelegramLimits
+from bot.update_inbox import UpdateInbox
 from domain import CandidateProfile, Vacancy
 from jobs.notify import NotificationService
-from jobs.owner_queue import OwnerQueue
 from storage.models import Base
 from storage.repositories import VacancyRepository
 
@@ -66,7 +67,7 @@ async def measure(output):
             for delay in (0, 0.1, 1):
                 for repeat in range(5):
                     group = len(results) + 1
-                    queue = OwnerQueue(workers=1 if mode == "serial" else 4)
+                    queue = UpdateInbox(sessions, bot_id=group)
                     limits = TelegramLimits()
                     records, network = [], []
                     issued = time.perf_counter()
@@ -108,15 +109,38 @@ async def measure(output):
                             )
                         )
 
-                    await asyncio.gather(
-                        *(
-                            queue.submit(
-                                group * 100 + i, lambda owner=group * 100 + i: request(owner)
-                            )
-                            for i in range(5)
+                    for owner in range(group * 100, group * 100 + 5):
+                        command = Update.model_validate(
+                            {
+                                "update_id": owner,
+                                "message": {
+                                    "message_id": 1,
+                                    "date": datetime.now(UTC),
+                                    "chat": {"id": owner, "type": "private"},
+                                    "text": "/latest",
+                                    "from": {
+                                        "id": owner,
+                                        "is_bot": False,
+                                        "first_name": "Benchmark",
+                                    },
+                                },
+                            }
                         )
+                        await queue.receive(owner, command)
+
+                    async def feed(bot, update, request=request):
+                        await request(update.message.chat.id)
+
+                    async def deliver_queued(queue=queue, feed=feed):
+                        dispatcher = SimpleNamespace(feed_update=feed)
+                        while claim := await queue.claim():
+                            await queue.handle(claim, dispatcher, None, {})
+
+                    await asyncio.gather(
+                        *(deliver_queued() for _ in range(1 if mode == "serial" else 4))
                     )
-                    await queue.close()
+                    if len(records) != 5:
+                        raise RuntimeError("An accepted command did not finish")
                     results.append(
                         dict(
                             mode=mode,

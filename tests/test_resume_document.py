@@ -317,14 +317,9 @@ async def test_model_runs_for_tasks_even_when_role_and_skills_are_present(sessio
     analyzer.analyze.assert_awaited_once()
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def resume_sessions(request):
-    return request.getfixturevalue("sessions" if request.param == "sqlite" else "postgres_sessions")
-
-
 @pytest.mark.parametrize("operation", ["cancel", "delete", "replace", "profile"])
-async def test_direct_analysis_generation_fence(resume_sessions, operation):
-    sessions = resume_sessions
+async def test_direct_analysis_generation_fence(db_sessions, operation):
+    sessions = db_sessions
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def analyze(text):
@@ -355,9 +350,9 @@ async def test_direct_analysis_generation_fence(resume_sessions, operation):
 
 
 async def test_review_edits_stale_buttons_repeat_import_sources_and_manual_preservation(
-    resume_sessions,
+    db_sessions,
 ):
-    sessions = resume_sessions
+    sessions = db_sessions
     users = UserService(sessions)
     await users.register(42)
     await users.begin_edit(42, "skills")
@@ -391,23 +386,23 @@ async def test_review_edits_stale_buttons_repeat_import_sources_and_manual_prese
     assert (await users.get(42)).profile.experience_years == 4
 
 
-async def test_partial_worker_timeout_preserves_draft_and_server_cooldown(resume_sessions):
+async def test_partial_worker_timeout_preserves_draft_and_server_cooldown(db_sessions):
     from jobs.analysis_worker import AnalysisWorker
     from storage.models import BackgroundJob
 
-    users = UserService(resume_sessions, queued_resumes=True, resume_model="qwen3:4b")
+    users = UserService(db_sessions, queued_resumes=True, resume_model="qwen3:4b")
     await users.register(42)
     text = "Я использовал Python.\n" + "Описание задач.\n" * 500
     await users.resumes.submit(42, text)
     transport, requests = model_transport(delay_at=2)
     async with httpx.AsyncClient(base_url="http://localhost", transport=transport) as client:
         analyzer = OllamaResumeAnalyzer(client, model="qwen3:4b", total_seconds=0.1)
-        worker = AnalysisWorker(resume_sessions, resume_analyzer=analyzer)
+        worker = AnalysisWorker(db_sessions, resume_analyzer=analyzer)
         assert await worker.run_once() == "resume"
         assert await worker.run_once() is None
     draft = await users.resumes.pending(42)
     assert draft.extraction.completeness == "partial" and "python" in draft.extraction.skills
-    async with resume_sessions() as session:
+    async with db_sessions() as session:
         job = await session.scalar(select(BackgroundJob))
         assert job.state == "succeeded" and job.lease_until is not None
         assert job.result["cost"]["requests"] == len(requests)

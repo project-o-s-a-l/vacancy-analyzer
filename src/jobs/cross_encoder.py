@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from jobs.semantic_encoder import download_encoder, validate_encoder
+from jobs.semantic_model import open_cpu_session
 from jobs.semantic_process import MAX_RSS, MIN_AVAILABLE
 from scoring.serving_features import digest
 
@@ -141,7 +142,6 @@ class LocalCrossEncoder:
 
     def __init__(self, directory):
         import numpy as np
-        import onnxruntime as ort
         from tokenizers import Tokenizer
 
         validate_model(directory)
@@ -149,16 +149,7 @@ class LocalCrossEncoder:
         self.tokenizer = Tokenizer.from_file(str(Path(directory) / "tokenizer.json"))
         self.tokenizer.no_padding()
         self.tokenizer.no_truncation()
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = options.inter_op_num_threads = 1
-        options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        options.add_session_config_entry("session.intra_op.allow_spinning", "0")
-        options.add_session_config_entry("session.inter_op.allow_spinning", "0")
-        self.session = ort.InferenceSession(
-            str(Path(directory) / "model.onnx"),
-            sess_options=options,
-            providers=["CPUExecutionProvider"],
-        )
+        self.session = open_cpu_session(directory)
         if {i.name for i in self.session.get_inputs()} != {"input_ids", "attention_mask"}:
             raise ValueError("incompatible_onnx_inputs")
 

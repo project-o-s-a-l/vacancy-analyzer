@@ -2,6 +2,7 @@
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from contextvars import ContextVar, copy_context
 from functools import partial, wraps
 from weakref import WeakKeyDictionary
@@ -66,3 +67,41 @@ async def compute(function, *args, **kwargs):
                     continue
             future.result()
             raise
+
+
+@asynccontextmanager
+async def owner_selection(sessions, owner):
+    """Avoid duplicate ranking across processes without reserving a pool connection."""
+    from datetime import UTC, datetime, timedelta
+    from uuid import uuid4
+
+    from sqlalchemy import delete
+    from sqlalchemy.dialects.postgresql import insert
+
+    from storage.models.selection import RecommendationLease as Lease
+
+    token = uuid4()
+    async with sessions.begin() as session:
+        postgres = session.get_bind().dialect.name == "postgresql"
+        if postgres:
+            now = datetime.now(UTC)
+            statement = insert(Lease).values(
+                owner_id=owner, token=token, expires_at=now + timedelta(minutes=5)
+            )
+            acquired = await session.scalar(
+                statement.on_conflict_do_update(
+                    index_elements=[Lease.owner_id],
+                    set_={"token": token, "expires_at": statement.excluded.expires_at},
+                    where=Lease.expires_at <= now,
+                ).returning(Lease.token)
+            )
+            if acquired is None:
+                raise RecommendationBusy()
+    try:
+        yield
+    finally:
+        if postgres:
+            async with sessions.begin() as session:
+                await session.execute(
+                    delete(Lease).where(Lease.owner_id == owner, Lease.token == token)
+                )

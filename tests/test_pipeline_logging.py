@@ -39,13 +39,6 @@ def logs(capsys):
     return [json.loads(line) for line in captured.err.splitlines()]
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def log_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 @pytest.fixture
 def current(vacancy):
     return vacancy.model_copy(
@@ -107,10 +100,10 @@ async def schedule(sessions, vacancy, analyzer):
 
 
 async def test_save_and_enqueue_emit_after_commit_with_original_context(
-    log_sessions, current, capsys
+    db_sessions, current, capsys
 ):
     with logging_session(console_format="json"):
-        async with log_sessions() as session:
+        async with db_sessions() as session:
             async with session.begin():
                 with operation("catalog_save") as context:
                     key = await VacancyRepository(session).save(current)
@@ -128,9 +121,9 @@ async def test_save_and_enqueue_emit_after_commit_with_original_context(
     assert rows[1]["job_id"] == str(task.id) and rows[1]["next_run_at"].endswith("+00:00")
 
 
-async def test_rollback_never_claims_saved_or_enqueued(log_sessions, current, capsys):
+async def test_rollback_never_claims_saved_or_enqueued(db_sessions, current, capsys):
     with logging_session(console_format="json"):
-        async with log_sessions() as session:
+        async with db_sessions() as session:
             with pytest.raises(ValueError):
                 async with session.begin():
                     await VacancyRepository(session).save(current)
@@ -184,20 +177,20 @@ async def test_savepoints_and_transaction_buffer_are_bounded(sessions, capsys):
 
 
 async def test_saved_counts_separate_content_snapshot_and_duplicate_group(
-    log_sessions, current, capsys
+    db_sessions, current, capsys
 ):
     with logging_session(console_format="json"):
-        async with log_sessions.begin() as session:
+        async with db_sessions.begin() as session:
             key = await VacancyRepository(session).save(current)
-        async with log_sessions.begin() as session:
+        async with db_sessions.begin() as session:
             await VacancyRepository(session).save(current)
         markup = current.model_copy(update={"raw_payload": {"html": "changed markup"}})
-        async with log_sessions.begin() as session:
+        async with db_sessions.begin() as session:
             await VacancyRepository(session).save(markup)
         changed = current.model_copy(
             update={"title": "Other title", "description": "Other content"}
         )
-        async with log_sessions.begin() as session:
+        async with db_sessions.begin() as session:
             await VacancyRepository(session).save(changed)
         rows = logs(capsys)
     assert [r["change_kind"] for r in rows] == ["new", "unchanged", "unchanged", "changed"]
@@ -233,19 +226,19 @@ async def test_competing_upserts_report_only_one_new_vacancy(postgres_sessions, 
         (CollectionStopped(SECRET, code="hh_captcha"), "hh_captcha"),
     ],
 )
-async def test_recheck_uncertainty_is_not_closed(log_sessions, current, capsys, error, code):
-    async with log_sessions.begin() as session:
+async def test_recheck_uncertainty_is_not_closed(db_sessions, current, capsys, error, code):
+    async with db_sessions.begin() as session:
         key = await VacancyRepository(session).save(current)
     source = SimpleNamespace(get_vacancy=AsyncMock(side_effect=error))
     with logging_session(console_format="json"):
         try:
-            await check_catalog(source, log_sessions, now=current.collected_at + timedelta(days=3))
+            await check_catalog(source, db_sessions, now=current.collected_at + timedelta(days=3))
         except CollectionStopped:
             pass
     rows = logs(capsys)
     facts = [r for r in rows if r["event"] == "catalog.checked"]
     assert len(facts) == 1 and facts[0]["code"] == code and facts[0]["result"] == "unknown"
-    async with log_sessions() as session:
+    async with db_sessions() as session:
         row = await session.get(VacancyModel, key)
         assert not row.archived and row.availability == "unknown"
 
@@ -258,12 +251,12 @@ async def test_recheck_uncertainty_is_not_closed(log_sessions, current, capsys, 
     ],
 )
 async def test_jobs_explain_model_failure_and_retry(
-    log_sessions, current, capsys, error, code, state
+    db_sessions, current, capsys, error, code, state
 ):
     analyzer = Analyzer(error)
     with logging_session(console_format="json"):
-        task = await schedule(log_sessions, current, analyzer)
-        outcome = await AnalysisWorker(log_sessions, vacancy_analyzer=analyzer).run_once()
+        task = await schedule(db_sessions, current, analyzer)
+        outcome = await AnalysisWorker(db_sessions, vacancy_analyzer=analyzer).run_once()
     rows = logs(capsys)
     terminal = [r for r in rows if r["event"] in {"job.retry_scheduled", "job.finished"}][-1]
     claim = next(r for r in rows if r["event"] == "job.claimed")
@@ -274,10 +267,10 @@ async def test_jobs_explain_model_failure_and_retry(
         assert "next_run_at" in terminal and outcome == "retry"
 
 
-async def test_lease_recovery_and_cache_hit_are_visible(log_sessions, current, capsys):
+async def test_lease_recovery_and_cache_hit_are_visible(db_sessions, current, capsys):
     analyzer = Analyzer()
-    task = await schedule(log_sessions, current, analyzer)
-    async with log_sessions.begin() as session:
+    task = await schedule(db_sessions, current, analyzer)
+    async with db_sessions.begin() as session:
         await session.execute(
             update(BackgroundJob)
             .where(BackgroundJob.id == task.id)
@@ -285,10 +278,10 @@ async def test_lease_recovery_and_cache_hit_are_visible(log_sessions, current, c
                 state="running", attempts=1, lease_until=datetime.now(UTC) - timedelta(seconds=1)
             )
         )
-    worker = AnalysisWorker(log_sessions, vacancy_analyzer=analyzer)
+    worker = AnalysisWorker(db_sessions, vacancy_analyzer=analyzer)
     with logging_session(console_format="json"):
         assert await worker.run_once() == "analyzed"
-        await schedule(log_sessions, current, analyzer)
+        await schedule(db_sessions, current, analyzer)
         assert await worker.run_once() == "cached"
     rows = logs(capsys)
     recovered = next(r for r in rows if r["event"] == "job.lease_recovered")
@@ -296,7 +289,7 @@ async def test_lease_recovery_and_cache_hit_are_visible(log_sessions, current, c
     assert any(r["event"] == "model.cache_hit" for r in rows) and analyzer.calls == 1
 
 
-async def test_source_changed_during_model_call_discards_old_result(log_sessions, current, capsys):
+async def test_source_changed_during_model_call_discards_old_result(db_sessions, current, capsys):
     started, release = asyncio.Event(), asyncio.Event()
 
     class SlowAnalyzer(Analyzer):
@@ -306,16 +299,16 @@ async def test_source_changed_during_model_call_discards_old_result(log_sessions
             return await super().analyze(vacancy)
 
     analyzer = SlowAnalyzer()
-    old = await schedule(log_sessions, current, analyzer)
+    old = await schedule(db_sessions, current, analyzer)
     with logging_session(console_format="json"):
         task = asyncio.create_task(
-            AnalysisWorker(log_sessions, vacancy_analyzer=analyzer).run_once()
+            AnalysisWorker(db_sessions, vacancy_analyzer=analyzer).run_once()
         )
         try:
             async with asyncio.timeout(3):
                 await started.wait()
             await schedule(
-                log_sessions, current.model_copy(update={"title": "Changed title"}), analyzer
+                db_sessions, current.model_copy(update={"title": "Changed title"}), analyzer
             )
         finally:
             release.set()
@@ -330,8 +323,8 @@ async def test_source_changed_during_model_call_discards_old_result(log_sessions
     )
 
 
-async def test_cancel_and_supersede_are_distinct(log_sessions, current, capsys):
-    users = UserService(log_sessions, queued_resumes=True)
+async def test_cancel_and_supersede_are_distinct(db_sessions, capsys):
+    users = UserService(db_sessions, queued_resumes=True)
     await users.register(77)
     with logging_session(console_format="json"):
         await users.resumes.submit(77, "Навыки: Python\n" + SECRET)
@@ -342,8 +335,8 @@ async def test_cancel_and_supersede_are_distinct(log_sessions, current, capsys):
     assert all("user_id" not in r for r in facts)
 
 
-async def test_resume_invalid_response_uses_rules_before_success(log_sessions, capsys):
-    users = UserService(log_sessions, queued_resumes=True, resume_model="test-model")
+async def test_resume_invalid_response_uses_rules_before_success(db_sessions, capsys):
+    users = UserService(db_sessions, queued_resumes=True, resume_model="test-model")
     await users.register(88)
     await users.resumes.submit(88, "Навыки: Python\n" + SECRET)
     fake = SimpleNamespace(
@@ -352,7 +345,7 @@ async def test_resume_invalid_response_uses_rules_before_success(log_sessions, c
         analyze=AsyncMock(side_effect=ResumeAnalysisError(SECRET)),
     )
     with logging_session(console_format="json"):
-        assert await AnalysisWorker(log_sessions, resume_analyzer=fake).run_once() == "resume"
+        assert await AnalysisWorker(db_sessions, resume_analyzer=fake).run_once() == "resume"
     rows = logs(capsys)
     assert any(
         r["event"] == "model.rules_fallback" and r["code"] == "invalid_response_fallback"
@@ -401,7 +394,7 @@ async def test_transport_slot_time_and_safe_model_fields(capsys, outcome):
 
 @pytest.mark.parametrize("valid", [True, False])
 async def test_collection_to_real_analyzer_validation_is_traceable(
-    log_sessions, current, capsys, valid
+    db_sessions, current, capsys, valid
 ):
     def handle(request):
         if request.url.path == "/api/tags":
@@ -432,7 +425,7 @@ async def test_collection_to_real_analyzer_validation_is_traceable(
             assert (
                 await collect_vacancies(
                     source,
-                    log_sessions,
+                    db_sessions,
                     SearchQuery(text=SECRET),
                     analysis_pipeline=pipeline_hash("vacancy_analysis", "qwen3:4b"),
                 )
@@ -445,7 +438,7 @@ async def test_collection_to_real_analyzer_validation_is_traceable(
             transport=httpx.MockTransport(handle),
         ) as client:
             analyzer = OllamaVacancyAnalyzer(client, model="qwen3:4b")
-            outcome = await AnalysisWorker(log_sessions, vacancy_analyzer=analyzer).run_once()
+            outcome = await AnalysisWorker(db_sessions, vacancy_analyzer=analyzer).run_once()
     rows = logs(capsys)
     saved = next(r for r in rows if r["event"] == "catalog.saved")
     queued = next(r for r in rows if r["event"] == "job.enqueued")
@@ -463,7 +456,7 @@ async def test_collection_to_real_analyzer_validation_is_traceable(
         )
 
 
-async def test_slot_wait_cancelled_and_empty_queue_does_not_emit_poll_events(sessions, capsys):
+async def test_slot_wait_cancelled_and_empty_queue_does_not_emit_poll_events(capsys):
     stop = asyncio.Event()
     fake = SimpleNamespace(run_once=AsyncMock(side_effect=stop.set))
     with logging_session(console_format="json"):

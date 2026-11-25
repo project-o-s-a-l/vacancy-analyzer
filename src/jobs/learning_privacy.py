@@ -182,6 +182,20 @@ async def mark_revoked(session, owner, *, erase=False):
     if erase:
         # User FK cascades remove resume/cache/jobs/search/feedback. These tables
         # intentionally have no owner FK and require explicit removal.
+        from sqlalchemy import update
+
+        from storage.models import TelegramUpdate
+        from storage.models.selection import RecommendationLease
+
+        await session.execute(
+            delete(RecommendationLease).where(RecommendationLease.owner_id == owner)
+        )
+
+        await session.execute(
+            update(TelegramUpdate)
+            .where(TelegramUpdate.owner_id == owner)
+            .values(owner_id=None, payload=None, ready_at=None, claim=None)
+        )
         await session.execute(delete(NotificationModel).where(NotificationModel.chat_id == owner))
         await session.execute(delete(ExposureModel).where(ExposureModel.chat_id == owner))
         await session.execute(

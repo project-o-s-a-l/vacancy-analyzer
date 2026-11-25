@@ -17,13 +17,6 @@ from storage.repositories import VacancyRepository
 from storage.repositories.selection_repository import MAX_POOL
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def selection_sessions(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 async def seed(sessions, vacancy, n=8):
     now = datetime.now(UTC)
     cards = [
@@ -60,10 +53,8 @@ def dumped(ranking):
     ]
 
 
-async def test_repeat_matches_full_calculation_and_persists_across_sessions(
-    selection_sessions, vacancy
-):
-    sessions = selection_sessions
+async def test_repeat_matches_full_calculation_and_persists_across_sessions(db_sessions, vacancy):
+    sessions = db_sessions
     await seed(sessions, vacancy)
     now = datetime.now(UTC)
     first, stats = await rank(sessions, now=now)
@@ -81,8 +72,8 @@ async def test_repeat_matches_full_calculation_and_persists_across_sessions(
         assert await session.scalar(select(func.count()).select_from(NotificationModel)) == 0
 
 
-async def test_only_changed_card_recalculated_and_new_cards_visible(selection_sessions, vacancy):
-    sessions = selection_sessions
+async def test_only_changed_card_recalculated_and_new_cards_visible(db_sessions, vacancy):
+    sessions = db_sessions
     cards = await seed(sessions, vacancy)
     await rank(sessions)
     async with sessions.begin() as session:
@@ -102,8 +93,8 @@ async def test_only_changed_card_recalculated_and_new_cards_visible(selection_se
 
 
 @pytest.mark.parametrize("change", ["archived", "expired", "deleted", "future"])
-async def test_cached_candidates_recheck_activity(selection_sessions, vacancy, change):
-    sessions = selection_sessions
+async def test_cached_candidates_recheck_activity(db_sessions, vacancy, change):
+    sessions = db_sessions
     cards = await seed(sessions, vacancy)
     await rank(sessions)
     now = datetime.now(UTC)
@@ -124,8 +115,8 @@ async def test_cached_candidates_recheck_activity(selection_sessions, vacancy, c
 
 
 @pytest.mark.parametrize("reason", ["profile", "owner", "ttl", "date", "contract", "parameters"])
-async def test_invalidation_and_owner_isolation(selection_sessions, vacancy, monkeypatch, reason):
-    sessions = selection_sessions
+async def test_invalidation_and_owner_isolation(db_sessions, vacancy, monkeypatch, reason):
+    sessions = db_sessions
     await seed(sessions, vacancy)
     now = datetime(2026, 10, 27, 23, 59, tzinfo=UTC)
     # Fix card dates for UTC-day-boundary checks independent of the host clock.
@@ -151,10 +142,8 @@ async def test_invalidation_and_owner_isolation(selection_sessions, vacancy, mon
     assert stats["reused"] == 0 and stats["recomputed"] > 0
 
 
-async def test_pool_larger_than_page_and_history_reset_preserves_feedback(
-    selection_sessions, vacancy
-):
-    sessions = selection_sessions
+async def test_pool_larger_than_page_and_history_reset_preserves_feedback(db_sessions, vacancy):
+    sessions = db_sessions
     await seed(sessions, vacancy, n=16)
     profile = candidate()
     users = UserService(sessions)
@@ -182,8 +171,8 @@ async def test_pool_larger_than_page_and_history_reset_preserves_feedback(
     assert all(v.id != first.id for v, _ in await service.pending())
 
 
-async def test_corrupt_entry_recalculated_and_owner_pool_bounded(selection_sessions, vacancy):
-    sessions = selection_sessions
+async def test_corrupt_entry_recalculated_and_owner_pool_bounded(db_sessions, vacancy):
+    sessions = db_sessions
     await seed(sessions, vacancy)
     await rank(sessions)
     async with sessions.begin() as session:
@@ -229,11 +218,11 @@ async def test_current_ranker_always_applied_to_reused_baselines(sessions, vacan
 
 
 async def test_changed_or_missing_model_cannot_reuse_previous_model_decision(
-    selection_sessions, vacancy, tmp_path
+    db_sessions, vacancy, tmp_path
 ):
     from test_serving_ranker import artifact, save
 
-    sessions = selection_sessions
+    sessions = db_sessions
     await seed(sessions, vacancy)
     now = datetime.now(UTC)
     path = save(tmp_path, artifact())
@@ -263,9 +252,9 @@ async def test_disabled_cache_preserves_delivery_path_without_creating_pool(sess
 
 @pytest.mark.parametrize("change", ["closed", "profile", "conditions", "feedback"])
 async def test_change_between_selection_and_send_is_not_delivered(
-    selection_sessions, vacancy, monkeypatch, change
+    db_sessions, vacancy, monkeypatch, change
 ):
-    sessions = selection_sessions
+    sessions = db_sessions
     cards = await seed(sessions, vacancy, n=1)
     profile = candidate()
     await UserService(sessions).register(42)

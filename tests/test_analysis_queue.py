@@ -871,3 +871,23 @@ async def test_matching_does_not_reuse_outdated_pipeline(queue_sessions, vacancy
     pipeline_hash.cache_clear()
     assert current_vacancy_analysis(saved) is None
     pipeline_hash.cache_clear()
+
+
+async def test_failed_periodic_reconciliation_still_drains_queue(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from jobs import analysis_worker
+
+    ticks = iter((0, 61, 62, 63))
+    monkeypatch.setattr(analysis_worker, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    stop = asyncio.Event()
+
+    async def finish():
+        stop.set()
+        return "analyzed"
+
+    worker = SimpleNamespace(run_once=AsyncMock(side_effect=finish))
+    maintain = AsyncMock(side_effect=ConnectionError())
+    await analysis_worker._worker_loop(worker, stop, interval=0, startup=maintain)
+    assert maintain.await_count == 2 and worker.run_once.await_count == 1

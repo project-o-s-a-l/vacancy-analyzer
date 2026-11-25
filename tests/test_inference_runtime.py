@@ -25,13 +25,6 @@ from storage.repositories import VacancyRepository
 from storage.repositories.job_repository import JobRepository
 
 
-@pytest.fixture(params=["sqlite", pytest.param("postgres", marks=pytest.mark.postgres)])
-def db(request):
-    return request.getfixturevalue(
-        "postgres_sessions" if request.param == "postgres" else "sessions"
-    )
-
-
 async def enqueue(db, kind, entity):
     async with db.begin() as session:
         return await JobRepository(session).enqueue(
@@ -39,13 +32,13 @@ async def enqueue(db, kind, entity):
         )
 
 
-async def test_resume_priority_and_background_fairness_survive_worker_restart(db):
-    await enqueue(db, "vacancy_analysis", "background")
+async def test_resume_priority_and_background_fairness_survive_worker_restart(db_sessions):
+    await enqueue(db_sessions, "vacancy_analysis", "background")
     for i in range(5):
-        await enqueue(db, "resume_analysis", str(i))
+        await enqueue(db_sessions, "resume_analysis", str(i))
     kinds = []
     for _ in range(6):
-        async with db.begin() as session:
+        async with db_sessions.begin() as session:
             repo = JobRepository(session)
             job = await repo.claim(uuid4().hex)
             kinds.append(job.kind)
@@ -54,25 +47,27 @@ async def test_resume_priority_and_background_fairness_survive_worker_restart(db
     assert kinds == ["resume_analysis"] * 3 + ["vacancy_analysis"] + ["resume_analysis"] * 2
 
 
-async def test_projection_outside_model_slot_does_not_reset_background_turn(db):
-    await enqueue(db, "vacancy_analysis", "background")
-    await enqueue(db, "vacancy_projection", "repair")
+async def test_projection_outside_model_slot_does_not_reset_background_turn(db_sessions):
+    await enqueue(db_sessions, "vacancy_analysis", "background")
+    await enqueue(db_sessions, "vacancy_projection", "repair")
     for i in range(4):
-        await enqueue(db, "resume_analysis", str(i))
+        await enqueue(db_sessions, "resume_analysis", str(i))
     for _ in range(3):
-        async with db.begin() as session:
+        async with db_sessions.begin() as session:
             repo = JobRepository(session)
             job = await repo.claim("worker")
             assert job.kind == "resume_analysis"
             await repo.finish(job)
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         repo = JobRepository(session)
         await repo.finish(await repo.claim("repairer", kinds=["vacancy_projection"]))
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         assert (await JobRepository(session).claim("worker")).kind == "vacancy_analysis"
 
 
-async def test_direct_resume_discards_inferred_result_if_final_weights_changed(db, monkeypatch):
+async def test_direct_resume_discards_inferred_result_if_final_weights_changed(
+    db_sessions, monkeypatch
+):
     from domain.resume import ResumeExtraction
 
     async with httpx.AsyncClient(
@@ -90,18 +85,18 @@ async def test_direct_resume_discards_inferred_result_if_final_weights_changed(d
             "analyze",
             AsyncMock(return_value=ResumeExtraction(skills=["Java"], completeness="complete")),
         )
-        users = UserService(db)
+        users = UserService(db_sessions)
         await users.register(1)
         from jobs.resumes import ResumeService
 
-        draft = await ResumeService(db, analyzer=analyzer).prepare(
+        draft = await ResumeService(db_sessions, analyzer=analyzer).prepare(
             1, "Разрабатываю приложения на Python и сопровождаю API."
         )
         assert "Java" not in draft.extraction.skills
         assert draft.professional_facts.model_digest is None
 
 
-async def test_queue_reserves_user_capacity_and_deduplicates_at_limit(db, monkeypatch):
+async def test_queue_reserves_user_capacity_and_deduplicates_at_limit(db_sessions, monkeypatch):
     from jobs.queue_policy import queue_settings
 
     settings = queue_settings().model_copy(
@@ -109,14 +104,14 @@ async def test_queue_reserves_user_capacity_and_deduplicates_at_limit(db, monkey
     )
     monkeypatch.setattr("jobs.queue_policy.queue_settings", lambda: settings)
     for i in range(6):
-        await enqueue(db, "vacancy_analysis", str(i))
-    await enqueue(db, "vacancy_analysis", "0")  # Reuse is allowed when full.
+        await enqueue(db_sessions, "vacancy_analysis", str(i))
+    await enqueue(db_sessions, "vacancy_analysis", "0")  # Reuse is allowed when full.
     with pytest.raises(QueueFull):
-        await enqueue(db, "vacancy_analysis", "overflow")
-    await enqueue(db, "resume_analysis", "r1")
-    await enqueue(db, "resume_analysis", "r2")
+        await enqueue(db_sessions, "vacancy_analysis", "overflow")
+    await enqueue(db_sessions, "resume_analysis", "r1")
+    await enqueue(db_sessions, "resume_analysis", "r2")
     with pytest.raises(QueueFull):
-        await enqueue(db, "resume_analysis", "r3")
+        await enqueue(db_sessions, "resume_analysis", "r3")
 
 
 @pytest.mark.postgres
@@ -137,8 +132,8 @@ async def test_concurrent_postgres_producers_cannot_exceed_admission(
     assert all(isinstance(r, (QueueFull, BackgroundJob)) for r in outcomes)
 
 
-async def test_rate_rejection_preserves_previous_resume_and_delete_scrubs_cache(db):
-    users = UserService(db, queued_resumes=True)
+async def test_rate_rejection_preserves_previous_resume_and_delete_scrubs_cache(db_sessions):
+    users = UserService(db_sessions, queued_resumes=True)
     await users.register(1)
     for i in range(3):
         await users.resumes.submit(1, f"Резюме Python разработчика, загрузка номер {i}")
@@ -146,42 +141,42 @@ async def test_rate_rejection_preserves_previous_resume_and_delete_scrubs_cache(
     with pytest.raises(SubmissionLimited):
         await users.resumes.submit(1, "Другая слишком частая загрузка резюме Python")
     assert (await users.resumes.status(1))["id"] == previous["id"]
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         job = await JobRepository(session).claim("worker")
-    cache = ValidatedCache(db, job=job)
+    cache = ValidatedCache(db_sessions, job=job)
     await cache.put("a" * 64, {"private": "validated"})
     assert await cache.get("a" * 64) is not None
     await users.resumes.delete(1)
     await cache.put("b" * 64, {"private": "late"})
-    async with db() as session:
+    async with db_sessions() as session:
         assert await session.scalar(select(func.count()).select_from(ExtractionCache)) == 0
 
 
-async def test_collected_source_survives_full_queue_then_refill(db, vacancy, monkeypatch):
+async def test_collected_source_survives_full_queue_then_refill(db_sessions, vacancy, monkeypatch):
     from jobs.queue_policy import queue_settings
 
     settings = queue_settings().model_copy(
         update={"analysis_queue_limit": 8, "analysis_resume_reserve": 7}
     )
     monkeypatch.setattr("jobs.queue_policy.queue_settings", lambda: settings)
-    old = await enqueue(db, "vacancy_analysis", "full")
+    old = await enqueue(db_sessions, "vacancy_analysis", "full")
     v = vacancy.model_copy(update={"published_at": datetime.now(UTC), "valid_until": None})
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         v.id = await VacancyRepository(session).save(v)
         assert (
             await schedule_collected(session, v, pipeline=pipeline_hash("vacancy_analysis", "fake"))
             is None
         )
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         assert await VacancyRepository(session).get_by_id(v.id)
         await JobRepository(session).finish(await session.get(BackgroundJob, old.id))
-    assert await enqueue_catalog(db, model="fake", missing_only=True) == 1
-    assert await enqueue_catalog(db, model="fake", missing_only=True) == 0
+    assert await enqueue_catalog(db_sessions, model="fake", missing_only=True) == 1
+    assert await enqueue_catalog(db_sessions, model="fake", missing_only=True) == 0
 
 
-async def test_expired_remote_work_requires_drain_before_another_claim(db, monkeypatch):
-    await enqueue(db, "vacancy_analysis", "v")
-    async with db.begin() as session:
+async def test_expired_remote_work_requires_drain_before_another_claim(db_sessions, monkeypatch):
+    await enqueue(db_sessions, "vacancy_analysis", "v")
+    async with db_sessions.begin() as session:
         job = await JobRepository(session).claim(
             "dead", runtime={"url": "http://127.0.0.1:11435", "model": "test"}
         )
@@ -192,47 +187,47 @@ async def test_expired_remote_work_requires_drain_before_another_claim(db, monke
         )
         gate = await session.get(InferenceGate, "global")
         gate.until = datetime.now(UTC) - timedelta(seconds=1)
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         assert await JobRepository(session).claim("other") is None
-    worker = AnalysisWorker(db)
+    worker = AnalysisWorker(db_sessions)
     monkeypatch.setattr(
         OllamaRuntime, "drain", AsyncMock(side_effect=httpx.ReadTimeout("uncertain"))
     )
     assert await worker._recover_runtime() is False
     monkeypatch.setattr(OllamaRuntime, "drain", AsyncMock())
     assert await worker._recover_runtime() is True
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         assert await JobRepository(session).owned(job) is None
         recovered = await JobRepository(session).claim("other")
         assert recovered.lease_token != job.lease_token and recovered.attempts == 2
 
 
-async def test_rules_only_resume_progresses_during_remote_quarantine(db):
-    await enqueue(db, "vacancy_analysis", "uncertain")
-    async with db.begin() as session:
+async def test_rules_only_resume_progresses_during_remote_quarantine(db_sessions):
+    await enqueue(db_sessions, "vacancy_analysis", "uncertain")
+    async with db_sessions.begin() as session:
         interrupted = await JobRepository(session).claim(
             "dead", runtime={"url": "http://127.0.0.1:11435", "model": "test"}
         )
-    users = UserService(db, queued_resumes=True, resume_model="rules")
+    users = UserService(db_sessions, queued_resumes=True, resume_model="rules")
     await users.register(1)
     await users.resumes.submit(1, "Python разработчик. Разрабатываю приложения на Python.")
-    assert await AnalysisWorker(db).run_once() == "resume"
+    assert await AnalysisWorker(db_sessions).run_once() == "resume"
     assert await users.resumes.pending(1) is not None
-    async with db() as session:
+    async with db_sessions() as session:
         gate = await session.get(InferenceGate, "global")
         assert gate.token == interrupted.lease_token  # Rules must not release remote work.
 
 
-async def test_expired_cache_entry_is_refreshed_before_cleanup(db):
-    users = UserService(db, queued_resumes=True)
+async def test_expired_cache_entry_is_refreshed_before_cleanup(db_sessions):
+    users = UserService(db_sessions, queued_resumes=True)
     await users.register(1)
     await users.resumes.submit(1, "Python разработчик с опытом разработки приложений.")
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         job = await JobRepository(session).claim("worker")
-    cache = ValidatedCache(db, job=job)
+    cache = ValidatedCache(db_sessions, job=job)
     key = "a" * 64
     await cache.put(key, {"version": 1})
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         await session.execute(
             update(ExtractionCache).values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
         )
@@ -241,7 +236,7 @@ async def test_expired_cache_entry_is_refreshed_before_cleanup(db):
     assert await cache.get(key) == {"version": 2}
 
 
-async def test_unavailable_service_before_generation_does_not_block_other_resumes(db):
+async def test_unavailable_service_before_generation_does_not_block_other_resumes(db_sessions):
     def unavailable(request):
         raise httpx.ConnectError("service stopped", request=request)
 
@@ -251,14 +246,16 @@ async def test_unavailable_service_before_generation_does_not_block_other_resume
         runtime = OllamaRuntime(client, model="test")
         analyzer = OllamaResumeAnalyzer(client, model="test", runtime=runtime)
         analyzer.model_digest = "previous-successful-job"
-        users = UserService(db, queued_resumes=True, resume_model="test")
+        users = UserService(db_sessions, queued_resumes=True, resume_model="test")
         for user_id in (1, 2):
             await users.register(user_id)
             await users.resumes.submit(
                 user_id, "Python разработчик с опытом разработки приложений."
             )
-            assert await AnalysisWorker(db, resume_analyzer=analyzer).run_once() == "resume"
-            async with db() as session:
+            assert (
+                await AnalysisWorker(db_sessions, resume_analyzer=analyzer).run_once() == "resume"
+            )
+            async with db_sessions() as session:
                 gate = await session.get(InferenceGate, "global")
                 assert gate.token is None
                 assert (
@@ -373,7 +370,7 @@ def test_semantic_waits_for_retained_ollama_and_rejects_uncertain_work(monkeypat
         marker.unlink(missing_ok=True)
 
 
-async def test_validated_resume_blocks_are_reused_privately_and_weights_invalidate(db):
+async def test_validated_resume_blocks_are_reused_privately_and_weights_invalidate(db_sessions):
     calls, weight = [], ["weight1"]
 
     def handle(request):
@@ -401,10 +398,10 @@ async def test_validated_resume_blocks_are_reused_privately_and_weights_invalida
         base_url="http://localhost", transport=httpx.MockTransport(handle)
     ) as client:
         analyzer = OllamaResumeAnalyzer(client, model="test")
-        users = UserService(db, queued_resumes=True, resume_model="test")
+        users = UserService(db_sessions, queued_resumes=True, resume_model="test")
         for user_id in (1, 2):
             await users.register(user_id)
-        worker = AnalysisWorker(db, resume_analyzer=analyzer)
+        worker = AnalysisWorker(db_sessions, resume_analyzer=analyzer)
         text = "Разрабатываю приложения Python и сопровождаю API."
         for user_id in (1, 1, 2):
             await users.resumes.submit(user_id, text)
@@ -415,7 +412,7 @@ async def test_validated_resume_blocks_are_reused_privately_and_weights_invalida
         assert await worker.run_once() == "resume"
         assert len(calls) == 3
         await users.resumes.delete(1)
-        async with db() as session:
+        async with db_sessions() as session:
             remaining = list((await session.scalars(select(ExtractionCache))).all())
             assert remaining and all(row.user_id == 2 for row in remaining)
 
@@ -426,16 +423,16 @@ def test_resume_schema_uses_supported_ascii_reference_pattern():
 
 
 async def test_status_reports_unadmitted_catalog_and_quarantine_with_model_offline(
-    db, vacancy, monkeypatch
+    db_sessions, vacancy, monkeypatch
 ):
     from jobs.inference_status import inference_status
     from jobs.settings import Settings
 
     current = vacancy.model_copy(update={"published_at": datetime.now(UTC), "valid_until": None})
-    async with db.begin() as session:
+    async with db_sessions.begin() as session:
         await VacancyRepository(session).save(current)
-    await enqueue(db, "resume_analysis", "interrupted")
-    async with db.begin() as session:
+    await enqueue(db_sessions, "resume_analysis", "interrupted")
+    async with db_sessions.begin() as session:
         await JobRepository(session).claim(
             "gone", runtime={"url": "http://localhost", "model": "test"}
         )
@@ -449,7 +446,7 @@ async def test_status_reports_unadmitted_catalog_and_quarantine_with_model_offli
         base_url="http://localhost", transport=httpx.MockTransport(unavailable)
     )
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: client)
-    result = await inference_status(db, Settings(_env_file=None))
+    result = await inference_status(db_sessions, Settings(_env_file=None))
     assert result["runtime"] == {"available": False, "loaded": []}
     assert result["catalog_awaiting_admission"] == 1
     assert result["recovery_required"] is True

@@ -46,12 +46,19 @@ def salary_bounds(vacancy: Vacancy, profile: CandidateProfile):
 def location_matches(vacancy: Vacancy, profile: CandidateProfile) -> bool | None:
     if condition_value(vacancy, "remote") is True:
         return True
-    if not condition_value(vacancy, "location"):
+    keys = vacancy_location_keys(vacancy)
+    if not keys:
         return None
+    return bool(keys.intersection(location_key(value) for value in profile.preferences.locations))
 
-    return location_key(condition_value(vacancy, "location")) in {
-        location_key(value) for value in profile.preferences.locations
-    }
+
+def vacancy_location_keys(vacancy):
+    locations = vacancy.locations
+    if not locations and vacancy.location:
+        locations = (
+            vacancy.location.split(",") if vacancy.source == "habr_career" else [vacancy.location]
+        )
+    return {location_key(value) for value in locations or () if value.strip()}
 
 
 def location_key(value):
@@ -83,7 +90,7 @@ def check_eligibility(
                 "publication": f"published={vacancy.published_at.isoformat()}, "
                 f"archived={vacancy.archived}, valid_until={vacancy.valid_until}",
             }
-            evidence = [EligibilityEvidence(source="hh", text=values[field])]
+            evidence = [EligibilityEvidence(source=vacancy.source, text=values[field])]
         fields = (
             ("salary_from", "salary_to", "currency", "salary_gross", "salary_period")
             if field == "salary"
@@ -125,7 +132,8 @@ def check_eligibility(
     )
     result.experience.evidence = [
         EligibilityEvidence(
-            source="description" if e.field == "description" else "hh", text=e.quote or i.name
+            source="description" if e.field == "description" else vacancy.source,
+            text=e.quote or i.name,
         )
         for i in experience_items
         for e in i.evidence
@@ -158,7 +166,7 @@ def check_eligibility(
             mandatory=item.importance == "required",
             evidence=[
                 EligibilityEvidence(
-                    source="description" if e.field == "description" else "hh",
+                    source="description" if e.field == "description" else vacancy.source,
                     text=e.quote or item.name,
                 )
                 for e in item.evidence

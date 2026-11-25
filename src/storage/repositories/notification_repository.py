@@ -107,7 +107,7 @@ class NotificationRepository:
             awaiting_rating=awaiting_rating,
             attempted_at=datetime.now(UTC),
             attempts=1,
-            exposure_context=exposure_context,
+            pending_context=exposure_context,
             duplicate_key=key,
         )
         statement = statement.on_conflict_do_update(
@@ -172,13 +172,23 @@ class NotificationRepository:
                 NotificationModel.status == "sending",
             )
             .values(**values)
-            .returning(NotificationModel.duplicate_key, NotificationModel.exposure_context)
+            .returning(NotificationModel.duplicate_key, NotificationModel.pending_context)
         )
         row = (await self.session.execute(statement)).one_or_none()
         if row is None:
             raise ValueError("Delivery claim no longer belongs to this attempt")
         if status == "sent":
             await self.confirm_exposure(chat_id, vacancy_id, message_id, row[1], snapshot_id=token)
+            await self.session.execute(
+                update(NotificationModel)
+                .where(
+                    NotificationModel.chat_id == chat_id,
+                    NotificationModel.vacancy_id == vacancy_id,
+                    NotificationModel.claim_token == token,
+                    select(ExposureModel.id).where(ExposureModel.id == token).exists(),
+                )
+                .values(pending_context=None)
+            )
         after_commit(
             self.session,
             "delivery.persisted",
@@ -205,31 +215,17 @@ class NotificationRepository:
             .on_conflict_do_nothing(index_elements=["chat_id", "message_id"])
         )
 
-    async def blocked_ids(self, chat_id: int) -> set[UUID]:
-        rows = await self.session.scalars(
-            select(NotificationModel.vacancy_id).where(
-                NotificationModel.chat_id == chat_id,
-                self._blocked(),
-            )
+    @classmethod
+    def blocked_vacancies(cls, chat_id: int):
+        return select(NotificationModel.vacancy_id).where(
+            NotificationModel.chat_id == chat_id, cls._blocked()
         )
-        return set(rows)
 
     @staticmethod
     def _blocked():
         return or_(
             NotificationModel.status.in_(["sending", "uncertain"]),
             and_(NotificationModel.status == "sent", NotificationModel.history_reset_at.is_(None)),
-        )
-
-    async def blocked_duplicate_keys(self, chat_id: int) -> set[str]:
-        return set(
-            await self.session.scalars(
-                select(NotificationModel.duplicate_key).where(
-                    NotificationModel.chat_id == chat_id,
-                    NotificationModel.duplicate_key.is_not(None),
-                    self._blocked(),
-                )
-            )
         )
 
     @staticmethod

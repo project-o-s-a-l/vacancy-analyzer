@@ -40,9 +40,24 @@ _NOT_REQUIRED = re.compile(
 )
 
 
+def source_minimum(value):
+    if not value:
+        return None
+    if value in EXPERIENCE_MINIMUM:
+        return EXPERIENCE_MINIMUM[value]
+    if value.casefold() == "без опыта":
+        return 0
+    bound = re.fullmatch(r"от\s+(\d{1,2})\s+(?:лет|года?)", value.strip(), re.I)
+    return int(bound[1]) if bound else None
+
+
 def experience_requirement(vacancy: Vacancy) -> ExperienceRequirement:
-    hh = EXPERIENCE_MINIMUM.get(vacancy.experience or "")
-    evidence = [EligibilityEvidence(source="hh", text=vacancy.experience)] if hh is not None else []
+    hh = source_minimum(vacancy.experience)
+    evidence = (
+        [EligibilityEvidence(source=vacancy.source, text=vacancy.experience)]
+        if hh is not None
+        else []
+    )
     quotes: list[tuple[str, float | None, bool]] = []
     context = False
     preferred = False
@@ -102,14 +117,14 @@ def experience_requirement(vacancy: Vacancy) -> ExperienceRequirement:
     if positive:
         return ExperienceRequirement(
             minimum_years=hh if hh and hh > 0 else None,
-            minimum_source="hh" if hh and hh > 0 else None,
+            minimum_source=vacancy.source if hh and hh > 0 else None,
             required=True,
             conflict=hh == 0,
             evidence=evidence,
         )
     return ExperienceRequirement(
         minimum_years=hh,
-        minimum_source="hh" if hh is not None else None,
+        minimum_source=vacancy.source if hh is not None else None,
         required=hh > 0 if hh is not None else None,
         evidence=evidence,
     )

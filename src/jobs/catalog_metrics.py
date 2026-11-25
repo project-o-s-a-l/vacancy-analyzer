@@ -133,7 +133,7 @@ async def catalog_status(sessions, *, now=None, check_interval=DEFAULT_CHECK_INT
         budget=budgets.get("hh"),
         budgets=budgets,
         policy=dict(
-            final_max_age_seconds=DEFAULT_CHECK_INTERVAL,
+            final_max_age_seconds=check_interval,
             detail_cache_max_age_seconds=check_interval,
             source_depth_limit=2000,
             depth_limits={

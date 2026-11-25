@@ -1,6 +1,5 @@
 """Measured deployment decision. Missing or failed evidence never enables a retriever."""
 
-import hashlib
 from math import isfinite
 from pathlib import Path
 
@@ -19,6 +18,8 @@ CRITERIA = {
 
 
 def current_code_hashes():
+    from domain.contracts import source_file_hash
+
     root = Path(__file__).parent
     names = [
         "hybrid_candidates.py",
@@ -26,9 +27,9 @@ def current_code_hashes():
         "retrieval_evaluation.py",
         *(p.name for p in root.glob("semantic_*.py")),
     ]
-    return {
-        name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in sorted(names)
-    } | {"feature_contract": feature_contract()}
+    return {name: source_file_hash(root / name) for name in sorted(names)} | {
+        "feature_contract": feature_contract()
+    }
 
 
 def acceptance(report, *, channel):

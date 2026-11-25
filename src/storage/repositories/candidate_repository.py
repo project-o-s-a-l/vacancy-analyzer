@@ -21,12 +21,16 @@ from sqlalchemy import (
     true,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import aliased
 
 from domain import Vacancy
 from domain.exchange_rates import current_rates
 from scoring.fact_projection import projection_contract
+from storage.models import FeedbackModel as F
+from storage.models import NotificationModel as N
 from storage.models import VacancyModel as V
 from storage.models.vacancy import SEARCH_REPAIR_PREDICATE
+from storage.repositories.notification_repository import NotificationRepository
 from storage.repositories.vacancy_repository import _aware
 
 
@@ -165,8 +169,37 @@ class CandidateRepository:
                 )
         return and_(*criteria)
 
-    def _unblocked_predicate(self, excluded_ids, excluded_keys):
+    @staticmethod
+    def owner_history(owner):
+        notifications = NotificationRepository.blocked_vacancies(owner)
+        feedback = select(F.vacancy_id).where(
+            F.user_id == owner, or_(F.interest == "dislike", F.applied.is_(True))
+        )
+        return notifications, feedback
+
+    @classmethod
+    def owner_blocked(cls, owner):
+        notifications, feedback = cls.owner_history(owner)
+        remembered_groups = notifications.with_only_columns(N.duplicate_key).where(
+            N.duplicate_key.is_not(None)
+        )
+        sibling = aliased(V)
+        ids = notifications.union_all(feedback).cte("owner_blocked_ids")
+        current_groups = select(sibling.duplicate_key).where(
+            sibling.id.in_(select(ids.c.vacancy_id)), sibling.duplicate_key.is_not(None)
+        )
+        return or_(
+            V.id.in_(select(ids.c.vacancy_id)),
+            and_(
+                V.duplicate_key.is_not(None),
+                V.duplicate_key.in_(remembered_groups.union_all(current_groups)),
+            ),
+        )
+
+    def _unblocked_predicate(self, excluded_ids, excluded_keys, history_owner=None):
         criteria = [true()]
+        if history_owner is not None:
+            criteria.append(not_(self.owner_blocked(history_owner)))
         pg = self.session.get_bind().dialect.name == "postgresql"
         if excluded_ids:
             criteria.append(
@@ -182,12 +215,21 @@ class CandidateRepository:
         return and_(*criteria)
 
     async def diagnostic_counts(
-        self, profile, *, now, since, category, include_ineligible, excluded_ids, excluded_keys
+        self,
+        profile,
+        *,
+        now,
+        since,
+        category,
+        include_ineligible,
+        excluded_ids,
+        excluded_keys,
+        history_owner=None,
     ):
         """One scalar aggregate, no descriptions, payloads, or user state retained."""
         active = self._state_predicate(now, since, category)
         required = self._required_predicate(profile, include_ineligible)
-        unblocked = self._unblocked_predicate(excluded_ids, excluded_keys)
+        unblocked = self._unblocked_predicate(excluded_ids, excluded_keys, history_owner)
         counts = (
             await self.session.execute(
                 select(
@@ -207,20 +249,6 @@ class CandidateRepository:
             available_rows=available,
         )
 
-    async def duplicate_keys_for_ids(self, ids):
-        if not ids:
-            return set()
-        predicate = (
-            V.id == any_(literal(list(ids), type_=ARRAY(Uuid)))
-            if self.session.get_bind().dialect.name == "postgresql"
-            else V.id.in_(ids)
-        )
-        return set(
-            await self.session.scalars(
-                select(V.duplicate_key).where(predicate, V.duplicate_key.is_not(None))
-            )
-        )
-
     @staticmethod
     def unknown():
         return or_(
@@ -236,7 +264,9 @@ class CandidateRepository:
         predicates = [
             self._state_predicate(options["now"], options["since"], options["category"]),
             self._required_predicate(profile, options["include_ineligible"]),
-            self._unblocked_predicate(options["excluded_ids"], options["excluded_keys"]),
+            self._unblocked_predicate(
+                options["excluded_ids"], options["excluded_keys"], options.get("history_owner")
+            ),
         ]
         if (
             not options["include_ineligible"]
@@ -245,14 +275,19 @@ class CandidateRepository:
         ):
             from scoring.eligibility import location_key
 
+            wanted = [location_key(v) for v in profile.preferences.locations]
+            keys = V.search_document["location_keys"]
+            if self.session.get_bind().dialect.name == "postgresql":
+                matches = keys.op("?|")(literal(wanted, type_=ARRAY(Text)))
+            else:
+                places = func.json_each(keys).table_valued("value")
+                matches = exists(select(1).select_from(places).where(places.c.value.in_(wanted)))
             # Missing/stale projections go to bounded repair, never treated as a failed location.
             predicates.append(
                 or_(
                     self.unknown(),
                     V.remote.is_(True),
-                    V.search_document["location_key"]
-                    .as_string()
-                    .in_([location_key(v) for v in profile.preferences.locations]),
+                    matches,
                 )
             )
         return predicates

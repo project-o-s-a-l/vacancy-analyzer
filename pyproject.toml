@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "job-market-analyzer"
 version = "0.1.0"
-description = "Explainable personal job recommendations from HeadHunter"
+description = "Explainable personal job recommendations from public vacancy sources"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pydantic>=2.10,<3",
+    "pydantic>=2.12,<3",
     "pydantic-settings>=2.7,<3",
     "httpx>=0.28,<1",
     "SQLAlchemy[asyncio]>=2.0.38,<2.1",
@@ -43,6 +43,7 @@ exclude = ["collectors.*", "vacancy_source_adapters*"]
 
 [tool.setuptools.data-files]
 "share/vacancy-analyzer/evaluation" = [
+    "config/evaluation/benchmark.yaml",
     "config/evaluation/protocol.json",
     "config/evaluation/review.html",
     "docs/evaluation/REVIEW.md",

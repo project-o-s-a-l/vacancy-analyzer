@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -22,7 +23,7 @@ from domain.serving_ranker import RankerPolicy
 from domain.vacancy_analysis import VacancyCategory
 from jobs.collection_budget import AvitoRateLimited
 from jobs.collection_runtime import CollectionAlreadyRunning, run_collection
-from jobs.import_html import import_html_snapshots
+from jobs.import_html import prune_snapshots, resume_html_import
 from jobs.recommendations import recommend
 from jobs.settings import Settings
 from jobs.skill_gap import analyze_skill_gap
@@ -154,6 +155,10 @@ def parser() -> argparse.ArgumentParser:
     commands.add_parser(
         "catalog-status", help="JSON покрытия, давности и бюджета без запросов к HH"
     )
+    prune = commands.add_parser("prune-html", help="Проверить срок хранения локальных снимков HH")
+    prune.add_argument("--directory", type=Path, required=True)
+    prune.add_argument("--days", type=_positive, default=90)
+    prune.add_argument("--apply", action="store_true", help="Удалить подходящие файлы")
     importer = commands.add_parser("import-html", help="Импортировать сохранённые HTML без сети")
     importer.add_argument("--source", choices=("hh", "avito"), default="hh")
     pages = importer.add_mutually_exclusive_group(required=True)
@@ -285,7 +290,7 @@ def parser() -> argparse.ArgumentParser:
         "benchmark-prepare", help="Зафиксировать каталог HH и профили для проверки качества"
     )
     benchmark.add_argument("--html-directory", type=Path, required=True)
-    benchmark.add_argument("--cases", type=Path, default=Path("config/evaluation/benchmark.yaml"))
+    benchmark.add_argument("--cases", type=Path)
     benchmark.add_argument("--output", type=Path, required=True)
     benchmark.add_argument("--at", required=True, help="Момент оценки ISO 8601 с часовым поясом")
     benchmark.add_argument("--limit", type=_positive, default=200)
@@ -375,6 +380,7 @@ async def run_telegram(args: argparse.Namespace) -> None:
             session_factory(engine),
             top=settings.telegram_top,
             min_score=settings.telegram_min_score,
+            check_interval=timedelta(seconds=settings.hh_check_interval),
             ranker_policy=RankerPolicy.from_settings(settings),
             saved_selections_enabled=settings.saved_selections_enabled,
         )
@@ -382,7 +388,7 @@ async def run_telegram(args: argparse.Namespace) -> None:
         if args.dry_run:
             print(render(await service.pending(), as_json=False))
         else:
-            report = await service.deliver(TelegramSender(bot))
+            report = await service.deliver(TelegramSender(bot, service.check_interval))
             if report.empty_message:
                 print(report.empty_message)
             print(
@@ -516,10 +522,11 @@ async def run_command(args: argparse.Namespace) -> None:
         from datetime import datetime
 
         from jobs.benchmark import prepare_benchmark
+        from jobs.evaluation_resources import evaluation_resource
 
         manifest = prepare_benchmark(
             args.html_directory,
-            args.cases,
+            args.cases or evaluation_resource("benchmark.yaml"),
             args.output,
             now=datetime.fromisoformat(args.at),
             limit=args.limit,
@@ -723,22 +730,30 @@ async def run_command(args: argparse.Namespace) -> None:
                 sessions, model=settings.ollama_model, limit=args.limit, force=args.force
             )
             print(f"Заданий в очереди: {count}. Их обработает бот или команда worker.")
+        elif args.command == "prune-html":
+            report = await prune_snapshots(
+                args.directory, sessions, days=args.days, apply=args.apply
+            )
+            print(json.dumps(report, ensure_ascii=False))
         elif args.command == "import-html":
             if args.source == "avito":
                 from jobs.import_avito import import_avito_pages
 
-                report = await import_avito_pages(args.file or args.directory, sessions)
+                report = await import_avito_pages(
+                    args.file or args.directory,
+                    sessions,
+                    refresh_after=timedelta(seconds=settings.hh_check_interval),
+                )
                 print(json.dumps(report, ensure_ascii=False, indent=2))
                 if len(report["errors"]) == report["files"]:
                     raise SystemExit(1)
                 return
             if args.file is not None:
                 raise ValueError("Для импорта hh укажите --directory")
-            async with sessions.begin() as session:
-                count = await import_html_snapshots(
-                    args.directory, VacancyRepository(session), base_url=settings.hh_base_url
-                )
-            print(f"Импортировано HTML-снимков: {count}")
+            report = await resume_html_import(
+                args.directory, sessions, base_url=settings.hh_base_url
+            )
+            print(json.dumps(report, ensure_ascii=False))
         elif args.command == "matching-dataset":
             from jobs.matching_dataset import prepare_matching_dataset, write_matching_dataset
 
@@ -763,6 +778,7 @@ async def run_command(args: argparse.Namespace) -> None:
                 report = await analyze_skill_gap(
                     VacancyRepository(session),
                     profile=profile,
+                    release_read=True,
                     days=args.days,
                     limit=args.limit,
                 )

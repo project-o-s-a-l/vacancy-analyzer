@@ -85,7 +85,6 @@ def test_generator_units_do_not_change_document_fact_schema(unit_data):
         ("currency", "RUR"),
         ("currency", "₽"),
         ("currency", ""),
-        ("salary_gross", "false"),
         ("salary_gross", 1),
         ("remote", "false"),
         ("remote", 0),
@@ -93,10 +92,17 @@ def test_generator_units_do_not_change_document_fact_schema(unit_data):
         ("location", " Москва "),
     ],
 )
-def test_new_import_rejects_invalid_units_before_coercion(unit_bundle, field, value):
-    rewrite_bundle(unit_bundle, lambda raw: raw["vacancies"][0]["vacancy"].update({field: value}))
+def test_vacancy_units_reject_noncanonical_values(field, value):
+    with pytest.raises(ValueError, match=field):
+        validate_units({"vacancies": [{"vacancy": {field: value}}]})
+
+
+def test_new_bundle_rejects_boolean_coercion_even_with_legacy_enabled(unit_bundle):
+    rewrite_bundle(
+        unit_bundle, lambda raw: raw["vacancies"][0]["vacancy"].update(salary_gross="false")
+    )
     for allow_legacy in (False, True):
-        with pytest.raises(ValueError, match=field):
+        with pytest.raises(ValueError, match="salary_gross"):
             load_data(unit_bundle, allow_legacy=allow_legacy)
 
 
@@ -128,23 +134,17 @@ def test_profile_salary_cannot_default_its_units(unit_data, field):
         EvaluationData.model_validate(raw)
 
 
-def test_legacy_archive_is_explicit_and_does_not_rewrite_bytes(unit_bundle, tmp_path):
-    def legacy(raw):
-        raw["version"] = "working-evaluation-data-v1"
-        for v in raw["vacancies"]:
-            v["vacancy"]["salary_period"] = "month"
-
-    rewrite_bundle(unit_bundle, legacy, legacy=True)
-    before = {p.name: p.read_bytes() for p in unit_bundle.iterdir()}
+def test_legacy_archive_is_explicit_and_does_not_rewrite_bytes(legacy_unit_bundle, tmp_path):
+    before = {p.name: p.read_bytes() for p in legacy_unit_bundle.iterdir()}
     with pytest.raises(ValueError, match="Legacy evaluation bundle"):
-        load_data(unit_bundle)
+        load_data(legacy_unit_bundle)
     with pytest.warns(UserWarning, match="archival inspection"):
-        data, _, _ = load_data(unit_bundle, allow_legacy=True)
+        data, _, _ = load_data(legacy_unit_bundle, allow_legacy=True)
     assert {v.vacancy.salary_period for v in data.vacancies} == {"month"}
-    assert before == {p.name: p.read_bytes() for p in unit_bundle.iterdir()}
+    assert before == {p.name: p.read_bytes() for p in legacy_unit_bundle.iterdir()}
     output = tmp_path / "reimport"
     with pytest.raises(ValueError, match="New imports require"):
-        prepare(output, PROTOCOL, data_path=unit_bundle / "data.json")
+        prepare(output, PROTOCOL, data_path=legacy_unit_bundle / "data.json")
     assert not output.exists()
 
 

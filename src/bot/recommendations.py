@@ -49,7 +49,7 @@ def register_recommendations(router: Router, service: UserService) -> None:
             return
         with suppress(TelegramAPIError):
             await bot.send_chat_action(message.chat.id, ChatAction.TYPING)
-        report = await notifications.deliver(TelegramSender(bot))
+        report = await notifications.deliver(TelegramSender(bot, service.check_interval))
         if report.sent:
             return
         if report.uncertain:
@@ -88,7 +88,7 @@ def register_recommendations(router: Router, service: UserService) -> None:
             await message.answer("Мои вакансии", reply_markup=library_keyboard(), parse_mode=None)
 
     @router.callback_query(F.data == "menu:library")
-    async def open_library(query: CallbackQuery, user_id: int) -> None:
+    async def open_library(query: CallbackQuery) -> None:
         await query.answer()
         await query.message.edit_text(
             "Мои вакансии", reply_markup=library_keyboard(), parse_mode=None
@@ -124,7 +124,7 @@ def register_recommendations(router: Router, service: UserService) -> None:
             with use_rates(rates):
                 match = await compute(score_vacancy, vacancy, profile)
             sent = await message.answer(
-                **format_card(vacancy, match).as_kwargs(),
+                **format_card(vacancy, match, check_interval=service.check_interval).as_kwargs(),
                 reply_markup=vacancy_keyboard(vacancy, state),
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )

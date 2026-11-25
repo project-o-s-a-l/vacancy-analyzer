@@ -151,6 +151,8 @@ def stand():
 
 
 def source_revision():
+    from domain.contracts import source_file_hash
+
     # Editable and wheel installs must identify the same shipped code. Protocol/data
     # have their own bundle hashes; unrelated site-packages are never part of this tree.
     root = Path(__file__).resolve().parents[1]
@@ -165,12 +167,14 @@ def source_revision():
         "scoring",
         "storage",
     )
-    inventory = {
-        "src/" + p.relative_to(root).as_posix(): sha256(p.read_bytes()).hexdigest()
-        for directory in (root / package for package in packages)
-        for p in sorted(directory.rglob("*"))
-        if p.is_file() and p.suffix in {".py", ".json", ".yaml", ".html"}
-    }
+    inventory = {}
+    for package in packages:
+        for directory, folders, files in (root / package).walk():
+            folders[:] = [name for name in folders if name not in {"__pycache__", "snapshots"}]
+            for name in files:
+                if name.endswith(".py"):
+                    path = directory / name
+                    inventory["src/" + path.relative_to(root).as_posix()] = source_file_hash(path)
     if "src/jobs/evaluation.py" not in inventory:
         raise ValueError("Installed runtime source inventory is unavailable")
     return {"inventory_sha256": digest(inventory), "files": inventory}

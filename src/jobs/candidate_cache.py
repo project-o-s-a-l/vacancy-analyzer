@@ -13,7 +13,7 @@ from uuid import UUID
 from sqlalchemy import case, func, literal, select, update
 
 from domain.exchange_rates import current_rates
-from domain.retrieval import RetrievalEvidence
+from domain.retrieval import DEFAULT_RETRIEVAL_K, RetrievalEvidence
 from domain.vacancy_analysis import is_fresh
 from jobs.candidates import CandidateSelection, retrieve_candidates
 from jobs.saved_selections import selection_contract
@@ -21,7 +21,6 @@ from jobs.serving_compute import compute
 from scoring.serving_features import digest, profile_revision
 from storage.models import SavedSelectionModel, ServingRevisionModel, VacancyModel
 from storage.repositories.candidate_repository import CandidateRepository
-from storage.repositories.selection_repository import MAX_POOL
 from storage.repositories.vacancy_repository import _aware
 
 
@@ -62,6 +61,7 @@ def request_key(profile, options):
             days=options["days"],
             category=options["category"],
             include_ineligible=options["include_ineligible"],
+            history_owner=options.get("history_owner"),
             ids=sorted(str(v) for v in options["excluded_ids"]),
             keys=sorted(options["excluded_keys"]),
             utc_date=options["now"].astimezone(UTC).date().isoformat(),
@@ -111,13 +111,15 @@ async def retrieve(repository, profile, *, owner, revisions, **options):
         and row.candidate_expires_at
         and _aware(row.candidate_expires_at) > now
         and isinstance(row.candidate_entries, list)
-        and len(row.candidate_entries) <= MAX_POOL
+        and len(row.candidate_entries) <= DEFAULT_RETRIEVAL_K
     ):
         try:
             started = perf_counter()
             rows = await CandidateRepository(session).load_selected(
                 [UUID(e["id"]) for e in row.candidate_entries]
             )
+            if options.get("release_read") is not None:
+                await options["release_read"]()
             selection = await compute(restore, rows, row.candidate_entries, context, options)
         except (KeyError, ValueError, TypeError):
             selection = None
@@ -137,7 +139,7 @@ async def retrieve(repository, profile, *, owner, revisions, **options):
             return selection, None
     selection = await retrieve_candidates(repository, profile, **options)
     options["diagnostics"]["candidate_cache_hit"] = 0
-    if len(selection.items) > MAX_POOL or await identity(session, owner) != revisions:
+    if len(selection.items) > DEFAULT_RETRIEVAL_K or await identity(session, owner) != revisions:
         return selection, None
     # Indexed scalar lookup, not loading or hashing the catalogue.
     future = await session.scalar(

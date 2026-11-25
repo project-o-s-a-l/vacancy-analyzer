@@ -39,16 +39,20 @@ async def store(sessions, user_id, profile, state=None):
         await repository.save(RegisteredUser(user_id, profile, state, user.revision))
 
 
-def test_default_mode_uses_profiles_and_manual_queries_can_repeat():
-    default = parser().parse_args(["collect", "--watch"])
+def test_collection_cli_defaults_and_manual_overrides():
+    cli = parser()
+    default = cli.parse_args(["collect"])
     assert default.query is None and default.days is None and default.search_field == "all"
-    assert parser().parse_args(["collect", "--days", "14"]).days == 14
-    assert parser().parse_args(["rank", "--profile", "profile.yaml"]).days is None
-    args = parser().parse_args(["collect", "--query", "Python", "--query", "Java"])
+    assert default.source is None and not default.watch
+    assert cli.parse_args(["rank", "--profile", "profile.yaml"]).days is None
+    args = cli.parse_args(
+        ["collect", "--query", "Python", "--query", "Java", "--days", "14", "--source", "api"]
+    )
     assert args.query == ["Python", "Java"]
-    assert parser().parse_args(["collect", "--from-profiles"]).from_profiles
+    assert args.days == 14 and args.source == "api"
+    assert cli.parse_args(["collect", "--from-profiles", "--watch"]).from_profiles
     with pytest.raises(SystemExit):
-        parser().parse_args(["collect", "--from-profiles", "--query", "Java"])
+        cli.parse_args(["collect", "--from-profiles", "--query", "Java"])
 
 
 def test_shared_positions_are_deduplicated_and_search_options_preserved():

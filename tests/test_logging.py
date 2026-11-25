@@ -26,6 +26,7 @@ from observability import (
     shutdown_logging,
 )
 from observability.logging import MAX_RECORD_BYTES, ConsoleHandler
+from observability.settings import LoggingOptions
 
 logger = logging.getLogger("jobs.logging_test")
 SECRET = "CONTROL_SECRET_resume_Иван+79991234567@example.com\nFORGED_EVENT"
@@ -270,7 +271,9 @@ def test_broken_console_does_not_raise(monkeypatch):
 @pytest.mark.parametrize(
     "command,role", [("bot", "bot"), ("collect", "collect"), ("worker", "worker"), ("rank", "cli")]
 )
-def test_cli_bootstrap_and_json_stdout(monkeypatch, capsys, command, role):
+def test_cli_logs_to_console_and_file_and_keeps_json_stdout(
+    tmp_path, monkeypatch, capsys, command, role
+):
     from jobs import cli
 
     async def fake_run(args):
@@ -280,9 +283,8 @@ def test_cli_bootstrap_and_json_stdout(monkeypatch, capsys, command, role):
 
     arguments = ["--profile", "synthetic.yml", "--json"] if command == "rank" else []
     monkeypatch.setattr(sys, "argv", ["vacancy-analyzer", command, *arguments])
-    monkeypatch.setattr(
-        cli, "LoggingOptions", lambda: SimpleNamespace(level="INFO", console_format="json")
-    )
+    settings = LoggingOptions(_env_file=None, directory=tmp_path / "logs", console_format="json")
+    monkeypatch.setattr(cli, "LoggingOptions", lambda: settings)
     monkeypatch.setattr(cli, "run_command", fake_run)
     monkeypatch.setattr(cli, "run_telegram", fake_run)
     cli.main()
@@ -293,6 +295,10 @@ def test_cli_bootstrap_and_json_stdout(monkeypatch, capsys, command, role):
     assert rows[-1]["event"] == "application.finished"
     assert all(r["process_role"] == role and r["operation_id"] for r in rows)
     assert "CONTROL_SECRET" not in captured.err
+    (journal,) = settings.directory.glob("*.jsonl")
+    file_rows = [json.loads(line) for line in journal.read_text(encoding="utf-8").splitlines()]
+    assert [r["event"] for r in file_rows] == [r["event"] for r in rows]
+    assert all(r["process_role"] == role for r in file_rows)
     assert current_context() == {}
 
 

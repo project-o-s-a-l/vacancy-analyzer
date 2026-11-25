@@ -64,6 +64,8 @@ async def _rank_recent(
     limit: int | None = None,
     category: VacancyCategory | None = None,
     include_ineligible: bool = False,
+    history_owner=None,
+    release_read=None,
     excluded_ids=(),
     excluded_keys=(),
     ranker_policy=None,
@@ -108,6 +110,10 @@ async def _rank_recent(
         diagnostics=stats,
         candidate_source=candidate_source,
     )
+    if release_read is not None:
+        options["release_read"] = release_read
+    if history_owner is not None:
+        options["history_owner"] = history_owner
     cache_values = None
     if _cache_revisions is not None:
         from jobs.candidate_cache import retrieve
@@ -117,6 +123,8 @@ async def _rank_recent(
         )
     else:
         selection = await retrieve_candidates(repository, profile, **options)
+    if release_read is not None:
+        await release_read()
     if trace is not None:
         trace["retrieval_seconds"] = perf_counter() - started
         trace["retrieved"] = [f"{v.source}:{v.source_id}" for v in selection.items]
@@ -142,6 +150,7 @@ async def _rank_recent(
             category=category,
             include_ineligible=include_ineligible,
             stats=cache_stats,
+            release_read=release_read,
             owner_epoch=_cache_revisions[2] if _cache_revisions else None,
         )
     else:
@@ -159,6 +168,8 @@ async def _rank_recent(
     for vacancy, match in ranked:
         match.retrieval = selection.evidence[vacancy.id]
     started = perf_counter()
+    if release_read is not None:
+        await release_read()
     result = await compute(
         apply_ranker,
         ranked,
