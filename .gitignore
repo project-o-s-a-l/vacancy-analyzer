@@ -122,3 +122,23 @@ Thumbs.db
 *.sqlite-shm
 *.pgdump
 *.sql.zst
+
+# Standalone vacancy exports and database working files
+/dumps/
+/pgdata/
+vacancies.json
+vacancies-*.json
+vacancies_*.json
+!tests/fixtures/vacancies.json
+/catalog.json
+/catalog-*.json
+/catalog_*.json
+*.ndjson
+*.ndjson.*
+*.json.gz
+*.parquet
+*.tsv
+*.pg_dump
+*.db-wal
+*.db-shm
+*.db-journal
